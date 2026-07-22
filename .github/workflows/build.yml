@@ -22,7 +22,9 @@ jobs:
           cache: "pnpm"
 
       - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile --config.onlyBuiltDependencies=esbuild
+        env:
+          PNPM_ALLOW_SCRIPTS: "true"
+        run: pnpm install --frozen-lockfile
 
       - name: TypeScript type check
         run: pnpm tsc --noEmit
@@ -78,7 +80,9 @@ jobs:
           cache: "pnpm"
 
       - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile --config.onlyBuiltDependencies=esbuild
+        env:
+          PNPM_ALLOW_SCRIPTS: "true"
+        run: pnpm install --frozen-lockfile
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
