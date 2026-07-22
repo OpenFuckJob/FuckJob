@@ -14,7 +14,7 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: latest
+          version: 9
 
       - uses: actions/setup-node@v4
         with:
@@ -22,8 +22,6 @@ jobs:
           cache: "pnpm"
 
       - name: Install frontend dependencies
-        env:
-          PNPM_ALLOW_SCRIPTS: "true"
         run: pnpm install --frozen-lockfile
 
       - name: TypeScript type check
@@ -72,7 +70,7 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: latest
+          version: 9
 
       - uses: actions/setup-node@v4
         with:
@@ -80,8 +78,6 @@ jobs:
           cache: "pnpm"
 
       - name: Install frontend dependencies
-        env:
-          PNPM_ALLOW_SCRIPTS: "true"
         run: pnpm install --frozen-lockfile
 
       - name: Setup Rust
