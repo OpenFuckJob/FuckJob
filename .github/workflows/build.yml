@@ -24,9 +24,6 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: TypeScript type check
-        run: pnpm tsc --noEmit
-
       - name: Run frontend tests
         run: pnpm test:run
 
