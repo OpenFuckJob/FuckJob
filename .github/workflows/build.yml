@@ -83,6 +83,13 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Setup C++ toolchain (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake
+          echo "CC=clang" >> "$GITHUB_ENV"
+          echo "CXX=clang++" >> "$GITHUB_ENV"
+
       - name: Build Tauri app
         run: pnpm tauri build --ci
 
