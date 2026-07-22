@@ -1,147 +1,177 @@
-# Fuck Job（本地优先版）
+# Fuck Job 🚀
 
-Fuck Job 是一个基于 Tauri 2、React 和 Rust 的桌面求职工具。它把配置、岗位记录、沟通记录、分析结果和简历数据保存在本机，并通过本机 Chrome/Edge 自动化辅助 BOSS 直聘和猎聘的职位筛选、主动沟通、未读回复与周期任务。
+> 本地优先的开源桌面求职自动化与分析工具
 
-本地优先版不需要 Fuck Job 账号，不连接原项目业务服务器，不包含遥测、联网搜索或自动更新器。AI 完全可选；不配置模型也可以使用本地配置、招聘平台自动化、岗位数据和备份功能。
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/OpenFuckJob/FuckJob/blob/master/LICENSE)
 
-## 功能与平台
+**Fuck Job** 是一款基于 [Tauri 2](https://tauri.app/) 构建的跨平台桌面应用，专注于求职流程的自动化与智能化。它完全本地运行，无需账号、无遥测、无云端同步，你的数据始终掌握在自己手中。
 
-- BOSS 直聘、猎聘的浏览器环境检查、扫码登录、单轮/周期求职和未读回复。
-- 本地岗位、沟通记录和运行日志；可抓取已沟通过岗位并按平台查看。
-- 可选的岗位分析、打招呼/回复生成和沟通调试，使用 OpenAI 兼容接口。
-- 六种模型预设：Ollama、LM Studio、OpenAI、DeepSeek、DashScope 和自定义端点。
-- 配置导入/导出、完整数据备份/恢复、日志清理和模型密钥管理。
-- Tauri 打包目标包含 macOS（`.app`/`.dmg`）、Windows（NSIS）和 Linux（`.deb`/`.AppImage`）。发布前仍应在各目标系统原生验证；跨平台 Rust 编译不等于安装包验证。
+---
 
-当前限制：自动化依赖招聘网站 DOM，网站改版、风控或登录流程变化可能导致任务失败；猎聘暂不发送图片话术；需要本机安装 Chrome 或 Edge（也可手动指定 Chromium 浏览器路径）；没有联网搜索、自动更新器和内置云端同步。
+## ✨ 功能概览
 
-## 网络边界与隐私
+### 🖥️ 工作台
+一键自动化求职流程——环境检测、扫码登录、岗位抓取、批量沟通，支持 **BOSS 直聘**和**猎聘**两大平台。
 
-应用只有以下出站边界：
+- 自动化浏览器操控，模拟真实用户行为
+- 支持单轮/周期求职模式
+- 实时日志查看与流程监控
+- 可配置的打招呼话术与回复模板
 
-1. 仅在你检查招聘环境、抓取岗位或运行自动化时访问 BOSS 直聘或猎聘。
-2. 仅在你获取模型列表、测试连接或使用 AI 功能时访问所配置的 LLM 地址。
-3. 仅在你点击仓库、许可、文档或内容中的外部链接时，由系统浏览器打开相应地址。
+### 📋 岗位管理
+集中管理抓取的岗位数据，支持筛选、搜索和 AI 辅助分析。
 
-除此之外，运行时代码不连接原项目服务器，不发送遥测，不检查更新，也不执行 Web 搜索。详细说明与审计方法见 [隐私与网络边界](docs/privacy-and-network.md)。
+- 岗位详情浏览与管理
+- 薪酬、经验、学历、行业等多维度筛选
+- AI 岗位分析与匹配度评估
 
-> 使用 OpenAI、DeepSeek、DashScope 或其他远程端点时，岗位描述、简历、聊天上下文或提示词可能发送给该服务商。请先阅读服务商隐私条款，不要提交不希望离开设备的内容。若需要数据留在本机，可使用 [Ollama 或 LM Studio](docs/model-configuration.md)。
+### 🤖 AI 能力（可选）
+兼容 OpenAI 接口的大模型集成，支持：
 
-## 首次启动
+- **本地模型**：Ollama、LM Studio（数据不出本机）
+- **在线服务**：OpenAI、DeepSeek、阿里云 DashScope
+- **自定义端点**：任意 OpenAI 兼容 API
 
-首次启动包含三步：
+AI 功能包括：
+- 📝 简历优化与模拟面试
+- 💬 智能打招呼语生成
+- 📊 岗位描述分析与匹配
+- 🔄 聊天回复自动生成
 
-1. 阅读本地存储和可选网络请求说明；可以立即“跳过 AI，进入应用”。
-2. 检测 Chrome/Edge 与独立浏览器数据目录。未检测到时，可稍后在“配置中心”手动选择浏览器程序和数据目录。
-3. 可选配置 LLM：选择预设、填写模型名称，必要时保存 API Key，并运行短连接或流式测试。AI 配置失败不会阻止本地功能。
+### ⚙️ 配置中心
+灵活可调的求职策略配置：
 
-进入应用后，先在“配置中心”确认招聘筛选、话术、浏览器和简历上下文，再到“工作台”选择平台和任务类型。招聘平台登录使用对应 App 扫码，登录态保存在应用自己的浏览器配置目录中。
+- **大模型配置**：服务地址、模型选择、API Key（存储于系统钥匙串）
+- **简历配置**：多份简历管理与上下文注入
+- **岗位筛选**：正则规则过滤，支持 ACCEPT/REJECT 模式
+- **沟通话术**：可配置的打招呼模板与回复规则
+- **浏览器配置**：Chromium 路径、启动参数等
 
-## 模型配置速览
+### 🔒 关于与数据
+透明可控的数据管理：
 
-预设地址如下：
+- 应用版本与数据目录查看
+- 数据导出备份 / 恢复备份
+- 日志清除与模型密钥管理
+- 应用配置重置
+- 查看 [完整许可](https://github.com/OpenFuckJob/FuckJob/blob/master/LICENSE)、[隐私与网络文档](https://github.com/OpenFuckJob/FuckJob/blob/master/docs/privacy-and-network.md)、[模型配置文档](https://github.com/OpenFuckJob/FuckJob/blob/master/docs/model-configuration.md)
 
-| 预设 | 默认地址 | 默认要求 API Key |
-| --- | --- | --- |
-| Ollama | `http://127.0.0.1:11434/v1` | 否 |
-| LM Studio | `http://127.0.0.1:1234/v1` | 否 |
-| OpenAI | `https://api.openai.com/v1` | 是 |
-| DeepSeek | `https://api.deepseek.com` | 是 |
-| DashScope | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 是 |
-| 自定义 | 手动填写 | 取决于端点 |
+---
 
-配置至少需要服务地址、模型名称和 10–600 秒的超时。可以从服务读取模型列表；若端点不支持 `/models`，直接手动输入模型 ID。API Key 优先从系统钥匙串/凭据库读取，未找到时回退到 `FUCKJOB_LLM_API_KEY` 环境变量。完整步骤和错误排查见 [模型配置](docs/model-configuration.md)。
+## 🛡️ 隐私优先
 
-## 本地数据、备份与恢复
+- ✅ **完全本地运行**：配置、岗位、聊天、简历数据仅存储在本机
+- ✅ **无遥测**：不含任何数据收集或上报
+- ✅ **无后台服务器**：不依赖原项目业务服务器，无账号体系
+- ✅ **凭据安全**：API Key 存储在系统钥匙串/凭据库，不写入配置文件
+- ✅ **日志脱敏**：敏感字段（密钥、Token、Cookie 等）自动脱敏
+- ✅ **网络边界可审计**：运行 `pnpm check:network` 验证出站请求
 
-应用通过 Tauri 的平台目录 API 定位文件，不依赖文档中写死的 OS 路径：
+详见 [隐私与网络边界文档](https://github.com/OpenFuckJob/FuckJob/blob/master/docs/privacy-and-network.md)。
 
-- `app_config_dir/app_config.yaml`：应用配置。
-- `app_data_dir/data/`：岗位、聊天、分析和用户简历 JSON。
-- `app_data_dir/browser-profile/`：默认的独立浏览器资料目录。
-- `app_data_dir/rpa.log`：本地运行日志。
-- `app_data_dir/backups/`：迁移前备份；`app_data_dir/recovery/`：恢复前自动生成的恢复点。
-- 模型 API Key：系统钥匙串/凭据库，不写入上述配置和数据文件。
+---
 
-实际解析后的 `app_data_dir` 可在“关于与数据”中查看并在文件管理器中打开；`app_config_dir` 和 `app_data_dir` 的 OS 映射由 Tauri 决定。
+## 🛠️ 技术栈
 
-“导出备份”生成带清单和 SHA-256 校验的 ZIP，只包含应用配置及岗位、聊天、分析、用户简历数据。它不包含 API Key、日志、浏览器登录态/资料目录、迁移备份或既有恢复点；配置中的敏感字段会再次清理。
+| 层 | 技术 |
+|---|---|
+| 桌面框架 | [Tauri 2](https://tauri.app/) |
+| 前端 | React 19 + TypeScript |
+| UI 组件 | Ant Design 6 + Tailwind CSS 4 |
+| 构建工具 | Vite 7 |
+| 后端 | Rust (reqwest, rig-core, rust_drission 等) |
+| 测试 | Vitest + Testing Library |
+| 包管理 | pnpm |
 
-恢复会先完整校验版本、允许文件列表、路径和校验和，再创建恢复前备份并替换数据。中途任何写入失败都会尝试回滚所有目标文件；成功后需要手动重启应用。备份仍可能含简历、岗位和聊天等私人内容，请自行加密保管。
+---
 
-## 本地开发
+## 📦 快速开始
 
-前置条件：
+### 环境要求
 
-- Node.js 20.19+ 和 pnpm（可通过 Corepack 启用）。
-- Rust stable toolchain。
-- 对应系统的 [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/)；运行招聘自动化还需要 Chrome 或 Edge。
+- [Rust](https://www.rust-lang.org/) (stable)
+- [Node.js](https://nodejs.org/) ≥ 18
+- [pnpm](https://pnpm.io/) ≥ 9
+- 系统依赖：参考 [Tauri 2 前置要求](https://tauri.app/start/prerequisites/)
+
+### 开发运行
 
 ```bash
-corepack enable
-pnpm install --frozen-lockfile
+# 安装依赖
+pnpm install
 
-# 仅启动 Vite 前端
-pnpm dev
-
-# 启动 Tauri 桌面开发环境
+# 启动开发模式
 pnpm tauri dev
-
-# 前端类型检查与生产构建
-pnpm build
-
-# Rust 格式、测试和静态检查
-cargo fmt --manifest-path src-tauri/Cargo.toml --check
-cargo test --manifest-path src-tauri/Cargo.toml
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
-## 打包
-
-请在目标操作系统原生构建安装包：
+### 构建发布
 
 ```bash
-# macOS
-pnpm tauri build --bundles app,dmg
-
-# Windows（在 Windows 上）
-pnpm tauri build --bundles nsis
-
-# Linux（在 Linux 上，需安装发行版对应的 Tauri/WebKitGTK 打包依赖）
-pnpm tauri build --bundles deb,appimage
+pnpm tauri build
 ```
 
-也可使用仓库脚本：
+### macOS 使用说明
+
+由于本项目未经过 Apple 官方签名公证，从 [Releases](https://github.com/OpenFuckJob/FuckJob/releases) 下载 `.dmg` 安装后，macOS Gatekeeper 会阻止应用打开。请先运行以下命令移除隔离标记：
 
 ```bash
-./build.sh            # 当前平台原生安装包
-./build.sh macos      # macOS .app/.dmg
-./build.sh linux      # Linux 原生包；非 Linux 主机仅 cross 编译 Rust
-./build.sh windows    # Windows 原生 NSIS；非 Windows 主机仅 cross 编译 Rust
-./build.sh all        # 当前仅在 macOS 构建 macOS 包
+xattr -dr com.apple.quarantine /Applications/fuckJob.app
 ```
 
-脚本会执行锁定依赖安装和前端/Tauri 构建，并把便于分发的副本收集到 `releases/<version>/<platform>/`；Tauri 原始产物仍在 `src-tauri/target/.../release/bundle/`。非原生 `linux`/`windows` 模式依赖 Docker 与 `cross`，只验证 Rust 交叉编译，不生成或验证可发布安装包。
+> **提示**：如果你通过 `pnpm tauri build` 自行构建，生成的 `.app` 同样需要执行此命令才能正常运行。
 
-## 测试与网络审计
+### 运行测试
 
 ```bash
 pnpm test:run
-pnpm build
-pnpm check:network
-cargo test --manifest-path src-tauri/Cargo.toml
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-
-# 补充人工扫描（排除依赖和构建目录）
-rg -n --glob '!node_modules/**' --glob '!src-tauri/target/**' \
-  'fk\.pgthinker\.me|/prod-api|tauri[-_]plugin[-_]updater|update\.json|enable_search' \
-  src src-tauri scripts package.json build.sh
 ```
 
-`pnpm check:network` 扫描运行时代码、配置和构建脚本，禁止原服务器、旧账号/积分接口、旧 RPA 生成接口、硬编码搜索开关和更新器引用。
+### 网络边界检查
 
-## 贡献与安全
+```bash
+pnpm check:network
+```
 
-欢迎提交可复现的问题和范围清晰的 Pull Request。涉及招聘网站适配时，请避免提交真实 Cookie、聊天、简历、API Key 或个人浏览器资料。发现可能泄露凭据、绕过网络边界或破坏备份恢复的问题，请不要在公开 issue 中附带敏感样本；先通过仓库维护者可用的私密联系方式报告，并用脱敏数据复现。
+---
 
-项目采用 [Apache License 2.0](LICENSE)。使用自动化功能时，请遵守招聘平台条款、当地法律及合理的请求频率；本项目不保证第三方网站兼容性。
+## 📁 项目结构
+
+```
+FuckJob/
+├── src/                    # React 前端
+│   ├── components/         # 通用组件
+│   ├── hooks/              # 自定义 Hooks
+│   ├── lib/                # 工具函数与常量
+│   ├── types/              # TypeScript 类型定义
+│   ├── view/               # 页面视图
+│   │   ├── workspace/      # 工作台
+│   │   ├── job-data/       # 岗位管理
+│   │   ├── config/         # 配置中心
+│   │   ├── about-data/     # 关于与数据
+│   │   ├── resume-optimizer/ # 简历优化
+│   │   ├── conversation-debug/ # 沟通调试
+│   │   └── onboarding/     # 初次引导
+│   └── assets/             # 静态资源
+├── src-tauri/              # Rust 后端
+│   └── src/
+│       ├── rpa/            # 浏览器自动化
+│       ├── llm/            # 大模型集成
+│       ├── storage/        # 数据持久化
+│       └── dao/            # 数据访问层
+├── docs/                   # 文档
+│   ├── model-configuration.md
+│   └── privacy-and-network.md
+└── scripts/                # 工具脚本
+```
+
+---
+
+## 📄 许可
+
+本项目基于 [Apache License 2.0](https://github.com/OpenFuckJob/FuckJob/blob/master/LICENSE) 开源。
+
+---
+
+## ⚠️ 免责声明
+
+本工具仅供个人求职辅助用途。使用者应遵守各招聘平台的服务条款，合理使用自动化功能。开发者不对因使用本工具导致的任何账号限制、数据丢失或其他后果承担责任。
