@@ -86,9 +86,9 @@ jobs:
       - name: Setup C++ toolchain (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install cmake
-          echo "CC=clang" >> "$GITHUB_ENV"
-          echo "CXX=clang++" >> "$GITHUB_ENV"
+          echo "CC=$(xcrun -f clang)" >> "$GITHUB_ENV"
+          echo "CXX=$(xcrun -f clang++)" >> "$GITHUB_ENV"
+          xcrun --show-sdk-path > /dev/null 2>&1
 
       - name: Build Tauri app
         run: pnpm tauri build --ci
