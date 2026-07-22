@@ -1,0 +1,546 @@
+[
+    {
+        "id": "a0b923820dcc509a",
+        "year": "3-5年",
+        "job": "互联网通用",
+        "title": "互联网通用简历模板-秋风款",
+        "tag": [
+            "秋风款",
+            "默认"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_0.jpg",
+        "template": "# 求职简历 - 前端工程师\n\n::: left\n秋风/男/xxxx.xx\n\nxxxxx/信息与计算科学\n\n本科/xxxx年毕业/党员\n\n:::\n\n::: right\n[icon:blog https://qiufeng.blue](https://qiufeng.blue)\n\n[icon:github https://github.com/hua1995116](https://github.com/hua1995116)\n\n[icon:email qiufenghyf@163.com](mailto:qiufenghyf@163.com)\n\nicon:weixin qiufengblue\n\n:::\n\n## 介绍\n\n于xxxx年开始接触前端，喜欢编码，有Geek精神，对代码有洁癖，喜欢接触前沿技术，爱折腾。\n\n获得x、xxxx竞赛奖项xx项，(包含xxxxxxx多媒体竞赛一等奖1项)。\n\n主持参与省、国家级项目xx项；发表论文xxx篇，其中x篇EI索引。\n\n## 工作\n\n### 杭州xx网络有限公司 （2018.3-2018.7）\n`工程化` `基建搭建`\n\n前端架构组\n\n- 前端错误监控系统(基建)(负责人) 接入量pv:3000w\n  - web端js-sdk开发,无侵入式接入,压缩后仅2kb。\n  - 收集端Node开发,分布式存储日志。\n  - 阿里云日志服务分析,以及常用的数据分析。\n  - echart搭建可视化平台。\n- 前端性能监控系统(负责人) 接入pv: 1000w\n  - web端js-sdk开发,支持自定义上报以及自动上报,无侵入式。\n  - 收集端Node开发,Elasticsearch集群存储日志。\n  - Elasticsearch的Node模块开发，封装按时间维度的查询聚合模块。\n  - 可视化平台,利用redis缓存优化查询,淘汰算法共同协作。\n- 落地页截图(Node项目)\n  - 利用puppeteer开发截图。\n  - 利用clustor多线程开发,速度从原来60分钟提高至8分钟，提高约7倍（300张截图）。\n  - 开发自定义队列模式,避免Node端丢失请求。\n- webpack插件(webpack-plugin-inner-script)地址\n  - 自动将外链形式改写成内敛形式。\n- 内网准入系统\n  - 采用TypeScript+ES6/7+React开发\n  - 基本多层级树形结构的黑名单/白名单控制组件\n- xxxxxxxxxx\n  - xxxxxxxx\n  - xxxxxxxx\n  - xxxxxxxx\n  \n\n\n## 项目\n\n### 实时聊天项目(webchat)\n`Vue2.0` `Websocket` `Node.JS` `MongoDB`\nGithub地址：[https://github.com/hua1995116/webchat](https://github.com/hua1995116/webchat)（聊天室移动端，注册用户超过7000+，star将近1k）\n负责前端构建,服务器架构,后端开发\n  \n- 经历过3次重构，注重性能优化与体验,在2.0版本，打开首页速度提高1倍。\n- 采用了ES6/ES7的语法，采用axios请求统一处理\n- 基于localStorage的缓存组件开发，可以设置有效时长，适用于Webapp\n- 开发Loading，Alert，Confirm等组件\n- 拥有日志系统以及消息的RSA算法加密\n- 基于redis的请求监控，过滤恶意请求\n\n\n## 技能\n### Web基础\n\n- 熟练掌握HTML5/CSS3,响应式布局和移动端开发\n- 了解ES6/ES7,Webpack\n- 有Antd Design,Element UI,Muse UI搭建项目经验\n- 了解Hybrid开发以及Electron桌面开发,liunx服务器搭建经验,Nginx配置\n- Mac开发用户，熟悉Git进行团队协作，对PS有一定基础\n\n### 前端框架\n- Vue开发过大型的应用,了解Vue原理与技术栈\n- React以及React相关技术栈\n\n### 后端相关\n- 开发Node监控平台中间件\n- 了解常用的Node模块\n- 小型Node框架的搭建\n\n### 数据库\n- MongoDB\n- Redis\n\n",
+        "author": "秋风",
+        "avatar": "http://thirdwx.qlogo.cn/mmopen/AaXu8jcgbEIwqMs22mDMDFlgwdGAQJR9DbX4PDMmSVqOSoJ2aibQXibHy5U9DOcPUfSicrYIFfqEX7EKwxZjKrwfHay3HQDTHLl/132",
+        "theme": "default",
+        "collect": 9999,
+        "color": "#39393a",
+        "updateTime": 1632682105981
+    },
+    {
+        "id": "9d4c2f636f067f89",
+        "year": "在校/应届",
+        "job": "互联网通用",
+        "title": "极简-互联网通用简历模板",
+        "tag": [
+            "极简",
+            "基础"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_1.jpg",
+        "template": "# 求职简历 - 前端工程师\n\n::: left\n秋风/男/xxxx.xx\n\nxxxxx/信息与计算科学\n\n本科/xxxx年毕业/党员\n\n:::\n\n::: right\n[icon:blog https://qiufeng.blue](https://qiufeng.blue)\n\n[icon:github https://github.com/hua1995116](https://github.com/hua1995116)\n\n[icon:email qiufenghyf@163.com](mailto:qiufenghyf@163.com)\n\nicon:weixin qiufengblue\n\n:::\n\n## 介绍\n\n于xxxx年开始接触前端，喜欢编码，有Geek精神，对代码有洁癖，喜欢接触前沿技术，爱折腾。\n\n获得x、xxxx竞赛奖项xx项，(包含xxxxxxx多媒体竞赛一等奖1项)。\n\n主持参与省、国家级项目xx项；发表论文xxx篇，其中x篇EI索引。\n\n## 工作\n\n### 杭州xx网络有限公司 （2018.3-2018.7）\n`工程化` `基建搭建`\n\n前端架构组\n\n- 前端错误监控系统(基建)(负责人) 接入量pv:3000w\n  - web端js-sdk开发,无侵入式接入,压缩后仅2kb。\n  - 收集端Node开发,分布式存储日志。\n  - 阿里云日志服务分析,以及常用的数据分析。\n  - echart搭建可视化平台。\n- 前端性能监控系统(负责人) 接入pv: 1000w\n  - web端js-sdk开发,支持自定义上报以及自动上报,无侵入式。\n  - 收集端Node开发,Elasticsearch集群存储日志。\n  - Elasticsearch的Node模块开发，封装按时间维度的查询聚合模块。\n  - 可视化平台,利用redis缓存优化查询,淘汰算法共同协作。\n- 落地页截图(Node项目)\n  - 利用puppeteer开发截图。\n  - 利用clustor多线程开发,速度从原来60分钟提高至8分钟，提高约7倍（300张截图）。\n  - 开发自定义队列模式,避免Node端丢失请求。\n- webpack插件(webpack-plugin-inner-script)地址\n  - 自动将外链形式改写成内敛形式。\n- 内网准入系统\n  - 采用TypeScript+ES6/7+React开发\n  - 基本多层级树形结构的黑名单/白名单控制组件\n- xxxxxxxxxx\n  - xxxxxxxx\n  - xxxxxxxx\n  - xxxxxxxx\n  \n\n\n## 项目\n\n### 实时聊天项目(webchat)\n`Vue2.0` `Websocket` `Node.JS` `MongoDB`\nGithub地址：[https://github.com/hua1995116/webchat](https://github.com/hua1995116/webchat)（聊天室移动端，注册用户超过7000+，star将近1k）\n负责前端构建,服务器架构,后端开发\n  \n- 经历过3次重构，注重性能优化与体验,在2.0版本，打开首页速度提高1倍。\n- 采用了ES6/ES7的语法，采用axios请求统一处理\n- 基于localStorage的缓存组件开发，可以设置有效时长，适用于Webapp\n- 开发Loading，Alert，Confirm等组件\n- 拥有日志系统以及消息的RSA算法加密\n- 基于redis的请求监控，过滤恶意请求\n\n\n## 技能\n### Web基础\n\n- 熟练掌握HTML5/CSS3,响应式布局和移动端开发\n- 了解ES6/ES7,Webpack\n- 有Antd Design,Element UI,Muse UI搭建项目经验\n- 了解Hybrid开发以及Electron桌面开发,liunx服务器搭建经验,Nginx配置\n- Mac开发用户，熟悉Git进行团队协作，对PS有一定基础\n\n### 前端框架\n- Vue开发过大型的应用,了解Vue原理与技术栈\n- React以及React相关技术栈\n\n### 后端相关\n- 开发Node监控平台中间件\n- 了解常用的Node模块\n- 小型Node框架的搭建\n\n### 数据库\n- MongoDB\n- Redis\n\n",
+        "author": "楠溪",
+        "avatar": "https://s3.mdedit.online/blog/image-20210827002946681.png",
+        "theme": "blue",
+        "collect": 9999,
+        "color": "#5974D4",
+        "updateTime": 1632682229638
+    },
+    {
+        "id": "4b5ce2fe28308fd9",
+        "year": "在校/应届",
+        "job": "互联网通用",
+        "title": "简洁大方-互联网通用简历模板",
+        "tag": [
+            "极简",
+            "简单"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_2.jpg",
+        "template": "# 求职简历 - 前端工程师\n\n::: left\n秋风/男/xxxx.xx\n\nxxxxx/信息与计算科学\n\n本科/xxxx年毕业/党员\n\n:::\n\n::: right\n[icon:blog https://qiufeng.blue](https://qiufeng.blue)\n\n[icon:github https://github.com/hua1995116](https://github.com/hua1995116)\n\n[icon:email qiufenghyf@163.com](mailto:qiufenghyf@163.com)\n\nicon:weixin qiufengblue\n\n:::\n\n## 介绍\n\n于xxxx年开始接触前端，喜欢编码，有Geek精神，对代码有洁癖，喜欢接触前沿技术，爱折腾。\n\n获得x、xxxx竞赛奖项xx项，(包含xxxxxxx多媒体竞赛一等奖1项)。\n\n主持参与省、国家级项目xx项；发表论文xxx篇，其中x篇EI索引。\n\n## 工作\n\n### 杭州xx网络有限公司 （2018.3-2018.7）\n`工程化` `基建搭建`\n\n前端架构组\n\n- 前端错误监控系统(基建)(负责人) 接入量pv:3000w\n  - web端js-sdk开发,无侵入式接入,压缩后仅2kb。\n  - 收集端Node开发,分布式存储日志。\n  - 阿里云日志服务分析,以及常用的数据分析。\n  - echart搭建可视化平台。\n- 前端性能监控系统(负责人) 接入pv: 1000w\n  - web端js-sdk开发,支持自定义上报以及自动上报,无侵入式。\n  - 收集端Node开发,Elasticsearch集群存储日志。\n  - Elasticsearch的Node模块开发，封装按时间维度的查询聚合模块。\n  - 可视化平台,利用redis缓存优化查询,淘汰算法共同协作。\n- 落地页截图(Node项目)\n  - 利用puppeteer开发截图。\n  - 利用clustor多线程开发,速度从原来60分钟提高至8分钟，提高约7倍（300张截图）。\n  - 开发自定义队列模式,避免Node端丢失请求。\n- webpack插件(webpack-plugin-inner-script)地址\n  - 自动将外链形式改写成内敛形式。\n- 内网准入系统\n  - 采用TypeScript+ES6/7+React开发\n  - 基本多层级树形结构的黑名单/白名单控制组件\n- xxxxxxxxxx\n  - xxxxxxxx\n  - xxxxxxxx\n  - xxxxxxxx\n  \n\n\n## 项目\n\n### 实时聊天项目(webchat)\n`Vue2.0` `Websocket` `Node.JS` `MongoDB`\nGithub地址：[https://github.com/hua1995116/webchat](https://github.com/hua1995116/webchat)（聊天室移动端，注册用户超过7000+，star将近1k）\n负责前端构建,服务器架构,后端开发\n  \n- 经历过3次重构，注重性能优化与体验,在2.0版本，打开首页速度提高1倍。\n- 采用了ES6/ES7的语法，采用axios请求统一处理\n- 基于localStorage的缓存组件开发，可以设置有效时长，适用于Webapp\n- 开发Loading，Alert，Confirm等组件\n- 拥有日志系统以及消息的RSA算法加密\n- 基于redis的请求监控，过滤恶意请求\n\n\n## 技能\n### Web基础\n\n- 熟练掌握HTML5/CSS3,响应式布局和移动端开发\n- 了解ES6/ES7,Webpack\n- 有Antd Design,Element UI,Muse UI搭建项目经验\n- 了解Hybrid开发以及Electron桌面开发,liunx服务器搭建经验,Nginx配置\n- Mac开发用户，熟悉Git进行团队协作，对PS有一定基础\n\n### 前端框架\n- Vue开发过大型的应用,了解Vue原理与技术栈\n- React以及React相关技术栈\n\n\n### 后端相关\n- 开发Node监控平台中间件\n- 了解常用的Node模块\n- 小型Node框架的搭建\n\n### 数据库\n- MongoDB\n- Redis\n\n",
+        "author": "楠溪",
+        "avatar": "https://s3.mdedit.online/blog/image-20210827002946681.png",
+        "theme": "blue",
+        "color": "#000000",
+        "collect": 9999,
+        "updateTime": 1632682336275
+    },
+    {
+        "id": "a2f3e71d9181a67b",
+        "year": "3年及以下",
+        "job": "互联网通用",
+        "title": "基础-互联网通用简历模板",
+        "tag": [
+            "基础",
+            "大气"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_3.jpg",
+        "template": "# 求职简历 - 前端工程师\n\n::: left\n秋风/男/xxxx.xx\n\nxxxxx/信息与计算科学\n\n本科/xxxx年毕业/党员\n\n:::\n\n::: right\n[icon:blog https://qiufeng.blue](https://qiufeng.blue)\n\n[icon:github https://github.com/hua1995116](https://github.com/hua1995116)\n\n[icon:email qiufenghyf@163.com](mailto:qiufenghyf@163.com)\n\nicon:weixin qiufengblue\n\n:::\n\n## 介绍\n\n于xxxx年开始接触前端，喜欢编码，有Geek精神，对代码有洁癖，喜欢接触前沿技术，爱折腾。\n\n获得x、xxxx竞赛奖项xx项，(包含xxxxxxx多媒体竞赛一等奖1项)。\n\n主持参与省、国家级项目xx项；发表论文xxx篇，其中x篇EI索引。\n\n## 工作\n\n### 杭州xx网络有限公司 （2018.3-2018.7）\n`工程化` `基建搭建`\n\n前端架构组\n\n- 前端错误监控系统(基建)(负责人) 接入量pv:3000w\n  - web端js-sdk开发,无侵入式接入,压缩后仅2kb。\n  - 收集端Node开发,分布式存储日志。\n  - 阿里云日志服务分析,以及常用的数据分析。\n  - echart搭建可视化平台。\n- 前端性能监控系统(负责人) 接入pv: 1000w\n  - web端js-sdk开发,支持自定义上报以及自动上报,无侵入式。\n  - 收集端Node开发,Elasticsearch集群存储日志。\n  - Elasticsearch的Node模块开发，封装按时间维度的查询聚合模块。\n  - 可视化平台,利用redis缓存优化查询,淘汰算法共同协作。\n- 落地页截图(Node项目)\n  - 利用puppeteer开发截图。\n  - 利用clustor多线程开发,速度从原来60分钟提高至8分钟，提高约7倍（300张截图）。\n  - 开发自定义队列模式,避免Node端丢失请求。\n- webpack插件(webpack-plugin-inner-script)地址\n  - 自动将外链形式改写成内敛形式。\n- 内网准入系统\n  - 采用TypeScript+ES6/7+React开发\n  - 基本多层级树形结构的黑名单/白名单控制组件\n- xxxxxxxxxx\n  - xxxxxxxx\n  - xxxxxxxx\n  - xxxxxxxx\n  \n\n\n## 项目\n\n### 实时聊天项目(webchat)\n`Vue2.0` `Websocket` `Node.JS` `MongoDB`\nGithub地址：[https://github.com/hua1995116/webchat](https://github.com/hua1995116/webchat)（聊天室移动端，注册用户超过7000+，star将近1k）\n负责前端构建,服务器架构,后端开发\n  \n- 经历过3次重构，注重性能优化与体验,在2.0版本，打开首页速度提高1倍。\n- 采用了ES6/ES7的语法，采用axios请求统一处理\n- 基于localStorage的缓存组件开发，可以设置有效时长，适用于Webapp\n- 开发Loading，Alert，Confirm等组件\n- 拥有日志系统以及消息的RSA算法加密\n- 基于redis的请求监控，过滤恶意请求\n\n\n## 技能\n### Web基础\n\n- 熟练掌握HTML5/CSS3,响应式布局和移动端开发\n- 了解ES6/ES7,Webpack\n- 有Antd Design,Element UI,Muse UI搭建项目经验\n- 了解Hybrid开发以及Electron桌面开发,liunx服务器搭建经验,Nginx配置\n- Mac开发用户，熟悉Git进行团队协作，对PS有一定基础\n\n### 前端框架\n- Vue开发过大型的应用,了解Vue原理与技术栈\n- React以及React相关技术栈\n\n\n### 后端相关\n- 开发Node监控平台中间件\n- 了解常用的Node模块\n- 小型Node框架的搭建\n\n### 数据库\n- MongoDB\n- Redis\n\n",
+        "author": "楠溪",
+        "avatar": "https://s3.mdedit.online/blog/image-20210827002946681.png",
+        "theme": "pingmian",
+        "color": "#4b6a8f",
+        "collect": 9999,
+        "updateTime": 1632682408826
+    },
+    {
+        "id": "bbce2345d7772b06",
+        "year": "在校/应届",
+        "job": "互联网通用",
+        "title": "深色-互联网通用简历模板",
+        "tag": [
+            "极简"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_4.jpg",
+        "template": "# 秋风 - 前端工程师\n\n178-xxx-2228 | qiufenghyf@163.com | 3年经验\n\n## 教育经历\n\nxx大学 软件xxx 本科 (2014 - 2018)\n\n## 介绍\n\n于2015年开始接触前端，喜欢编码，有Geek精神，对代码有洁癖，喜欢接触前沿技术，爱折腾。\n\n获得省、国家级竞赛奖项9项，(包含浙江省大学生多媒体竞赛一等奖1项)。\n  \n主持参与省、国家级项目4项；发表论文4篇，其中2篇EI索引。\n\n## 工作\n\n### xxx（2018.7-至今）\n\n努力打工中...\n\n### 杭州兑吧网络有限公司 - 实习 （2018.3-2018.7）\n\n前端架构组\n\n- 前端错误监控系统(基建)(负责人) 接入量pv:3000w\n  - web端js-sdk开发,无侵入式接入,压缩后仅2kb。\n  - 收集端Node开发,分布式存储日志。\n  - 阿里云日志服务分析,以及常用的数据分析。\n  - echart搭建可视化平台。\n- 前端性能监控系统(负责人) 接入pv: 1000w\n  - web端js-sdk开发,支持自定义上报以及自动上报,无侵入式。\n  - 收集端Node开发,Elasticsearch集群存储日志。\n  - Elasticsearch的Node模块开发，封装按时间维度的查询聚合模块。\n  - 可视化平台,利用redis缓存优化查询,淘汰算法共同协作。\n- 落地页截图(Node项目)\n  - 利用puppeteer开发截图。\n  - 利用clustor多线程开发,速度从原来60分钟提高至8分钟，提高约7倍（300张截图）。\n  - 开发自定义队列模式,避免Node端丢失请求。\n- webpack插件(webpack-plugin-inner-script)地址\n  - 自动将外链形式改写成内敛形式。\n\n### 网易 - 实习 (2017.11-2018.3)\n信息技术部\n\n- 前端监控系统\n  - 客户端监控载体端以及数据脚本开发\n  - 基于highcharts的可视化图形界面开发\n  - 平台的性能统计模块以及告警模块开发\n  - 高并发下的redis设计以及错误信息识别过滤处理\n- 内网准入系统\n  - 采用TypeScript+ES6/7+React开发\n  - 基本多层级树形结构的黑名单/白名单控制组件\n\n### 51信用卡 - 实习(2017.6-2017.11)\n金融产品组\n\n- 开发维护产品51零用钱,h5端以及微信端,日活跃用户为20w+\n- 微信端活动--黄金金挖矿工,吸粉2.5w+,活动期间日活跃用户1000+。\n",
+        "author": "楠溪",
+        "avatar": "https://s3.mdedit.online/blog/image-20210827002946681.png",
+        "theme": "blue-weight",
+        "collect": 9999,
+        "color": "#000000",
+        "updateTime": 1632682519708
+    },
+    {
+        "id": "5a880faf6fb5e608",
+        "year": "在校/应届",
+        "job": "互联网通用",
+        "title": "互联网通用简历模板-带证件照",
+        "tag": [
+            "带证件照",
+            "极简"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_5.jpg",
+        "template": "\n    \n# 秋风 - 前端工程师\n\n::: left\n\nxxxxxx | xxxxxxxxx | xxxx | xxxxxxxxx | xxxxxxxx\n\n[icon:blog https://qiufeng.blue](https://qiufeng.blue)\n\n[icon:github https://github.com/hua1995116](https://github.com/hua1995116)\n\n[icon:email qiufenghyf@163.com](mailto:qiufenghyf@163.com)\n\nicon:weixin qiufengblue\n\n:::\n\n::: right\n\n\n:::\n\n## 介绍\n\n于xxxx年开始接触前端，喜欢编码，有Geek精神，对代码有洁癖，喜欢接触前沿技术，爱折腾。\n\n获得x、xxxx竞赛奖项xx项，(包含xxxxxxx多媒体竞赛一等奖1项)。\n\n主持参与省、国家级项目xx项；发表论文xxx篇，其中x篇EI索引。\n\n## 工作\n\n### 杭州xx网络有限公司 （2018.3-2018.7）\n`工程化` `基建搭建`\n\n前端架构组\n\n- 前端错误监控系统(基建)(负责人) 接入量pv:3000w\n  - web端js-sdk开发,无侵入式接入,压缩后仅2kb。\n  - 收集端Node开发,分布式存储日志。\n  - 阿里云日志服务分析,以及常用的数据分析。\n  - echart搭建可视化平台。\n- 前端性能监控系统(负责人) 接入pv: 1000w\n  - web端js-sdk开发,支持自定义上报以及自动上报,无侵入式。\n  - 收集端Node开发,Elasticsearch集群存储日志。\n  - Elasticsearch的Node模块开发，封装按时间维度的查询聚合模块。\n  - 可视化平台,利用redis缓存优化查询,淘汰算法共同协作。\n- 落地页截图(Node项目)\n  - 利用puppeteer开发截图。\n  - 利用clustor多线程开发,速度从原来60分钟提高至8分钟，提高约7倍（300张截图）。\n  - 开发自定义队列模式,避免Node端丢失请求。\n- webpack插件(webpack-plugin-inner-script)地址\n  - 自动将外链形式改写成内敛形式。\n- 内网准入系统\n  - 采用TypeScript+ES6/7+React开发\n  - 基本多层级树形结构的黑名单/白名单控制组件\n- xxxxxxxxxx\n  - xxxxxxxx\n  - xxxxxxxx\n  - xxxxxxxx\n  \n\n\n## 项目\n\n### 实时聊天项目(webchat)\n`Vue2.0` `Websocket` `Node.JS` `MongoDB`\nGithub地址：[https://github.com/hua1995116/webchat](https://github.com/hua1995116/webchat)（聊天室移动端，注册用户超过7000+，star将近1k）\n负责前端构建,服务器架构,后端开发\n  \n- 经历过3次重构，注重性能优化与体验,在2.0版本，打开首页速度提高1倍。\n- 采用了ES6/ES7的语法，采用axios请求统一处理\n- 基于localStorage的缓存组件开发，可以设置有效时长，适用于Webapp\n- 开发Loading，Alert，Confirm等组件\n- 拥有日志系统以及消息的RSA算法加密\n- 基于redis的请求监控，过滤恶意请求\n\n\n## 技能\n### Web基础\n\n- 熟练掌握HTML5/CSS3,响应式布局和移动端开发\n- 了解ES6/ES7,Webpack\n- 有Antd Design,Element UI,Muse UI搭建项目经验\n- 了解Hybrid开发以及Electron桌面开发,liunx服务器搭建经验,Nginx配置\n- Mac开发用户，熟悉Git进行团队协作，对PS有一定基础\n\n### 前端框架\n- Vue开发过大型的应用,了解Vue原理与技术栈\n- React以及React相关技术栈\n\n### 后端相关\n- 开发Node监控平台中间件\n- 了解常用的Node模块\n- 小型Node框架的搭建\n\n### 数据库\n- MongoDB\n- Redis\n\n",
+        "author": "楠溪",
+        "avatar": "https://s3.mdedit.online/blog/image-20210827002946681.png",
+        "theme": "blue",
+        "collect": 9999,
+        "color": "#5974D4",
+        "updateTime": 1641922160400,
+        "idphoto": "https://s3.mdedit.online/muji/muji-zhengjian.jpg?w=100&r=50"
+    },
+    {
+        "id": "ceea167a5a36dedd",
+        "year": "3-5年",
+        "job": "互联网通用",
+        "title": "github概览简历模板-互联网通用简历模板",
+        "tag": [
+            "带github概览",
+            "秋风款"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_6.jpg",
+        "template": "# 秋风 - 前端工程师\n\n::: left\n![](https://cdn.mdedit.online/avatar/1643903619755.jpg?imageView2/0/w/300)\n:::\n\n::: right\n[icon:blog https://qiufeng.blue](https://qiufeng.blue)\n\n[icon:github https://github.com/hua1995116](https://github.com/hua1995116)\n\n[icon:juejin 掘金](https://juejin.cn/user/923245497557111) \n\n[icon:email qiufenghyf@163.com](mailto:qiufenghyf@163.com)\n\nicon:weixin qiufengblue\n\n:::\n\n## 介绍\n\n于xxxx年开始接触前端，喜欢编码，有Geek精神，对代码有洁癖，喜欢接触前沿技术，爱折腾。\n\n获得x、xxxx竞赛奖项xx项，(包含xxxxxxx多媒体竞赛一等奖1项)。\n\n主持参与省、国家级项目xx项；发表论文xxx篇，其中x篇EI索引。\n\n## 工作\n\n### 杭州xx网络有限公司 （2018.3-2018.7）\n`工程化` `基建搭建`\n\n前端架构组\n\n- 前端错误监控系统(基建)(负责人) 接入量pv:3000w\n  - web端js-sdk开发,无侵入式接入,压缩后仅2kb。\n  - 收集端Node开发,分布式存储日志。\n  - 阿里云日志服务分析,以及常用的数据分析。\n  - echart搭建可视化平台。\n- 前端性能监控系统(负责人) 接入pv: 1000w\n  - web端js-sdk开发,支持自定义上报以及自动上报,无侵入式。\n  - 收集端Node开发,Elasticsearch集群存储日志。\n  - Elasticsearch的Node模块开发，封装按时间维度的查询聚合模块。\n  - 可视化平台,利用redis缓存优化查询,淘汰算法共同协作。\n- 落地页截图(Node项目)\n  - 利用puppeteer开发截图。\n  - 利用clustor多线程开发,速度从原来60分钟提高至8分钟，提高约7倍（300张截图）。\n  - 开发自定义队列模式,避免Node端丢失请求。\n- webpack插件(webpack-plugin-inner-script)地址\n  - 自动将外链形式改写成内敛形式。\n- 内网准入系统\n  - 采用TypeScript+ES6/7+React开发\n  - 基本多层级树形结构的黑名单/白名单控制组件\n- xxxxxxxxxx\n  - xxxxxxxx\n  - xxxxxxxx\n  - xxxxxxxx\n  \n\n\n## 项目\n\n### 实时聊天项目(webchat)\n`Vue2.0` `Websocket` `Node.JS` `MongoDB`\nGithub地址：[https://github.com/hua1995116/webchat](https://github.com/hua1995116/webchat)（聊天室移动端，注册用户超过7000+，star将近1k）\n负责前端构建,服务器架构,后端开发\n  \n- 经历过3次重构，注重性能优化与体验,在2.0版本，打开首页速度提高1倍。\n- 采用了ES6/ES7的语法，采用axios请求统一处理\n- 基于localStorage的缓存组件开发，可以设置有效时长，适用于Webapp\n- 开发Loading，Alert，Confirm等组件\n- 拥有日志系统以及消息的RSA算法加密\n- 基于redis的请求监控，过滤恶意请求\n\n\n## 技能\n### Web基础\n\n- 熟练掌握HTML5/CSS3,响应式布局和移动端开发\n- 了解ES6/ES7,Webpack\n- 有Antd Design,Element UI,Muse UI搭建项目经验\n- 了解Hybrid开发以及Electron桌面开发,liunx服务器搭建经验,Nginx配置\n- Mac开发用户，熟悉Git进行团队协作，对PS有一定基础\n\n### 前端框架\n- Vue开发过大型的应用,了解Vue原理与技术栈\n- React以及React相关技术栈\n\n### 后端相关\n- 开发Node监控平台中间件\n- 了解常用的Node模块\n- 小型Node框架的搭建\n\n### 数据库\n- MongoDB\n- Redis\n\n",
+        "author": "秋风",
+        "avatar": "http://thirdwx.qlogo.cn/mmopen/AaXu8jcgbEIwqMs22mDMDFlgwdGAQJR9DbX4PDMmSVqOSoJ2aibQXibHy5U9DOcPUfSicrYIFfqEX7EKwxZjKrwfHay3HQDTHLl/132",
+        "theme": "default",
+        "collect": 9999,
+        "color": "#39393a",
+        "updateTime": 1643904560768
+    },
+    {
+        "id": "fb98ab9159f51fd0",
+        "year": "在校/应届",
+        "job": "互联网通用",
+        "title": "大气主题-带证件照-互联网通用简历模板",
+        "tag": [
+            "带证件照",
+            "大气"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_7.jpg",
+        "template": "# 求职简历 - 前端工程师\n\n\n::: left\n\nicon:info 秋风/男/1995.12\n\n\nicon:school xxxxx/信息与计算科学/本科/2018年毕业\n\n\n[icon:blog https://qiufeng.blue](https://qiufeng.blue)\n\n\n[icon:github https://github.com/hua1995116](https://github.com/hua1995116)\n\n\n:::\n\n::: right\n\n:::\n\n## 介绍\n\n于xxxx年开始接触前端，喜欢编码，有Geek精神，对代码有洁癖，喜欢接触前沿技术，爱折腾。\n\n获得x、xxxx竞赛奖项xx项，(包含xxxxxxx多媒体竞赛一等奖1项)。\n\n主持参与省、国家级项目xx项；发表论文xxx篇，其中x篇EI索引。\n\n## 工作\n\n### 杭州xx网络有限公司 （2018.3-2018.7）\n`工程化` `基建搭建`\n\n前端架构组\n\n- 前端错误监控系统(基建)(负责人) 接入量pv:3000w\n  - web端js-sdk开发,无侵入式接入,压缩后仅2kb。\n  - 收集端Node开发,分布式存储日志。\n  - 阿里云日志服务分析,以及常用的数据分析。\n  - echart搭建可视化平台。\n- 前端性能监控系统(负责人) 接入pv: 1000w\n  - web端js-sdk开发,支持自定义上报以及自动上报,无侵入式。\n  - 收集端Node开发,Elasticsearch集群存储日志。\n  - Elasticsearch的Node模块开发，封装按时间维度的查询聚合模块。\n  - 可视化平台,利用redis缓存优化查询,淘汰算法共同协作。\n- 落地页截图(Node项目)\n  - 利用puppeteer开发截图。\n  - 利用clustor多线程开发,速度从原来60分钟提高至8分钟，提高约7倍（300张截图）。\n  - 开发自定义队列模式,避免Node端丢失请求。\n- webpack插件(webpack-plugin-inner-script)地址\n  - 自动将外链形式改写成内敛形式。\n- 内网准入系统\n  - 采用TypeScript+ES6/7+React开发\n  - 基本多层级树形结构的黑名单/白名单控制组件\n- xxxxxxxxxx\n  - xxxxxxxx\n  - xxxxxxxx\n  - xxxxxxxx\n  \n\n\n## 项目\n\n### 实时聊天项目(webchat)\n`Vue2.0` `Websocket` `Node.JS` `MongoDB`\nGithub地址：[https://github.com/hua1995116/webchat](https://github.com/hua1995116/webchat)（聊天室移动端，注册用户超过7000+，star将近1k）\n负责前端构建,服务器架构,后端开发\n  \n- 经历过3次重构，注重性能优化与体验,在2.0版本，打开首页速度提高1倍。\n- 采用了ES6/ES7的语法，采用axios请求统一处理\n- 基于localStorage的缓存组件开发，可以设置有效时长，适用于Webapp\n- 开发Loading，Alert，Confirm等组件\n- 拥有日志系统以及消息的RSA算法加密\n- 基于redis的请求监控，过滤恶意请求\n\n\n## 技能\n### Web基础\n\n- 熟练掌握HTML5/CSS3,响应式布局和移动端开发\n- 了解ES6/ES7,Webpack\n- 有Antd Design,Element UI,Muse UI搭建项目经验\n- 了解Hybrid开发以及Electron桌面开发,liunx服务器搭建经验,Nginx配置\n- Mac开发用户，熟悉Git进行团队协作，对PS有一定基础\n\n### 前端框架\n- Vue开发过大型的应用,了解Vue原理与技术栈\n- React以及React相关技术栈\n\n### 后端相关\n- 开发Node监控平台中间件\n- 了解常用的Node模块\n- 小型Node框架的搭建\n\n### 数据库\n- MongoDB\n- Redis\n\n",
+        "author": "秋风",
+        "avatar": "http://thirdwx.qlogo.cn/mmopen/AaXu8jcgbEIwqMs22mDMDFlgwdGAQJR9DbX4PDMmSVqOSoJ2aibQXibHy5U9DOcPUfSicrYIFfqEX7EKwxZjKrwfHay3HQDTHLl/132",
+        "theme": "pingmian",
+        "color": "#4b6a8f",
+        "collect": 9999,
+        "updateTime": 1641924782200,
+        "idphoto": "https://s3.mdedit.online/muji/muji-zhengjian.jpg?w=100&r=50"
+    },
+    {
+        "id": "2e2d7fbdea1afc51",
+        "year": "在校/应届",
+        "job": "互联网通用",
+        "title": "大气红色-互联网通用简历模板",
+        "tag": [
+            "红色",
+            "大气"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_8.jpg",
+        "template": "# 求职简历 - 前端工程师\n\n::: left\n秋风/男/1995.12\n\nxxxxx/信息与计算科学\n\n本科/2018年毕业/党员\n\n:::\n\n::: right\n[icon:blog https://qiufeng.blue](https://qiufeng.blue)\n\n[icon:github https://github.com/hua1995116](https://github.com/hua1995116)\n\n[icon:email qiufenghyf@163.com](mailto:qiufenghyf@163.com)\n\nicon:weixin qiufengblue\n\n:::\n\n## 介绍\n\n于xxxx年开始接触前端，喜欢编码，有Geek精神，对代码有洁癖，喜欢接触前沿技术，爱折腾。\n\n获得x、xxxx竞赛奖项xx项，(包含xxxxxxx多媒体竞赛一等奖1项)。\n\n主持参与省、国家级项目xx项；发表论文xxx篇，其中x篇EI索引。\n\n## 工作\n\n### 杭州xx网络有限公司 （2018.3-2018.7）\n`工程化` `基建搭建`\n\n前端架构组\n\n- 前端错误监控系统(基建)(负责人) 接入量pv:3000w\n  - web端js-sdk开发,无侵入式接入,压缩后仅2kb。\n  - 收集端Node开发,分布式存储日志。\n  - 阿里云日志服务分析,以及常用的数据分析。\n  - echart搭建可视化平台。\n- 前端性能监控系统(负责人) 接入pv: 1000w\n  - web端js-sdk开发,支持自定义上报以及自动上报,无侵入式。\n  - 收集端Node开发,Elasticsearch集群存储日志。\n  - Elasticsearch的Node模块开发，封装按时间维度的查询聚合模块。\n  - 可视化平台,利用redis缓存优化查询,淘汰算法共同协作。\n- 落地页截图(Node项目)\n  - 利用puppeteer开发截图。\n  - 利用clustor多线程开发,速度从原来60分钟提高至8分钟，提高约7倍（300张截图）。\n  - 开发自定义队列模式,避免Node端丢失请求。\n- webpack插件(webpack-plugin-inner-script)地址\n  - 自动将外链形式改写成内敛形式。\n- 内网准入系统\n  - 采用TypeScript+ES6/7+React开发\n  - 基本多层级树形结构的黑名单/白名单控制组件\n- xxxxxxxxxx\n  - xxxxxxxx\n  - xxxxxxxx\n  - xxxxxxxx\n  \n\n\n## 项目\n\n### 实时聊天项目(webchat)\n`Vue2.0` `Websocket` `Node.JS` `MongoDB`\nGithub地址：[https://github.com/hua1995116/webchat](https://github.com/hua1995116/webchat)（聊天室移动端，注册用户超过7000+，star将近1k）\n负责前端构建,服务器架构,后端开发\n  \n- 经历过3次重构，注重性能优化与体验,在2.0版本，打开首页速度提高1倍。\n- 采用了ES6/ES7的语法，采用axios请求统一处理\n- 基于localStorage的缓存组件开发，可以设置有效时长，适用于Webapp\n- 开发Loading，Alert，Confirm等组件\n- 拥有日志系统以及消息的RSA算法加密\n- 基于redis的请求监控，过滤恶意请求\n\n\n## 技能\n### Web基础\n\n- 熟练掌握HTML5/CSS3,响应式布局和移动端开发\n- 了解ES6/ES7,Webpack\n- 有Antd Design,Element UI,Muse UI搭建项目经验\n- 了解Hybrid开发以及Electron桌面开发,liunx服务器搭建经验,Nginx配置\n- Mac开发用户，熟悉Git进行团队协作，对PS有一定基础\n\n### 前端框架\n- Vue开发过大型的应用,了解Vue原理与技术栈\n- React以及React相关技术栈\n\n### 后端相关\n- 开发Node监控平台中间件\n- 了解常用的Node模块\n- 小型Node框架的搭建\n\n### 数据库\n- MongoDB\n- Redis\n\n",
+        "author": "秋风",
+        "avatar": "http://thirdwx.qlogo.cn/mmopen/AaXu8jcgbEIwqMs22mDMDFlgwdGAQJR9DbX4PDMmSVqOSoJ2aibQXibHy5U9DOcPUfSicrYIFfqEX7EKwxZjKrwfHay3HQDTHLl/132",
+        "theme": "pingmian",
+        "color": "#d66969",
+        "collect": 9999,
+        "updateTime": 1632676415401
+    },
+    {
+        "id": "02a44259755d38e6",
+        "year": "在校/应届",
+        "job": "互联网通用",
+        "title": "红色-互联网通用简历模板",
+        "tag": [
+            "一页纸",
+            "两栏",
+            "带证件照"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_9.jpg",
+        "template": "# 秋风 - 前端工程师\n\n\n于2015年开始接触前端，喜欢编码，有Geek精神。\n\n\n对代码有洁癖，喜欢接触前沿技术，爱折腾。\n\n\n:::left\n\n## 教育背景\n### xxxxxxxx - 计算机科学与技术（2014.9 - 2018.6）\n\n尽量简洁，突出重点，成绩优异的话建议写上GPA及排名等信息，如：GPA：3.72/4（专业前10%）GRE：324\n\n## 工作经验\n\n### xxx（2018.7-至今）\n努力打工中...\n\n### 杭州xxx网络有限公司 - 实习 （2018.3-2018.7）\n前端架构组\n\n- 前端错误监控系统(基建)(负责人) 接入量pv:3000w\n  - web端js-sdk开发,无侵入式接入,压缩后仅2kb。\n  - 收集端Node开发,分布式存储日志。\n  - 阿里云日志服务分析,以及常用的数据分析。\n  - echart搭建可视化平台。\n- 前端性能监控系统(负责人) 接入pv: 1000w\n  - web端js-sdk开发,支持自定义上报以及自动上报,无侵入式。\n  - 收集端Node开发,Elasticsearch集群存储日志。\n  - Elasticsearch的Node模块开发，封装按时间维度的查询聚合模块。\n  - 可视化平台,利用redis缓存优化查询,淘汰算法共同协作。\n\n### xxx - 实习 (2017.11-2018.3)\n信息技术部\n\n`业务开发` `基建搭建`\n\n- 前端监控系统\n  - 客户端监控载体端以及数据脚本开发\n  - 基于highcharts的可视化图形界面开发\n  - 平台的性能统计模块以及告警模块开发\n  - 高并发下的redis设计以及错误信息识别过滤处理\n- 内网准入系统\n  - 采用TypeScript+ES6/7+React开发\n  - 基本多层级树形结构的黑名单/白名单控制组件\n\n\n:::\n\n:::right\n## 基本信息\nicon:phone 176****8380\n\n[icon:github https://github.com/hua1995116](https://github.com/hua1995116)\n\n[icon:juejin 掘金](https://juejin.cn/user/923245497557111) \n\n[icon:email qiufenghyf@163.com](mailto:qiufenghyf@163.com)\n\nicon:weixin qiufengblue\n\n## 技能特长\n1. 熟练掌握HTML5/CSS3\n2. 了解ES6/ES7,Webpack\n3. 开发Node监控平台中间件\n4. 了解常用的Node模块\n5. 了解Hybrid、Electron开发\n6. React以及React相关技术栈\n\n:::\n",
+        "author": "楠溪",
+        "avatar": "https://s3.mdedit.online/blog/image-20210827002946681.png",
+        "theme": "vertical-1",
+        "collect": 9999,
+        "color": "#b75d5d",
+        "updateTime": 1632682921341
+    },
+    {
+        "id": "d9caa6e02c990b0a",
+        "year": "3年及以下",
+        "job": "互联网通用",
+        "title": "一页纸-互联网通用简历模板",
+        "tag": [
+            "一页纸",
+            "两栏",
+            "带证件照"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_10.jpg",
+        "template": "# 秋风 - 前端工程师\n\n\n于2015年开始接触前端，喜欢编码，有Geek精神。\n\n\n对代码有洁癖，喜欢接触前沿技术，爱折腾。\n\n\n:::left\n\n## 教育背景\n### xxxxxxxx - 计算机科学与技术（2014.9 - 2018.6）\n\n尽量简洁，突出重点，成绩优异的话建议写上GPA及排名等信息，如：GPA：3.72/4（专业前10%）GRE：324\n\n## 工作经验\n\n### xxx（2018.7-至今）\n努力打工中...\n\n### 杭州xxx网络有限公司 - 实习 （2018.3-2018.7）\n前端架构组\n\n- 前端错误监控系统(基建)(负责人) 接入量pv:3000w\n  - web端js-sdk开发,无侵入式接入,压缩后仅2kb。\n  - 收集端Node开发,分布式存储日志。\n  - 阿里云日志服务分析,以及常用的数据分析。\n  - echart搭建可视化平台。\n- 前端性能监控系统(负责人) 接入pv: 1000w\n  - web端js-sdk开发,支持自定义上报以及自动上报,无侵入式。\n  - 收集端Node开发,Elasticsearch集群存储日志。\n  - Elasticsearch的Node模块开发，封装按时间维度的查询聚合模块。\n  - 可视化平台,利用redis缓存优化查询,淘汰算法共同协作。\n\n### xxx - 实习 (2017.11-2018.3)\n信息技术部\n\n`业务开发` `基建搭建`\n\n- 前端监控系统\n  - 客户端监控载体端以及数据脚本开发\n  - 基于highcharts的可视化图形界面开发\n  - 平台的性能统计模块以及告警模块开发\n  - 高并发下的redis设计以及错误信息识别过滤处理\n- 内网准入系统\n  - 采用TypeScript+ES6/7+React开发\n  - 基本多层级树形结构的黑名单/白名单控制组件\n\n\n:::\n\n:::right\n## 基本信息\nicon:phone 176****8380\n\n[icon:github https://github.com/hua1995116](https://github.com/hua1995116)\n\n[icon:juejin 掘金](https://juejin.cn/user/923245497557111) \n\n[icon:email qiufenghyf@163.com](mailto:qiufenghyf@163.com)\n\nicon:weixin qiufengblue\n\n## 技能特长\n1. 熟练掌握HTML5/CSS3\n2. 了解ES6/ES7,Webpack\n3. 开发Node监控平台中间件\n4. 了解常用的Node模块\n5. 了解Hybrid、Electron开发\n6. React以及React相关技术栈\n\n:::\n",
+        "author": "楠溪",
+        "avatar": "https://s3.mdedit.online/blog/image-20210827002946681.png",
+        "theme": "vertical-1",
+        "collect": 9999,
+        "color": "#252222",
+        "updateTime": 1632682988131
+    },
+    {
+        "id": "6fe97759aa27a0c9",
+        "year": "在校/应届",
+        "job": "互联网通用",
+        "title": "一页纸-深色-互联网通用简历模板",
+        "tag": [
+            "一页纸",
+            "两栏"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_11.jpg",
+        "template": "# 秋风 - 前端工程师\n\n\n于2015年开始接触前端，喜欢编码，有Geek精神。\n\n\n对代码有洁癖，喜欢接触前沿技术，爱折腾。\n\n\n:::left\n\n## 教育背景\n### xxxxxxxx - 计算机科学与技术（2014.9 - 2018.6）\n\n尽量简洁，突出重点，成绩优异的话建议写上GPA及排名等信息，如：GPA：3.72/4（专业前10%）GRE：324\n\n## 工作经验\n\n### xxx（2018.7-至今）\n努力打工中...\n\n### 杭州xxx网络有限公司 - 实习 （2018.3-2018.7）\n前端架构组\n\n- 前端错误监控系统(基建)(负责人) 接入量pv:3000w\n  - web端js-sdk开发,无侵入式接入,压缩后仅2kb。\n  - 收集端Node开发,分布式存储日志。\n  - 阿里云日志服务分析,以及常用的数据分析。\n  - echart搭建可视化平台。\n- 前端性能监控系统(负责人) 接入pv: 1000w\n  - web端js-sdk开发,支持自定义上报以及自动上报,无侵入式。\n  - 收集端Node开发,Elasticsearch集群存储日志。\n  - Elasticsearch的Node模块开发，封装按时间维度的查询聚合模块。\n  - 可视化平台,利用redis缓存优化查询,淘汰算法共同协作。\n\n### xxx - 实习 (2017.11-2018.3)\n信息技术部\n\n`业务开发` `基建搭建`\n\n- 前端监控系统\n  - 客户端监控载体端以及数据脚本开发\n  - 基于highcharts的可视化图形界面开发\n  - 平台的性能统计模块以及告警模块开发\n  - 高并发下的redis设计以及错误信息识别过滤处理\n- 内网准入系统\n  - 采用TypeScript+ES6/7+React开发\n  - 基本多层级树形结构的黑名单/白名单控制组件\n\n\n:::\n\n:::right\n## 基本信息\nicon:phone 176****8380\n\n[icon:github https://github.com/hua1995116](https://github.com/hua1995116)\n\n[icon:juejin 掘金](https://juejin.cn/user/923245497557111) \n\n[icon:email qiufenghyf@163.com](mailto:qiufenghyf@163.com)\n\nicon:weixin qiufengblue\n\n## 技能特长\n1. 熟练掌握HTML5/CSS3\n2. 了解ES6/ES7,Webpack\n3. 开发Node监控平台中间件\n4. 了解常用的Node模块\n5. 了解Hybrid、Electron开发\n6. React以及React相关技术栈\n\n:::\n",
+        "author": "楠溪",
+        "avatar": "https://s3.mdedit.online/blog/image-20210827002946681.png",
+        "theme": "vertical-1",
+        "color": "#2C6464",
+        "collect": 9999,
+        "updateTime": 1632676446346
+    },
+    {
+        "id": "c124a10e0db5e4b9",
+        "year": "在校/应届",
+        "job": "后端",
+        "title": "Java开发工程师简历模板",
+        "tag": [
+            "极简",
+            "基础"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_12.jpg",
+        "template": "# 小木 - 后端工程师 - Java\n\n::: left\n\nicon:info 男/1995.12\n\nicon:weixin qiufengblue\n\n\n:::\n\n::: right\n[icon:blog https://qiufeng.blue](https://qiufeng.blue)\n\n[icon:github https://github.com/hua1995116](https://github.com/hua1995116)\n\n\n:::\n\n## 教育背景\n\n:::left\n**北京邮电大学 - 计算机科学与技术**\n:::\n:::right\n**2019.09 - 2022.07**\n:::\n成绩优异，GPA 3.8/4.0。获得x、xxxx竞赛奖项xx项，(包含xxxxxxx多媒体竞赛一等奖1项)。\n\n主持参与省、国家级项目xx项；发表论文xxx篇，其中x篇EI索引。\n\n:::left\n**新乡学院 - 计算机科学与技术**\n:::\n:::right\n**2015.09 - 2019.07**\n:::\n成绩优异，GPA 3.9/4.0。获得两次国家奖学金，多次被评为\"三好学生\"。\n\n## 实习经验\n\n:::left\n**木及科技有限公司 - 技术工程平台群 - Java开发实习工程师**\n:::\n:::right\n**2021.06 - 2021.12**\n:::\n\n- 负责木及xx业务相关服务的开发和重构及维护，负责线上产品端服务的同步。\n- 日常xxx业务的分析和方案的设计。\n- 负责木及内部SSO单点登录系统后端的架构与开发。\n\n\n## 项目\n\n### 电商购物系统\n`SSM` `MySQL` `Redis` `Nginx` `Mycat`\n\n- **项目描述**：\n\t是一个完整的电商购物系统。主要功能是xxxx，在其中负责服务器架构,后端开发。主要功能是xxxx，在其中负责服务器架构,后端开发。\n- **工作内容**：\n  - 查询商品详情页采 Redis 缓存，提高大量并发访问，网页的响应速度提高50%。\n  - 通过使用 Redis 来提升用户请求秒杀商品列表的速度（将 QPS 从 180 提升到 1200)\n  - 基于maven进行开发，并利用其继承特性管理共有jar包的依赖，利用其聚合特性拆分后台管理系统 ，实现分层工程开发。\n  - 采用RabbitMQ解决不同系统之间的通信问题，并且解决了应用HttpClient带来的系统紧耦合问题。\n  - 采用Nginx做反向代理、以及搭建Tomcat服务器集群，方式解决前台网页高并发问题\n\n\n## 技能\n- **Java基础**：熟悉Java基础知识，熟悉多线程并发，熟悉JVM原理。\n- **数据库**：熟练使用Mysql、Redis及常见的优化手段。\n- **框架**：熟悉Spring Boot、MyBatis等主流开发框架，熟悉消息队列Kafka、Zookeeper的使用和原理。\n- **分布式**：了解分布式系统的设计与应用，了解常见的CAP、Paxos算法。\n- **工具**：熟悉Git、Maven等项目管理及构建工具。\n\n",
+        "author": "秋风",
+        "avatar": "http://thirdwx.qlogo.cn/mmopen/AaXu8jcgbEIwqMs22mDMDFlgwdGAQJR9DbX4PDMmSVqOSoJ2aibQXibHy5U9DOcPUfSicrYIFfqEX7EKwxZjKrwfHay3HQDTHLl/132",
+        "theme": "blue-weight",
+        "collect": 9999,
+        "updateTime": 1632675956697,
+        "color": "#000000"
+    },
+    {
+        "id": "b1e593c09c5ce7ed",
+        "year": "在校/应届",
+        "job": "算法",
+        "title": "算法工程师简历模板",
+        "tag": [
+            "极简",
+            "基础"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_13.jpg",
+        "template": "# 小及 - 算法工程师\n\n::: left\n浙江/男/2000.09\n\n北京大学/2020级硕士在读\n\n:::\n\n::: right\n[icon:blog https://qiufeng.blue](https://qiufeng.blue)\n\nicon:weixin qiufengblue\n\n:::\n\n## IT技能\n\n-\t熟练掌握  C/C++，Python，TensorFlow，Office，xxx\n-\t熟悉\t\t Linux，MATLAB，Caffe，xxx\n-\t熟悉\t\t Linux，MATLAB，Caffe，xxx\n\n## 教育背景\n\n:::left\n-\t研究生学校 xx专业硕士(平均成绩: 95.00/100.00)\n-\t本科学校 xx专业学士(平均成绩: 92.00/100.00)\n:::\n:::right\n2020.09 至今\n2016.09-2020.07\n:::\n\n## 工作\n\n### 木及网络有限公司 （2021.7-2021.9）\n\n图像研究组\n\n- xxx项目，优化速度达到xxx FPS，准确度得到xx.xx%，相对提高xx.xx%\n  - 图像采集，利用xxx设备xxx\n  - 数据增广，利用xxx，进行xxx，扩充数据集\n  - 深度估计/目标检测/图像分割，采用xxx算法，改进xxx\n- xxx项目，\n  - xxxxxxxxxxxxx\n  - xxxxxxxxxxxxx\n  - xxxxxxxxxxxxx\n  - xxxxxxxxxxxxx\n  \n## 项目\n\n### 图形智能识别（毕业设计）\n`OpenCV` `OPENGL` `TensorFlow`\nGithub地址：[https://github.com/hua1995116/webchat](https://github.com/hua1995116/webchat)\n负责算法训练搭建与优化，获得优秀「毕业论文」称号。\n  \n- 经历过3次重构，xxxx，性能提高50%\n- 修改xxx，提高准确率xxx\n\n\n## 竞赛/获奖/论文情况\n\n- xxx智能大赛一等奖\n- xxx阿里云大赛二等奖\n- 国际数据建模xxx一等奖\n",
+        "author": "秋风",
+        "avatar": "http://thirdwx.qlogo.cn/mmopen/AaXu8jcgbEIwqMs22mDMDFlgwdGAQJR9DbX4PDMmSVqOSoJ2aibQXibHy5U9DOcPUfSicrYIFfqEX7EKwxZjKrwfHay3HQDTHLl/132",
+        "theme": "pingmian",
+        "updateTime": 1632675964578,
+        "color": "#4B6A8F"
+    },
+    {
+        "id": "10bbfa5065baae23",
+        "year": "在校/应届",
+        "job": "运营",
+        "title": "用户运营简历模板",
+        "tag": [
+            "极简",
+            "基础"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_14.jpg",
+        "template": "# 小及 - 内容运营\n\n::: left\n浙江/男/2000.09\n\n清华大学/2020级硕士在读\n\n:::\n\n::: right\n[icon:blog https://qiufeng.blue](https://qiufeng.blue)\n\nicon:weixin qiufengblue\n\n:::\n\n## 教育背景\n\n:::left\n-\t研究生学校 xx专业硕士(平均成绩: 95.00/100.00)\n-\t本科学校 xx专业学士(平均成绩: 92.00/100.00)\n:::\n:::right\n2020.09 至今\n2016.09-2020.07\n:::\n\n## 工作\n\n### 木及网络有限公司 （2021.7-2021.9）\n\n`用户运营`\n\n工作描述：用户运营和客户运营。\n\n工作内容：\n\n- 负责社群运营工作\n  - 监测用户拉新数量、留存率等数据，为转化率、留存率等指标负责 ；\n  - 定制社群结构、规则及内容跟进学员互动反馈，有效提升社群活跃度，实现学生完课率50%；\n- 负责图文制作工作\n  - 根据学员学习计划，指定每日一练图文素材，帮助100+学员提升学习兴趣，学生平均成绩均提升20%\n- 负责数据分析工作\n\t- 通过分析学生成绩，综合学员反馈，优化教学内容和方法，提升学员效率。\n  - 根据用户数据及产品反馈制定用户运营策略 协同各部门（产品、设计、技术、BI等）进行合作。\n  \n  \n## 技能特长\n\n- 熟练运营 PS、AI 等工具\n- 熟练使用 Xmind\n- 熟练使用秀米等新媒体工具\n- 熟悉 MySQL 基本语法以及简单查询语句\n\n## 证书\n\n大学英语四级证书，日常口语交流熟练，读写能力良好 \n\n熟练使用office办公软件\n\n\n## 自我评价\n\n本人诚实守信，工作严谨踏实，认真负责，处事机灵。拥有积极向上的生活态度和广泛的兴趣爱好，具有良好的心理素质和吃苦耐劳精神，对事有自己的见解，并有较强的共事协作能力。 有着年轻人特有的朝气和魄力，有较好的文字功底，口头表达能力以及交际能力，注重团队合作。 ",
+        "author": "秋风",
+        "avatar": "http://thirdwx.qlogo.cn/mmopen/AaXu8jcgbEIwqMs22mDMDFlgwdGAQJR9DbX4PDMmSVqOSoJ2aibQXibHy5U9DOcPUfSicrYIFfqEX7EKwxZjKrwfHay3HQDTHLl/132",
+        "theme": "blue",
+        "updateTime": 1632675975256,
+        "color": "#5974D4"
+    },
+    {
+        "id": "9fe9c96930027c06",
+        "year": "在校/应届",
+        "job": "产品",
+        "title": "产品经理简历",
+        "tag": [
+            "基础",
+            "一页纸",
+            "大气"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_15.jpg",
+        "template": ":::center\n# 小简 - 产品经理\n电话：176xxxx8888 ｜ 邮箱：xxxxxxxx@qq.com ｜ 个人网站：qiufeng.blue\n:::\n\n## 教育背景\n### 首都师范大学 - 工商管理（2015.09 - 2019.07）\n1. 在校期间积极参与xx活动，xx挑战杯一等奖，起到了xxx的效果。\n2. 国家奖学金，多次被评为三好学生。\n## 工作\n\n### 腾讯视频 - 播放产品经理 （2019.07 - 至今）\n\n1. 优化课程网站播放器，推动2个大版本，2年调研用户20+次优化下单付费链路，添加付费组件和ppt功能。通过数据校验mvp效果，半年时间转化率整体提高12%。\n2. 独立发起学习弹幕功能，通过音频提取关键字，抓取老师课程关键内容自动形成弹幕，形成互动氛围。推动各团队配合，通过2个mvp验证效果，最终7日留存提高3.5%。\n3. 洞察行业发展方向，规划和推动了直播互动创新体验效果落地。用户留存率显著提高13.3%。\n\n### 木及简历 - 实习产品经理（2018.06 - 2018.12）\n1. 完成产品流程、界面、功能设计，制作Axure原型并确认需求细节进行方案调整，编写PRD文档。\n2. 与技术部门共同进行技术评审，制定木及简历项目的OKR及日常研发排期并推动项目进度。\n3. 与师兄共同负责木及简历中后台从0到1的功能梳理及搭建，搭建公司基础建设。\n\n\n## 项目经验\n\n### xx商城小程序\n1. 结合用户反馈和支付相关数据表现，完成支付中心用户端H5到Native全流程改版，优化了用户在支付环节的交易体验，整体支付成功率提高约10.2%，头部支付方式支付成功率提高约13.8%。\n2. 将已有支付方式接入新的支付网关，实现支付网关后台配置切换功能，提高已有的支付方式稳定性和降低支付失败率。\n\n## 个人技能\n1. 熟练使用Axure和Sketch。\n2. 熟练书写产品需求文档。\n3. 熟练使用Photoshop和Visio等工具。\n## 自我评价\n1. 专业基础扎实，对互联网产品有足够的热情并长期关注。\n2. 对未知的事物和世界充满好奇，充满探索精神。\n3. 对事物具有良好的洞察和抽象能力。\n",
+        "author": "秋风",
+        "avatar": "http://thirdwx.qlogo.cn/mmopen/AaXu8jcgbEIwqMs22mDMDFlgwdGAQJR9DbX4PDMmSVqOSoJ2aibQXibHy5U9DOcPUfSicrYIFfqEX7EKwxZjKrwfHay3HQDTHLl/132",
+        "theme": "blue-weight",
+        "updateTime": 1632675980250,
+        "color": "#000000"
+    },
+    {
+        "id": "88855081cb2c21eb",
+        "year": "在校/应届",
+        "job": "后端",
+        "title": "后端开发工程师简历模板",
+        "tag": [
+            "大气"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_16.jpg",
+        "template": "# 小木 - 后端工程师 - Java\n\n::: left\n\nicon:info 男/1995.12\n\nicon:weixin qiufengblue\n\n\n:::\n\n::: right\n[icon:blog https://qiufeng.blue](https://qiufeng.blue)\n\n[icon:github https://github.com/hua1995116](https://github.com/hua1995116)\n\n\n:::\n\n## 教育背景\n\n:::left\n**北京邮电大学 - 计算机科学与技术**\n:::\n:::right\n**2019.09 - 2022.07**\n:::\n成绩优异，GPA 3.8/4.0。获得x、xxxx竞赛奖项xx项，(包含xxxxxxx多媒体竞赛一等奖1项)。\n\n主持参与省、国家级项目xx项；发表论文xxx篇，其中x篇EI索引。\n\n:::left\n**新乡学院 - 计算机科学与技术**\n:::\n:::right\n**2015.09 - 2019.07**\n:::\n成绩优异，GPA 3.9/4.0。获得两次国家奖学金，多次被评为\"三好学生\"。\n\n## 实习经验\n\n:::left\n**木及科技有限公司 - 技术工程平台群 - Java开发实习工程师**\n:::\n:::right\n**2021.06 - 2021.12**\n:::\n\n- 负责木及xx业务相关服务的开发和重构及维护，负责线上产品端服务的同步。\n- 日常xxx业务的分析和方案的设计。\n- 负责木及内部SSO单点登录系统后端的架构与开发。\n\n\n## 项目\n\n### 电商购物系统\n`SSM` `MySQL` `Redis` `Nginx` `Mycat`\n\n- **项目描述**：\n\t是一个完整的电商购物系统。主要功能是xxxx，在其中负责服务器架构,后端开发。主要功能是xxxx，在其中负责服务器架构,后端开发。\n- **工作内容**：\n  - 查询商品详情页采 Redis 缓存，提高大量并发访问，网页的响应速度提高50%。\n  - 通过使用 Redis 来提升用户请求秒杀商品列表的速度（将 QPS 从 180 提升到 1200)\n  - 基于maven进行开发，并利用其继承特性管理共有jar包的依赖，利用其聚合特性拆分后台管理系统 ，实现分层工程开发。\n  - 采用RabbitMQ解决不同系统之间的通信问题，并且解决了应用HttpClient带来的系统紧耦合问题。\n  - 采用Nginx做反向代理、以及搭建Tomcat服务器集群，方式解决前台网页高并发问题\n\n\n## 技能\n- **Java基础**：熟悉Java基础知识，熟悉多线程并发，熟悉JVM原理。\n- **数据库**：熟练使用Mysql、Redis及常见的优化手段。\n- **框架**：熟悉Spring Boot、MyBatis等主流开发框架，熟悉消息队列Kafka、Zookeeper的使用和原理。\n- **分布式**：了解分布式系统的设计与应用，了解常见的CAP、Paxos算法。\n- **工具**：熟悉Git、Maven等项目管理及构建工具。\n",
+        "author": "秋风",
+        "avatar": "http://thirdwx.qlogo.cn/mmopen/AaXu8jcgbEIwqMs22mDMDFlgwdGAQJR9DbX4PDMmSVqOSoJ2aibQXibHy5U9DOcPUfSicrYIFfqEX7EKwxZjKrwfHay3HQDTHLl/132",
+        "theme": "pingmian",
+        "color": "#4B6A8F",
+        "updateTime": 1632675986124
+    },
+    {
+        "id": "7a6b48046d920f8d",
+        "year": "在校/应届",
+        "job": "后端",
+        "title": "Java开发工程师简历模板-简洁主题",
+        "tag": [
+            "一页纸",
+            "带证件照"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_17.jpg",
+        "template": "# 小木 - 后端工程师 - Java\n\n::: left\n\nicon:info 男/1995.12\n\nicon:weixin qiufengblue\n\n[icon:github https://github.com/hua1995116](https://github.com/hua1995116)\n\n:::\n\n::: right\n\n\n\n:::\n\n## 教育背景\n\n:::left\n**北京邮电大学 - 计算机科学与技术**\n:::\n:::right\n**2019.09 - 2022.07**\n:::\n成绩优异，GPA 3.8/4.0。获得x、xxxx竞赛奖项xx项，(包含xxxxxxx多媒体竞赛一等奖1项)。\n\n主持参与省、国家级项目xx项；发表论文xxx篇，其中x篇EI索引。\n\n:::left\n**新乡学院 - 计算机科学与技术**\n:::\n:::right\n**2015.09 - 2019.07**\n:::\n成绩优异，GPA 3.9/4.0。获得两次国家奖学金，多次被评为\"三好学生\"。\n\n## 实习经验\n\n:::left\n**木及科技有限公司 - 技术工程平台群 - Java开发实习工程师**\n:::\n:::right\n**2021.06 - 2021.12**\n:::\n\n- 负责木及xx业务相关服务的开发和重构及维护，负责线上产品端服务的同步。\n- 日常xxx业务的分析和方案的设计。\n- 负责木及内部SSO单点登录系统后端的架构与开发。\n\n\n## 项目\n\n### 电商购物系统\n`SSM` `MySQL` `Redis` `Nginx` `Mycat`\n\n- **项目描述**：\n\t是一个完整的电商购物系统。主要功能是xxxx，在其中负责服务器架构,后端开发。主要功能是xxxx，在其中负责服务器架构,后端开发。\n- **工作内容**：\n  - 查询商品详情页采 Redis 缓存，提高大量并发访问，网页的响应速度提高50%。\n  - 通过使用 Redis 来提升用户请求秒杀商品列表的速度（将 QPS 从 180 提升到 1200)\n  - 基于maven进行开发，并利用其继承特性管理共有jar包的依赖，利用其聚合特性拆分后台管理系统 ，实现分层工程开发。\n  - 采用RabbitMQ解决不同系统之间的通信问题，并且解决了应用HttpClient带来的系统紧耦合问题。\n  - 采用Nginx做反向代理、以及搭建Tomcat服务器集群，方式解决前台网页高并发问题\n\n\n## 技能\n- **Java基础**：熟悉Java基础知识，熟悉多线程并发，熟悉JVM原理。\n- **数据库**：熟练使用Mysql、Redis及常见的优化手段。\n- **框架**：熟悉Spring Boot、MyBatis等主流开发框架，熟悉消息队列Kafka、Zookeeper的使用和原理。\n- **分布式**：了解分布式系统的设计与应用，了解常见的CAP、Paxos算法。\n- **工具**：熟悉Git、Maven等项目管理及构建工具。",
+        "author": "秋风",
+        "avatar": "http://thirdwx.qlogo.cn/mmopen/AaXu8jcgbEIwqMs22mDMDFlgwdGAQJR9DbX4PDMmSVqOSoJ2aibQXibHy5U9DOcPUfSicrYIFfqEX7EKwxZjKrwfHay3HQDTHLl/132",
+        "theme": "blue",
+        "color": "#000000",
+        "updateTime": 1641924822546,
+        "idphoto": "https://s3.mdedit.online/muji/muji-zhengjian.jpg?w=100&r=50"
+    },
+    {
+        "id": "ac2bb16e6a2456b7",
+        "year": "在校/应届",
+        "job": "前端",
+        "title": "秋风款-前端工程师简历模板",
+        "tag": [
+            "秋风款",
+            "默认"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_18.jpg",
+        "template": "# 求职简历 - 前端工程师\n\n::: left\n秋风/男/xxxx.xx\n\nxxxxx/信息与计算科学\n\n本科/xxxx年毕业/党员\n\n:::\n\n::: right\n[icon:blog https://qiufeng.blue](https://qiufeng.blue)\n\n[icon:github https://github.com/hua1995116](https://github.com/hua1995116)\n\n[icon:email qiufenghyf@163.com](mailto:qiufenghyf@163.com)\n\nicon:weixin qiufengblue\n\n:::\n\n## 介绍\n\n于xxxx年开始接触前端，喜欢编码，有Geek精神，对代码有洁癖，喜欢接触前沿技术，爱折腾。\n\n获得x、xxxx竞赛奖项xx项，(包含xxxxxxx多媒体竞赛一等奖1项)。\n\n主持参与省、国家级项目xx项；发表论文xxx篇，其中x篇EI索引。\n\n## 工作\n\n### 杭州xx网络有限公司 （2018.3-2018.7）\n`工程化` `基建搭建`\n\n前端架构组\n\n- 前端错误监控系统(基建)(负责人) 接入量pv:3000w\n  - web端js-sdk开发,无侵入式接入,压缩后仅2kb。\n  - 收集端Node开发,分布式存储日志。\n  - 阿里云日志服务分析,以及常用的数据分析。\n  - echart搭建可视化平台。\n- 前端性能监控系统(负责人) 接入pv: 1000w\n  - web端js-sdk开发,支持自定义上报以及自动上报,无侵入式。\n  - 收集端Node开发,Elasticsearch集群存储日志。\n  - Elasticsearch的Node模块开发，封装按时间维度的查询聚合模块。\n  - 可视化平台,利用redis缓存优化查询,淘汰算法共同协作。\n- 落地页截图(Node项目)\n  - 利用puppeteer开发截图。\n  - 利用clustor多线程开发,速度从原来60分钟提高至8分钟，提高约7倍（300张截图）。\n  - 开发自定义队列模式,避免Node端丢失请求。\n- webpack插件(webpack-plugin-inner-script)地址\n  - 自动将外链形式改写成内敛形式。\n- 内网准入系统\n  - 采用TypeScript+ES6/7+React开发\n  - 基本多层级树形结构的黑名单/白名单控制组件\n- xxxxxxxxxx\n  - xxxxxxxx\n  - xxxxxxxx\n  - xxxxxxxx\n  \n\n\n## 项目\n\n### 实时聊天项目(webchat)\n`Vue2.0` `Websocket` `Node.JS` `MongoDB`\nGithub地址：[https://github.com/hua1995116/webchat](https://github.com/hua1995116/webchat)（聊天室移动端，注册用户超过7000+，star将近1k）\n负责前端构建,服务器架构,后端开发\n  \n- 经历过3次重构，注重性能优化与体验,在2.0版本，打开首页速度提高1倍。\n- 采用了ES6/ES7的语法，采用axios请求统一处理\n- 基于localStorage的缓存组件开发，可以设置有效时长，适用于Webapp\n- 开发Loading，Alert，Confirm等组件\n- 拥有日志系统以及消息的RSA算法加密\n- 基于redis的请求监控，过滤恶意请求\n\n\n## 技能\n### Web基础\n\n- 熟练掌握HTML5/CSS3,响应式布局和移动端开发\n- 了解ES6/ES7,Webpack\n- 有Antd Design,Element UI,Muse UI搭建项目经验\n- 了解Hybrid开发以及Electron桌面开发,liunx服务器搭建经验,Nginx配置\n- Mac开发用户，熟悉Git进行团队协作，对PS有一定基础\n\n### 前端框架\n- Vue开发过大型的应用,了解Vue原理与技术栈\n- React以及React相关技术栈\n\n### 后端相关\n- 开发Node监控平台中间件\n- 了解常用的Node模块\n- 小型Node框架的搭建\n\n### 数据库\n- MongoDB\n- Redis\n\n",
+        "author": "秋风",
+        "avatar": "http://thirdwx.qlogo.cn/mmopen/AaXu8jcgbEIwqMs22mDMDFlgwdGAQJR9DbX4PDMmSVqOSoJ2aibQXibHy5U9DOcPUfSicrYIFfqEX7EKwxZjKrwfHay3HQDTHLl/132",
+        "theme": "default",
+        "color": "#39393a",
+        "updateTime": 1632683101937
+    },
+    {
+        "id": "798c9a5992ae28d2",
+        "year": "在校/应届",
+        "job": "前端",
+        "title": "前端工程师简历模板-证件照",
+        "tag": [
+            "带证件照",
+            "大气"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_19.jpg",
+        "template": "# 求职简历 - 前端工程师\n\n::: left\n\nicon:info 秋风/男/1995.12\n\n\nicon:school xxxxx/信息与计算科学/本科/2018年毕业\n\n\n[icon:blog https://qiufeng.blue](https://qiufeng.blue)\n\n\n[icon:github https://github.com/hua1995116](https://github.com/hua1995116)\n\n\n:::\n\n::: right\n\n:::\n\n## 介绍\n\n于xxxx年开始接触前端，喜欢编码，有Geek精神，对代码有洁癖，喜欢接触前沿技术，爱折腾。\n\n获得x、xxxx竞赛奖项xx项，(包含xxxxxxx多媒体竞赛一等奖1项)。\n\n主持参与省、国家级项目xx项；发表论文xxx篇，其中x篇EI索引。\n\n## 工作\n\n### 杭州xx网络有限公司 （2018.3-2018.7）\n`工程化` `基建搭建`\n\n前端架构组\n\n- 前端错误监控系统(基建)(负责人) 接入量pv:3000w\n  - web端js-sdk开发,无侵入式接入,压缩后仅2kb。\n  - 收集端Node开发,分布式存储日志。\n  - 阿里云日志服务分析,以及常用的数据分析。\n  - echart搭建可视化平台。\n- 前端性能监控系统(负责人) 接入pv: 1000w\n  - web端js-sdk开发,支持自定义上报以及自动上报,无侵入式。\n  - 收集端Node开发,Elasticsearch集群存储日志。\n  - Elasticsearch的Node模块开发，封装按时间维度的查询聚合模块。\n  - 可视化平台,利用redis缓存优化查询,淘汰算法共同协作。\n- 落地页截图(Node项目)\n  - 利用puppeteer开发截图。\n  - 利用clustor多线程开发,速度从原来60分钟提高至8分钟，提高约7倍（300张截图）。\n  - 开发自定义队列模式,避免Node端丢失请求。\n- webpack插件(webpack-plugin-inner-script)地址\n  - 自动将外链形式改写成内敛形式。\n- 内网准入系统\n  - 采用TypeScript+ES6/7+React开发\n  - 基本多层级树形结构的黑名单/白名单控制组件\n- xxxxxxxxxx\n  - xxxxxxxx\n  - xxxxxxxx\n  - xxxxxxxx\n  \n\n\n## 项目\n\n### 实时聊天项目(webchat)\n`Vue2.0` `Websocket` `Node.JS` `MongoDB`\nGithub地址：[https://github.com/hua1995116/webchat](https://github.com/hua1995116/webchat)（聊天室移动端，注册用户超过7000+，star将近1k）\n负责前端构建,服务器架构,后端开发\n  \n- 经历过3次重构，注重性能优化与体验,在2.0版本，打开首页速度提高1倍。\n- 采用了ES6/ES7的语法，采用axios请求统一处理\n- 基于localStorage的缓存组件开发，可以设置有效时长，适用于Webapp\n- 开发Loading，Alert，Confirm等组件\n- 拥有日志系统以及消息的RSA算法加密\n- 基于redis的请求监控，过滤恶意请求\n\n\n## 技能\n### Web基础\n\n- 熟练掌握HTML5/CSS3,响应式布局和移动端开发\n- 了解ES6/ES7,Webpack\n- 有Antd Design,Element UI,Muse UI搭建项目经验\n- 了解Hybrid开发以及Electron桌面开发,liunx服务器搭建经验,Nginx配置\n- Mac开发用户，熟悉Git进行团队协作，对PS有一定基础\n\n### 前端框架\n- Vue开发过大型的应用,了解Vue原理与技术栈\n- React以及React相关技术栈\n\n### 后端相关\n- 开发Node监控平台中间件\n- 了解常用的Node模块\n- 小型Node框架的搭建\n\n### 数据库\n- MongoDB\n- Redis\n\n",
+        "author": "秋风",
+        "avatar": "http://thirdwx.qlogo.cn/mmopen/AaXu8jcgbEIwqMs22mDMDFlgwdGAQJR9DbX4PDMmSVqOSoJ2aibQXibHy5U9DOcPUfSicrYIFfqEX7EKwxZjKrwfHay3HQDTHLl/132",
+        "theme": "pingmian",
+        "color": "#1d6137",
+        "updateTime": 1641924843534,
+        "idphoto": "https://s3.mdedit.online/muji/muji-zhengjian.jpg?w=100&r=50"
+    },
+    {
+        "id": "bb9fe2f31a37af41",
+        "year": "在校/应届",
+        "job": "前端",
+        "title": "一页纸-前端工程师简历模板",
+        "tag": [
+            "一页纸",
+            "两栏",
+            "带证件照"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_20.jpg",
+        "template": "# 秋风 - 前端工程师\n\n\n于2015年开始接触前端，喜欢编码，有Geek精神。\n\n\n对代码有洁癖，喜欢接触前沿技术，爱折腾。\n\n\n:::left\n\n## 教育背景\n### xxxxxxxx - 计算机科学与技术（2014.9 - 2018.6）\n\n尽量简洁，突出重点，成绩优异的话建议写上GPA及排名等信息，如：GPA：3.72/4（专业前10%）GRE：324\n\n## 工作经验\n\n### xxx（2018.7-至今）\n努力打工中...\n\n### 杭州xxx网络有限公司 - 实习 （2018.3-2018.7）\n前端架构组\n\n- 前端错误监控系统(基建)(负责人) 接入量pv:3000w\n  - web端js-sdk开发,无侵入式接入,压缩后仅2kb。\n  - 收集端Node开发,分布式存储日志。\n  - 阿里云日志服务分析,以及常用的数据分析。\n  - echart搭建可视化平台。\n- 前端性能监控系统(负责人) 接入pv: 1000w\n  - web端js-sdk开发,支持自定义上报以及自动上报,无侵入式。\n  - 收集端Node开发,Elasticsearch集群存储日志。\n  - Elasticsearch的Node模块开发，封装按时间维度的查询聚合模块。\n  - 可视化平台,利用redis缓存优化查询,淘汰算法共同协作。\n\n### xxx - 实习 (2017.11-2018.3)\n信息技术部\n\n`业务开发` `基建搭建`\n\n- 前端监控系统\n  - 客户端监控载体端以及数据脚本开发\n  - 基于highcharts的可视化图形界面开发\n  - 平台的性能统计模块以及告警模块开发\n  - 高并发下的redis设计以及错误信息识别过滤处理\n- 内网准入系统\n  - 采用TypeScript+ES6/7+React开发\n  - 基本多层级树形结构的黑名单/白名单控制组件\n\n\n:::\n\n:::right\n## 基本信息\nicon:phone 176****8380\n\n[icon:github https://github.com/hua1995116](https://github.com/hua1995116)\n\n[icon:juejin 掘金](https://juejin.cn/user/923245497557111) \n\n[icon:email qiufenghyf@163.com](mailto:qiufenghyf@163.com)\n\nicon:weixin qiufengblue\n\n## 技能特长\n1. 熟练掌握HTML5/CSS3\n2. 了解ES6/ES7,Webpack\n3. 开发Node监控平台中间件\n4. 了解常用的Node模块\n5. 了解Hybrid、Electron开发\n6. React以及React相关技术栈\n\n:::\n",
+        "author": "楠溪",
+        "avatar": "https://s3.mdedit.online/blog/image-20210827002946681.png",
+        "theme": "vertical-1",
+        "color": "#328756",
+        "updateTime": 1632676475321
+    },
+    {
+        "id": "090d94ed33deb46f",
+        "year": "在校/应届",
+        "job": "前端",
+        "title": "前端开发简历模板-简洁大方",
+        "tag": [
+            "极简",
+            "简单"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_21.jpg",
+        "template": "# 求职简历 - 前端工程师\n\n::: left\n秋风/男/xxxx.xx\n\nxxxxx/信息与计算科学\n\n本科/xxxx年毕业/党员\n\n:::\n\n::: right\n[icon:blog https://qiufeng.blue](https://qiufeng.blue)\n\n[icon:github https://github.com/hua1995116](https://github.com/hua1995116)\n\n[icon:email qiufenghyf@163.com](mailto:qiufenghyf@163.com)\n\nicon:weixin qiufengblue\n\n:::\n\n## 介绍\n\n于xxxx年开始接触前端，喜欢编码，有Geek精神，对代码有洁癖，喜欢接触前沿技术，爱折腾。\n\n获得x、xxxx竞赛奖项xx项，(包含xxxxxxx多媒体竞赛一等奖1项)。\n\n主持参与省、国家级项目xx项；发表论文xxx篇，其中x篇EI索引。\n\n## 工作\n\n### 杭州xx网络有限公司 （2018.3-2018.7）\n`工程化` `基建搭建`\n\n前端架构组\n\n- 前端错误监控系统(基建)(负责人) 接入量pv:3000w\n  - web端js-sdk开发,无侵入式接入,压缩后仅2kb。\n  - 收集端Node开发,分布式存储日志。\n  - 阿里云日志服务分析,以及常用的数据分析。\n  - echart搭建可视化平台。\n- 前端性能监控系统(负责人) 接入pv: 1000w\n  - web端js-sdk开发,支持自定义上报以及自动上报,无侵入式。\n  - 收集端Node开发,Elasticsearch集群存储日志。\n  - Elasticsearch的Node模块开发，封装按时间维度的查询聚合模块。\n  - 可视化平台,利用redis缓存优化查询,淘汰算法共同协作。\n- 落地页截图(Node项目)\n  - 利用puppeteer开发截图。\n  - 利用clustor多线程开发,速度从原来60分钟提高至8分钟，提高约7倍（300张截图）。\n  - 开发自定义队列模式,避免Node端丢失请求。\n- webpack插件(webpack-plugin-inner-script)地址\n  - 自动将外链形式改写成内敛形式。\n- 内网准入系统\n  - 采用TypeScript+ES6/7+React开发\n  - 基本多层级树形结构的黑名单/白名单控制组件\n- xxxxxxxxxx\n  - xxxxxxxx\n  - xxxxxxxx\n  - xxxxxxxx\n  \n\n\n## 项目\n\n### 实时聊天项目(webchat)\n`Vue2.0` `Websocket` `Node.JS` `MongoDB`\nGithub地址：[https://github.com/hua1995116/webchat](https://github.com/hua1995116/webchat)（聊天室移动端，注册用户超过7000+，star将近1k）\n负责前端构建,服务器架构,后端开发\n  \n- 经历过3次重构，注重性能优化与体验,在2.0版本，打开首页速度提高1倍。\n- 采用了ES6/ES7的语法，采用axios请求统一处理\n- 基于localStorage的缓存组件开发，可以设置有效时长，适用于Webapp\n- 开发Loading，Alert，Confirm等组件\n- 拥有日志系统以及消息的RSA算法加密\n- 基于redis的请求监控，过滤恶意请求\n\n\n## 技能\n### Web基础\n\n- 熟练掌握HTML5/CSS3,响应式布局和移动端开发\n- 了解ES6/ES7,Webpack\n- 有Antd Design,Element UI,Muse UI搭建项目经验\n- 了解Hybrid开发以及Electron桌面开发,liunx服务器搭建经验,Nginx配置\n- Mac开发用户，熟悉Git进行团队协作，对PS有一定基础\n\n### 前端框架\n- Vue开发过大型的应用,了解Vue原理与技术栈\n- React以及React相关技术栈\n\n### 后端相关\n- 开发Node监控平台中间件\n- 了解常用的Node模块\n- 小型Node框架的搭建\n\n### 数据库\n- MongoDB\n- Redis\n\n",
+        "author": "楠溪",
+        "avatar": "https://s3.mdedit.online/blog/image-20210827002946681.png",
+        "theme": "blue",
+        "color": "#000000",
+        "updateTime": 1632683149737
+    },
+    {
+        "id": "092497f7c0c2bdd0",
+        "year": "在校/应届",
+        "job": "前端",
+        "title": "前端开发简历模板-带证件照",
+        "tag": [
+            "带证件照",
+            "极简"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_22.jpg",
+        "template": "\n    \n# 秋风 - 前端工程师\n\n::: left\n\nxxxxxx | xxxxxxxxx | xxxx | xxxxxxxxx | xxxxxxxx\n\n[icon:blog https://qiufeng.blue](https://qiufeng.blue)\n\n[icon:github https://github.com/hua1995116](https://github.com/hua1995116)\n\n[icon:email qiufenghyf@163.com](mailto:qiufenghyf@163.com)\n\nicon:weixin qiufengblue\n\n:::\n\n::: right\n\n\n:::\n\n## 介绍\n\n于xxxx年开始接触前端，喜欢编码，有Geek精神，对代码有洁癖，喜欢接触前沿技术，爱折腾。\n\n获得x、xxxx竞赛奖项xx项，(包含xxxxxxx多媒体竞赛一等奖1项)。\n\n主持参与省、国家级项目xx项；发表论文xxx篇，其中x篇EI索引。\n\n## 工作\n\n### 杭州xx网络有限公司 （2018.3-2018.7）\n`工程化` `基建搭建`\n\n前端架构组\n\n- 前端错误监控系统(基建)(负责人) 接入量pv:3000w\n  - web端js-sdk开发,无侵入式接入,压缩后仅2kb。\n  - 收集端Node开发,分布式存储日志。\n  - 阿里云日志服务分析,以及常用的数据分析。\n  - echart搭建可视化平台。\n- 前端性能监控系统(负责人) 接入pv: 1000w\n  - web端js-sdk开发,支持自定义上报以及自动上报,无侵入式。\n  - 收集端Node开发,Elasticsearch集群存储日志。\n  - Elasticsearch的Node模块开发，封装按时间维度的查询聚合模块。\n  - 可视化平台,利用redis缓存优化查询,淘汰算法共同协作。\n- 落地页截图(Node项目)\n  - 利用puppeteer开发截图。\n  - 利用clustor多线程开发,速度从原来60分钟提高至8分钟，提高约7倍（300张截图）。\n  - 开发自定义队列模式,避免Node端丢失请求。\n- webpack插件(webpack-plugin-inner-script)地址\n  - 自动将外链形式改写成内敛形式。\n- 内网准入系统\n  - 采用TypeScript+ES6/7+React开发\n  - 基本多层级树形结构的黑名单/白名单控制组件\n- xxxxxxxxxx\n  - xxxxxxxx\n  - xxxxxxxx\n  - xxxxxxxx\n  \n\n\n## 项目\n\n### 实时聊天项目(webchat)\n`Vue2.0` `Websocket` `Node.JS` `MongoDB`\nGithub地址：[https://github.com/hua1995116/webchat](https://github.com/hua1995116/webchat)（聊天室移动端，注册用户超过7000+，star将近1k）\n负责前端构建,服务器架构,后端开发\n  \n- 经历过3次重构，注重性能优化与体验,在2.0版本，打开首页速度提高1倍。\n- 采用了ES6/ES7的语法，采用axios请求统一处理\n- 基于localStorage的缓存组件开发，可以设置有效时长，适用于Webapp\n- 开发Loading，Alert，Confirm等组件\n- 拥有日志系统以及消息的RSA算法加密\n- 基于redis的请求监控，过滤恶意请求\n\n\n## 技能\n### Web基础\n\n- 熟练掌握HTML5/CSS3,响应式布局和移动端开发\n- 了解ES6/ES7,Webpack\n- 有Antd Design,Element UI,Muse UI搭建项目经验\n- 了解Hybrid开发以及Electron桌面开发,liunx服务器搭建经验,Nginx配置\n- Mac开发用户，熟悉Git进行团队协作，对PS有一定基础\n\n### 前端框架\n- Vue开发过大型的应用,了解Vue原理与技术栈\n- React以及React相关技术栈\n\n### 后端相关\n- 开发Node监控平台中间件\n- 了解常用的Node模块\n- 小型Node框架的搭建\n\n### 数据库\n- MongoDB\n- Redis\n\n",
+        "author": "楠溪",
+        "avatar": "https://s3.mdedit.online/blog/image-20210827002946681.png",
+        "theme": "blue",
+        "color": "#5974D4",
+        "updateTime": 1641924948809,
+        "idphoto": "https://s3.mdedit.online/muji/muji-zhengjian.jpg?w=100&r=50"
+    },
+    {
+        "id": "29d66109c0b87f10",
+        "year": "在校/应届",
+        "job": "金融",
+        "title": "金融行业简历模板-中文",
+        "tag": [
+            "极简",
+            "带证件照"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_23.jpg",
+        "template": "# 秋风\n\n178-xxx-2228 | <qiufenghyf@163.com> | xxx\n\n籍贯 |住址 (简短;只要强调现在位置即可) \n\n## 教育背景\n\n| **木及大学**             |  北京，中国 |\n| :----------------------- | ----------: |\n| 文科/理科 学士；主修科目 | 2014 - 2018 |\n\n*   GPA: xx/4.0（xx%，强调GPA排名）\n\n*   荣誉奖项: xx\n\n*   核心课程： 经济学、会计、财务 (只要核心课程；若成绩优秀可标注分数，示例：85/100；95/100)\n\n## 实习经历\n\n| **公司名称 1**    |                北京，中国 |\n| :---------------- | ------------------------: |\n| 职位名,部门&#x20; | 开始日期 – 结束日期&#x20; |\n\n&#x20; \t （若不是名企）简单描述一下公司是做什么的\n\n*   对xx行业内10+领先企业进行竞争对手分析，包括搜集其收入、业绩增长、产品组合等信息，并完成20页的对标分析报告\n\n*   带领xxx名小组成员组织了xx市场宣传活动，在xx天内吸引了xx个顾客，提升月销量xx%\n\n| **公司名称 2**    |                北京，中国 |\n| :---------------- | ------------------------: |\n| 职位名,部门&#x20; | 开始日期 – 结束日期&#x20; |\n\n&#x20; \t （若不是名企）简单描述一下公司是做什么的\n\n*   总结你做了什么以及其结果\n\n*   对xx行业内10+领先企业进行竞争对手分析，包括搜集其收入、业绩增长、产品组合等信息，并完成20页的对标分析报告\n\n*   带领xxx名小组成员组织了xx市场宣传活动，在xx天内吸引了xx个顾客，提升月销量xx%\n\n## 项目经历\n\n| **项目名称** |                北京，中国 |\n| :----------- | ------------------------: |\n| 职位名称     | 开始日期 – 结束日期&#x20; |\n\n&#x20; \t （若不是名企）简单描述一下公司是做什么的\n\n*   &#x20;总结你做了什么以及其结果 \n\n*   &#x20;带领xx名小组成员组织xx活动，招募了xx人，在xxx月内增加人数xxx \n\n*   组织xx会议，邀请xx嘉宾并吸引xx人 \n\n## 课外活动\n\n| **社团名称** |                北京，中国 |\n| :----------- | ------------------------: |\n| 职位名称     | 开始日期 – 结束日期&#x20; |\n\n*   &#x20;总结你做了什么以及其结果 \n\n*   &#x20;带领xx名小组成员组织xx活动，招募了xx人，在xxx月内增加人数xxx \n\n*   组织xx会议，邀请xx嘉宾并吸引xx人 \n\n| **志愿者工作名称** |                北京，中国 |\n| :----------------- | ------------------------: |\n| 职位名称           | 开始日期 – 结束日期&#x20; |\n\n*   &#x20;总结你做了什么以及其结果 \n\n*   &#x20;组织xx活动……，吸引 xx参与者/观众/帮助xx人 \n\n*   &#x20;带领xx人做了xx \n\n## 技能/兴趣\n\n**语言:** 托福  xx /120;雅思xx/ 9; CET-4/6   xx/710; xx 年海外留学生活经历\n\n**专业技能:**  列举编程语言-包括办公室技能/Excel \n\n**证书/培训:** 与你目标职位相关的课，例如：CPA,CFA \n\n**兴趣:**   写1到2条并加以说明，比如：健身（坚持3年完成瘦身，获得健身教练证书）；钢琴（10级） ",
+        "author": "秋风",
+        "avatar": "http://thirdwx.qlogo.cn/mmopen/AaXu8jcgbEIwqMs22mDMDFlgwdGAQJR9DbX4PDMmSVqOSoJ2aibQXibHy5U9DOcPUfSicrYIFfqEX7EKwxZjKrwfHay3HQDTHLl/132",
+        "theme": "blue-weight",
+        "updateTime": 1647706511856,
+        "idphoto": "https://cdn.mdedit.online/avatar/custom/avatar-996189jinrong-zhengjian.png?imageView2/0/w/200/q/75&w=82&h=108&t=24&l=662",
+        "color": "#000000"
+    },
+    {
+        "id": "83f0827d101684a1",
+        "year": "在校/应届",
+        "job": "金融",
+        "title": "金融行业简历模板-英文",
+        "tag": [
+            "极简",
+            "带证件照"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_24.jpg",
+        "template": "# XIAO MU\n\nTel：（86）1xxx-xxxx-xx3| Email: xxx@163.com\n\nXxxx City, xxxxx Province| xxx\n\n## **EDUCATION**\n\n| **Muji University**                       |   **Beijing , China** |\n| :---------------------------------------- | --------------------: |\n| *Bachelor of  Arts ; Major in Accounting* | Sept 2019 – June 2023 |\n\n*   **GPA:**   3.5/ 4.0\n\n*   **Honors/Awards:**   The school's third-class scholarship, outstanding award\n\n*   **Coursework related:**   Financial Accounting/Financial Management/Database Application\n\n## **INTERNSHIP EXPERIENCE**\n\n| **JD**                                                 |        **Beijing , China** |\n| :----------------------------------------------------- | -------------------------: |\n| **User Operation, Distribution Management Department** | Sept 2020 – Nov 2020&#x20; |\n\n*   Pull new Fission: Based on the characteristics of the product, it accurately locates the user group. Through continuous digging into the specific needs of this group of people, a good user self-propagation effect has been achieved. At the same time, it has planned many large-scale online events and participated in all aspects of the landing of the event. Mainly responsible for writing event copywriting, personnel arrangement and event review, a single event can attract up to 500+ users, which is 300% of the normal event target value, and output sop, so that future events can obtain guaranteed benefits\n\n*   Retention conversion: Participate in the user training program for quantitative observation of 200 users, with a retention rate of over 45%. During this period, we will conduct user research on highly sticky users and lost users, continuously explore user needs and discover the gray areas of user experience and lack of service links and participate in users Feedback-closed loop/user feedback product operation link to create a closed loop link. Participate in writing PRD documents and social competition product analysis reports, promote further improvement of product functions, and increase the utilization rate of life modules by 65%.\n\n| **Dahua Education Group** | **Changchun , China** |\n| :------------------------ | --------------------: |\n| Campus ambassador         |   Dec 2019 –Nov&#x20; |\n\n*   Post 15 job advertisements through multiple channels, collect 100 resumes for screening, and track and analyze the retention of personnel in real time. Up to now, 20 people have been recruited.\n\n*   Organized and planned more than 10 mock interviews for surrounding colleges and universities, more than 20 online and offline presentations, and school-enterprise joint career development planning competitions, with a total of over 10,000 participants\n\n*   Operate the official account, plan and edit the learning content, research hotspots and other articles, which have been followed by 1500 people, and the average reading volume is 1000 +\n\n*   Responsible for the operation of the three modules of postgraduate entrance examination, certificate and public examination, planning community sign-in, daily Q\\&A and other activities, so far More than 500 people have registered through our school\n\n## **EXTRACURRICULAR ACTIVITIES**\n\n| **Content products-topic social sector optimization project** | Mar 2021 – Present |\n| :----------------------------------------------------------- | -----------------: |\n\n*   Project background: For real-time hotspots, ordinary users expressing their opinions (Chinese tweeter/Chinese Quora/Chinese Instagram/TikTok) have too low interactivity and insufficient high-quality content precipitation strategies. In addition, the current link for the WeChat and QQ group to reach the target user is imperfect, which cannot meet the hidden needs of the user.\n\n*   Pain points/needs research and analysis: Collect the silent scenes under the pain points, collect 15+ public + niche competitors, integrate the analysis data of big competitors, and complete the analysis of niche competitors.\n\n*   Compile user survey questionnaires, verify the pain points from the function/rule side, retrieve 600 questionnaires. As result, reached 40 core users with preliminary product positioning, gains and 60+ suggestions for the product, clarified the user's interest in such products, and determined the direction of the preliminary project\n\n## **SKILLS & INTERESTS**\n\n**Languages:** CET-4\n\n**Technical Skills:**   Basic python,Proficient MS Office/Excel \n\n**Certifications & Training**:   ACCA ，Securities Practitioner Qualification Certificate",
+        "author": "秋风",
+        "avatar": "http://thirdwx.qlogo.cn/mmopen/AaXu8jcgbEIwqMs22mDMDFlgwdGAQJR9DbX4PDMmSVqOSoJ2aibQXibHy5U9DOcPUfSicrYIFfqEX7EKwxZjKrwfHay3HQDTHLl/132",
+        "theme": "blue-weight",
+        "idphoto": "https://cdn.mdedit.online/avatar/custom/avatar-996189jinrong-zhengjian.png?imageView2/0/w/200/q/75&w=82&h=108&t=24&l=662",
+        "updateTime": 1647707842366,
+        "fontFamily": "TimesNewRoman",
+        "color": "#000000"
+    },
+    {
+        "id": "c9881e058554ae11",
+        "year": "5-10年",
+        "job": "运维",
+        "title": "运维总监",
+        "tag": [
+            "极简"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_25.jpg",
+        "template": "# 小木 - 集团运维总监\n\n::: left\n\nicon:info 男/1990.12\n\nicon:weixin qiufengblue\n\n:::\n\n::: right\n[icon:blog https://qiufeng.blue](https://qiufeng.blue)\n\n[icon:github https://github.com/hua1995116](https://github.com/hua1995116)\n\n:::\n\n## 工作经历\n\n### XXX 有限公司\n\n:::left\n\n集团运维总监运维部\n\n:::\n\n:::right\n\n2018 年 04 月-至今\n\n:::\n\n- 负责组织制订和实施集团信息化建设的战略规划及信息系统建设；带领团队完成公司内部相关 T 信息系统的选型、引进、搭建和维护，确保系统的性能、稳定性、可扩展性，安全等指标；\n\n- 负责集团多门户协同办公平台的规划、实施与落地，形成业务系统发起、流程中心审批、业务数据回写的流程审批链，覆盖人力、行政、财务、业务采购、事项审批等多业务，并达成全员移动化办公；\n\n- 负责集团信息系统数字化建设，达到财务数据、人事数据、业务数据综合动态体现，为总裁办提供数据决策支持；\n\n- 负责集团所有线上平台（官方网站、公众号、微博、抖音）的选型、部署与维护；负责集团下辖早教项目的信息化建设，含早教 TM 系统、多媒体教学系统和门店系统的规划、选型、实施与维护、培训；\n\n- 负责集团下辖智慧物业项目的 T 端建设和技术支持，含智慧社区、电商平台；配合 CEO 负责公司智能化中心相关项目的开发管理工作，组织制定与技术相关的各项管理制度、技术规范及工作流程；·负责集团运维工作，含网络规划、设备配置与维护，服务器的管理与数据维护；\n\n### XXX 有限公司\n\n:::left\n\n集团运维总监运维部 \n\n:::\n\n:::right\n\n2015 年 07 月-2017 年 12 月\n\n:::\n\n- 负责公司网络规划、建设、维护以及后续的跟进，公司内部 ERP（进销存）软件的需求调研、实施、上线、以及后续需求补充和修改维护和新功能的可行性测试；\n\n- 建立起公司的门户网站以及网络商品和报表查询体系，建立电子商务和系统之间的平台联络架构以及公司电商商务模式的拓展以及应用；\n\n- 负责公司计算机相关的其它系统，如财务、OA 等的技术维护；维护管理所属区域网络安全设备，保证所属区域网络稳定、安全；\n\n- 维护所属区域 erp、Wms、gis、mai 等服务器正常，并针对各系统出现的故障给出一手故障报告，并针对性及时排除故障；·负责所属区域新增办公区、库房、呼叫中心、配送站点的网络架构，大型办公区和库房需给出网络设计方案；·负责所属区域库房、呼叫中心、IDC 机房 7*24 小时值守；\n\n## 项目经历\n\n:::left\n\n大连商品交易所灾备机房运维服务项目 \n\n:::\n\n:::right\n\n2018 年 06 月-2018 年 12 月\n\n:::\n\n- 项目描述：大连商品交易所灾备机房总面积 4878 平米，机柜数量为 468 架，各专业运维人员达 23 人。\n\n- 责任描述：负责建设运维服务的统一的服务台，并制定服务台的服务标准、流程、质量监控等相关制度，优化整合多所大型数\n\n据中心的人员配置，提高人员效率，满足成本控制。作为项目负责人对应中金所、大商所、大连重工、swⅵs 等大客户，主持月度运维会议、针对现有运维工作中的问题点向客户提出改善方案。根据客户各项业务的实际需求，制定完整的改善方案，并加以推进实施。\n\n## 教育经历\n\n:::left\n**北京邮电大学 - 计算机科学与技术**\n:::\n:::right\n**201109 - 2015.07**\n\n:::\n",
+        "author": "秋风",
+        "avatar": "http://thirdwx.qlogo.cn/mmopen/AaXu8jcgbEIwqMs22mDMDFlgwdGAQJR9DbX4PDMmSVqOSoJ2aibQXibHy5U9DOcPUfSicrYIFfqEX7EKwxZjKrwfHay3HQDTHLl/132",
+        "theme": "blue-weight",
+        "color": "#000000",
+        "fontFamily": "siyuanheiti_normal",
+        "updateTime": 1651924784919,
+        "lineheight": "16"
+    },
+    {
+        "id": "303491297b7b2e01",
+        "year": "3-5年",
+        "job": "运维",
+        "title": "高级运维工程师",
+        "tag": [
+            "极简",
+            "一页纸"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_26.jpg",
+        "template": "# 小木 - 集团运维总监\n\n::: left\n\nicon:info 男/1990.12\n\nicon:weixin qiufengblue\n\n:::\n\n::: right\n[icon:blog https://qiufeng.blue](https://qiufeng.blue)\n\n[icon:github https://github.com/hua1995116](https://github.com/hua1995116)\n\n:::\n\n## 工作经历\n\n### XXX 有限公司\n\n:::left\n\n集团运维总监运维部\n\n:::\n\n:::right\n\n2018 年 04 月-至今\n\n:::\n\n- 负责组织制订和实施集团信息化建设的战略规划及信息系统建设；带领团队完成公司内部相关 T 信息系统的选型、引进、搭建和维护，确保系统的性能、稳定性、可扩展性，安全等指标；\n\n- 负责集团多门户协同办公平台的规划、实施与落地，形成业务系统发起、流程中心审批、业务数据回写的流程审批链，覆盖人力、行政、财务、业务采购、事项审批等多业务，并达成全员移动化办公；\n\n- 负责集团信息系统数字化建设，达到财务数据、人事数据、业务数据综合动态体现，为总裁办提供数据决策支持；\n\n- 负责集团所有线上平台（官方网站、公众号、微博、抖音）的选型、部署与维护；负责集团下辖早教项目的信息化建设，含早教 TM 系统、多媒体教学系统和门店系统的规划、选型、实施与维护、培训；\n\n- 负责集团下辖智慧物业项目的 T 端建设和技术支持，含智慧社区、电商平台；配合 CEO 负责公司智能化中心相关项目的开发管理工作，组织制定与技术相关的各项管理制度、技术规范及工作流程；·负责集团运维工作，含网络规划、设备配置与维护，服务器的管理与数据维护；\n\n### XXX 有限公司\n\n:::left\n\n集团运维总监运维部 \n\n:::\n\n:::right\n\n2015 年 07 月-2017 年 12 月\n\n:::\n\n- 负责公司网络规划、建设、维护以及后续的跟进，公司内部 ERP（进销存）软件的需求调研、实施、上线、以及后续需求补充和修改维护和新功能的可行性测试；\n\n- 建立起公司的门户网站以及网络商品和报表查询体系，建立电子商务和系统之间的平台联络架构以及公司电商商务模式的拓展以及应用；\n\n- 负责公司计算机相关的其它系统，如财务、OA 等的技术维护；维护管理所属区域网络安全设备，保证所属区域网络稳定、安全；\n\n- 维护所属区域 erp、Wms、gis、mai 等服务器正常，并针对各系统出现的故障给出一手故障报告，并针对性及时排除故障；·负责所属区域新增办公区、库房、呼叫中心、配送站点的网络架构，大型办公区和库房需给出网络设计方案；·负责所属区域库房、呼叫中心、IDC 机房 7*24 小时值守；\n\n## 项目经历\n\n:::left\n\n大连商品交易所灾备机房运维服务项目 \n\n:::\n\n:::right\n\n2018 年 06 月-2018 年 12 月\n\n:::\n\n- 项目描述：大连商品交易所灾备机房总面积 4878 平米，机柜数量为 468 架，各专业运维人员达 23 人。\n\n- 责任描述：负责建设运维服务的统一的服务台，并制定服务台的服务标准、流程、质量监控等相关制度，优化整合多所大型数\n\n据中心的人员配置，提高人员效率，满足成本控制。作为项目负责人对应中金所、大商所、大连重工、swⅵs 等大客户，主持月度运维会议、针对现有运维工作中的问题点向客户提出改善方案。根据客户各项业务的实际需求，制定完整的改善方案，并加以推进实施。\n\n## 教育经历\n\n:::left\n**北京邮电大学 - 计算机科学与技术**\n:::\n:::right\n**201109 - 2015.07**\n\n:::\n",
+        "author": "秋风",
+        "avatar": "http://thirdwx.qlogo.cn/mmopen/AaXu8jcgbEIwqMs22mDMDFlgwdGAQJR9DbX4PDMmSVqOSoJ2aibQXibHy5U9DOcPUfSicrYIFfqEX7EKwxZjKrwfHay3HQDTHLl/132",
+        "theme": "blue-weight",
+        "color": "#000000",
+        "fontFamily": "siyuanheiti_normal",
+        "updateTime": 1651925595734,
+        "lineheight": "17"
+    },
+    {
+        "id": "e0e49aefc873a8dd",
+        "year": "在校/应届",
+        "job": "运维",
+        "title": "运维工程师校招",
+        "tag": [
+            "一页纸",
+            "带证件照"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_27.jpg",
+        "template": "\n# 小木 - 运维工程师\n\n::: left\n\nicon:info 男/1999.12 | icon:phone 1232142144 | icon:email dqefqfq@163.com\n\n:::\n\n::: right\n\n\n:::\n\n\n## 工作经历\n\n### 天津XXX 有限公司\n\n:::left\n\nLinux运维工程师\n\n:::\n\n:::right\n\n2021 年 12 月 - 2022 年 04 月\n\n:::\n\n- 协助项目负责人，完成与客户的对接工作，并根据客户的需求，制定相关的技术解决方案；\n\n- 利用云运维技术，负责公司旗下云产品的日常运维工作，包括产品的运营、ES、存储等；\n\n- 负责部门Windows、Linux系统平台下的服务器部署工作，以及日常的维护、分析、故障排查工作；\n\n- 定期对服务器进行优化升级，确保服务器可以正常、高效的运转。\n\n### 北京 XXX 有限公司\n\n:::left\n\nLinux运维工程师\n\n:::\n\n:::right\n\n2021 年 09 月 - 2021 年 12 月\n\n:::\n\n- 负责机房的维护工作，每日对机房进行巡视，并定期进行检测，确保公司网络正常运行；\n\n- 负责公司内部网络的搭建以及相关网络设备的正常运作；\n\n- 不定期对网络进行故障排查，确保在第一时间解决相关问题，保证公司网络顺利、高效运行；\n\n- 根据公司需求，参与到具体项目中，负责部分线上和线下的工作，参与部分业务部署；\n\n- 负贡相关技术文档的编写，基于效率优化的原则，编写脚本，并利用脚本提升运维工作效率。\n\n## 工作以外经历\n\nXX网站运维项目\n\n- 配合项目负责人，根据公司需要完成自动化运维工作，并根据实际制定方案，提升运维团队的工作效率；\n\n- 实时对运维数据进行监控和分析，并整合数据，行程报告，提交项目负责人；\n\n- 及时排查运维数据中出现的故障问题，并提出行之有效的解决方案，确保服务器正常运转；\n\n- 协助技术、测试部门完成系统升级工作，以及构架调整工作；\n\n- 按照要求，运用专业、准确的语言规范编写相关技术文档。\n\n## 教育经历\n\n:::left\n\n**天津工业大学 - 软件工程本科**\n\n:::\n\n:::right\n\n**2018.09 - 2022.06**\n\n:::\n\n## 其他\n\n- 技能：\n熟练配nginx, tomcat, jboss, mysql, memcached, redis;\n- 能编写shell、perl脚本；熟悉MySQL、ORACLE；\n- Sqlserver数据库安装、配置、调试以及优化；",
+        "author": "秋风",
+        "avatar": "http://thirdwx.qlogo.cn/mmopen/AaXu8jcgbEIwqMs22mDMDFlgwdGAQJR9DbX4PDMmSVqOSoJ2aibQXibHy5U9DOcPUfSicrYIFfqEX7EKwxZjKrwfHay3HQDTHLl/132",
+        "theme": "blue-weight",
+        "color": "#000000",
+        "idphoto": "https://s3.mdedit.online/muji/muji-zhengjian.jpg?w=100&l=640&t=38",
+        "fontFamily": "pingfang-sc",
+        "updateTime": 1651926867519,
+        "lineheight": "18"
+    },
+    {
+        "id": "3857ae6041bd6bfe",
+        "year": "在校/应届",
+        "job": "测试",
+        "title": "应届测试工程师",
+        "tag": [
+            "极简",
+            "一页纸"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_28.jpg",
+        "template": "\n# 小木 - 测试工程师简历模板\n\n::: left\n\nicon:info 男/1998.12 | icon:phone 1232142144 | icon:email dqefqfq@163.com\n\n:::\n\n::: right\n\n\n:::\n\n\n## 工作经历\n\n### XX有限公司  \n\n:::left\n 功能测试工程师\n:::\n\n:::right\n2019年3月 - 2019年10月\n:::\n\n- 根据需求文档说明书，编写测试计划和方案。搭建环境，设计用例，执行测试。通过禅道工具对缺陷进行跟踪管理以及进行回归测试。提交测试结果。\n\n- 熟练学握 MySQL 数据库，了解一些简单的 C语言。可以用等价类边界值、因果图法编写测试用例。熱悉Python语言。\n\n- 了解性能测试，了解工具，Loadrunner、Jmeter。熟悉自动化测试和熟悉接口测试工具Postman。熟悉流程图工具、思维导图工具。用不同的浏览器和测试工具进行\n\n### XX有限公司 \n\n:::left\n 功能测试工程师\n:::\n\n:::right\n2018年3月 - 2018年10月\n:::\n\n- 参与构造思维导图，指导准确思路，引|导系统的流程走向为了更好的理解系统的核心，编写测试要点，系统需求能够实现主要的功能体系的重要功能，以逻铜思维进行细分至各个功能和缺陷，最后得出不足，出现问题及时处理\n- 负责需求分析，根据产品需求书了解软件功能，参与提取测试点：基木功能、性能、功耗、兼容性负责APP上线后的定期更新与客户反馈问题的验证。根据需求文档编写并执行测试用例，完善测试覆盖率，负责利用bug管理工\n- 具记录跟踪缺陷，直至缺陷修复。完成领导交代的其他工作任务，熱悉自动化测试和熟悉接口测试工具Postman。熟悉流程图工具、思维导图工具。\n\n## 项目经历\n\n:::left\n项目名称\n:::\n\n:::right\n2019年4月 - 2019年7月\n:::\n\n- 参与分析项目需求，了解项目业务流程；安装包正常安装或卸载，以及所需时间，测试用户界面风格美观，布局、颜色合理，操作友好。\n- 通过Network-Emulator-Toolkit工具，将安装了该APP的手机用数据线连接到电脑上，测试在不同的网络下的运行情况。使用monkey工具adb命令，如果有bug，在TXT文本搜索关键字；测试不同的手机品牌，不同的操作系统下运行情况。\n\n### 教育经历\n\n:::left\n\n**天津工业大学 - 软件工程本科**\n\n:::\n\n:::right\n\n**2016.09 - 2020.06**\n\n:::\n\n## 技能\n\n- Word，Excel，Python, Jmeter，Network，Loadrunner；\n- 需求分析，回归测试，操作系統，办公软件，Mysq/数据库，自动化测试",
+        "author": "秋风",
+        "avatar": "http://thirdwx.qlogo.cn/mmopen/AaXu8jcgbEIwqMs22mDMDFlgwdGAQJR9DbX4PDMmSVqOSoJ2aibQXibHy5U9DOcPUfSicrYIFfqEX7EKwxZjKrwfHay3HQDTHLl/132",
+        "theme": "blue-weight",
+        "color": "#000000",
+        "idphoto": "https://s3.mdedit.online/muji/muji-zhengjian.jpg?imageView2/0/format/webp/q/75/w/400&w=100&l=641&h=140&t=15",
+        "fontFamily": "pingfang-sc",
+        "updateTime": 1651936653795,
+        "lineheight": "17"
+    },
+    {
+        "id": "a33c649eeb84dc85",
+        "year": "3-5年",
+        "job": "测试",
+        "title": "软件测试工程师",
+        "tag": [
+            "极简",
+            "一页纸"
+        ],
+        "thumbnail": "./resume_thumbnail/thumbnail_29.jpg",
+        "template": "# 小木 - 软件测试简历模板\n\n::: left\n\nicon:info 男/1995.12\n\nicon:weixin qiufengblue\n\n:::\n\n::: right\n[icon:blog https://qiufeng.blue](https://qiufeng.blue)\n\n[icon:github https://github.com/hua1995116](https://github.com/hua1995116)\n\n:::\n\n## 工作经历\n\n### XXX 有限公司\n\n:::left\n软件测试\n:::\n\n:::right\n2018 年 04 月-至今\n:::\n\n工作经历\n\n- 负责搭建Python+Appnium+Unittes+测试框架，编写及维护自动化测试用例，执行自动化测试用例，分析测试结果并提交测试报告。\n\n- 使用Soapul、Jmeter对实名认证、订单、绑定支付宝、忘记密码、搜索、社区、团队、积分、全网搜券、立即提现等接口进行接口测试。\n\n- 负责通过adb命令对App进行专项测试，稳定性测试，截取日志；发现bug，跟踪bug直到关闭。\n\n- 负责迭代版本的冒烟测试，回归测试，上线后的功能验证，参与相关的评审会议，如用例评审、需求评审，协助测试組长编写测试计划。\n\n### XXX 有限公司\n\n:::left\n软件测试\n:::\n\n:::right\n2014年7月 - 2017年4月\n:::\n\n- TeskLink上编写负责整个被测系统的功能测试用例和编写用户操作手册并提交到svn上；Jira上对测试点进行测试和bug的跟踪管理。\n- 负责web网页和微信小程序测试的功能测试、接口测试、兼容性测试。\n- 参与需求评审会，了解用户需求和对不明确的需求进行讨论，编写软件测试方案和测试计划。\n- selenium回归测试测试环境搭建，測试环境构建。\n- 编写测试报告，邮件发送相关人员，整理工作任务及工作进度，编写成工作日报和工作周报发给测试主管。\n\n## 项目经历\n\n:::left\n车载智能警务管理系统\n:::\n\n:::right\n2018年4月-2018年10月\n:::\n \n项目描述：\n基于B/S架构的web项目，用于对车机端（M1、MT1、MC2）设备进行监控管理的平台，主要业务有车辆监控、警情指挥、视频监控、缉查布控、信息下发、勤务统计四大一级菜单，其中一级菜单下包含二、三、四级菜单。是公司车载智能终端的后台管理系统。\n责任描述：\n- 参加需求需求讨论会，根据需求文档编写被测系统功能测试用例，参加用例评审讨论会。\n- 负责整个web项目的功能测试、ui界面测试、兼容性测试、接口测试。\n- 使用fiddler抓包工具修改请求数据来辅助测试。\n- 在jira上对bug进行跟踪管理，编写测试报告和写用户手册。\n\n## 教育经历\n\n:::left\n**北京邮电大学 - 计算机科学与技术**\n:::\n:::right\n**201109 - 2015.07**\n\n:::\n",
+        "author": "秋风",
+        "avatar": "http://thirdwx.qlogo.cn/mmopen/AaXu8jcgbEIwqMs22mDMDFlgwdGAQJR9DbX4PDMmSVqOSoJ2aibQXibHy5U9DOcPUfSicrYIFfqEX7EKwxZjKrwfHay3HQDTHLl/132",
+        "theme": "blue-weight",
+        "color": "#000000",
+        "fontFamily": "pingfang-sc",
+        "updateTime": 1651937469373,
+        "lineheight": "17"
+    }
+]

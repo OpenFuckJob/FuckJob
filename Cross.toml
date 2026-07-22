@@ -1,0 +1,9 @@
+# cross 构建前先构建前端 (pre-build 在宿主机执行)
+[build]
+pre-build = ["pnpm install && pnpm build"]
+
+[target.x86_64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/x86_64-unknown-linux-gnu:edge"
+
+[target.x86_64-pc-windows-gnu]
+image = "ghcr.io/cross-rs/x86_64-pc-windows-gnu:edge"

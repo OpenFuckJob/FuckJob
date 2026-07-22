@@ -1,0 +1,145 @@
+export const defaultCss = `
+.rs-view h1 {
+  border-bottom: 1px solid #ddd;
+  color: #fff;
+}
+.rs-view .h1_block {
+  margin-top: 0;
+  color: #fff;
+  display: block;
+  font-size: 0;
+  -webkit-text-size-adjust: none;
+  background: var(--bg);
+}
+.rs-view .h1_block a {
+  color: #fff;
+}
+.rs-view .h1_block .h2_block:nth-of-type(1) {
+  margin-top: 20px;
+}
+.rs-view .h2_block,
+.rs-view .h3_block,
+.rs-view .h4_block,
+.rs-view .h5_block {
+  color: #000;
+  background: #fff;
+}
+.rs-view .h2_block a,
+.rs-view .h3_block a,
+.rs-view .h4_block a,
+.rs-view .h5_block a {
+  color: #9a9a9a;
+}
+.rs-view .block::before {
+  display: block;
+  content: "";
+  height: 0;
+  clear: both;
+}
+.rs-view .title {
+  margin-top: 10px;
+  margin-left: 50px;
+  margin-right: 50px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #ddd;
+}
+.rs-view .right::after {
+  display: block;
+  content: "";
+  height: 0;
+  clear: both;
+}
+.rs-view p {
+  margin-bottom: 0px;
+  margin-left: 50px;
+  margin-right: 50px;
+  font-size: 14px;
+}
+.rs-view h1 {
+  font-size: 28px;
+  margin: 0;
+  padding: 20px 0;
+  margin: 0 50px;
+}
+.rs-view .h2_block {
+  position: relative;
+  border: 0px;
+  margin-top: -1px;
+  padding: 20px 0 10px;
+}
+.rs-view .h3_block {
+  padding: 10px 0;
+}
+.rs-view h2 {
+  position: relative;
+  z-index: 1;
+  width: calc(100% - 120px - 30% * 2);
+  min-width: 100px;
+  margin: 0px auto 5px;
+  padding: 4px 10px;
+  border-radius: 32px;
+  font-size: 16px;
+  text-align: center;
+  background-color: #eee;
+}
+.rs-view h2::after {
+  content: "";
+  width: calc(100% + 10px);
+  position: absolute;
+  top: 50%;
+  height: 0;
+  left: 120%;
+  border-top: 1px solid #ededed;
+}
+.rs-view h2::before {
+  content: "";
+  width: calc(100% + 10px);
+  position: absolute;
+  top: 50%;
+  height: 0;
+  left: -120%;
+  border-top: 1px solid #ededed;
+}
+.rs-view h3 {
+  position: relative;
+  line-height: 1.8;
+  overflow: hidden;
+  margin-left: 50px;
+  margin-right: 50px;
+  font-size: 15px;
+}
+.rs-view ul {
+  margin: 0 50px;
+}
+.rs-view li {
+  font-size: 13px;
+  margin-top: 8px;
+}
+.rs-view a {
+  color: #9a9a9a;
+}
+.rs-view a:hover {
+  color: #d1d0d0;
+}
+.rs-view a:active {
+  color: #d1d0d0;
+}
+.rs-view a:active,
+.rs-view a:hover {
+  text-decoration: none;
+  outline: 0;
+}
+.rs-view a:focus {
+  text-decoration: none;
+  outline: 0;
+}
+.rs-view a[disabled] {
+  color: rgba(255, 255, 255, 0.25);
+  cursor: not-allowed;
+  pointer-events: none;
+}
+.rs-view .icon, .rs-view svg.icon {
+  display: inline-block;
+  fill: #fff;
+}
+`;

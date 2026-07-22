@@ -1,0 +1,219 @@
+@import "tailwindcss";
+
+:root {
+  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  color: #172033;
+  background: #f5f7fb;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.3) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.3);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.5);
+}
+
+body {
+  margin: 0;
+  min-width: 360px;
+  min-height: 100vh;
+}
+
+button,
+input {
+  font-family: inherit;
+}
+
+.app-loading,
+.app-shell {
+  height: 100vh;
+  overflow: hidden;
+}
+
+.app-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  box-sizing: border-box;
+}
+
+.app-title {
+  margin: 0;
+  line-height: 1.2;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  padding: 16px;
+  box-sizing: border-box;
+  background: #f5f7fb;
+}
+
+.app-header,
+.app-content {
+  width: 100%;
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 0 20px;
+  height: 56px;
+  border: 1px solid rgba(229, 231, 235, 0.8);
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 4px 16px rgba(15, 23, 42, 0.05);
+}
+
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.app-logo {
+  display: flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #1677ff 0%, #4096ff 100%);
+  color: #ffffff;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  box-shadow: 0 2px 8px rgba(22, 119, 255, 0.25);
+  transition: box-shadow 0.2s ease;
+}
+
+.app-logo:hover {
+  box-shadow: 0 2px 12px rgba(22, 119, 255, 0.4);
+}
+
+.app-brand-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.app-brand-subtitle {
+  font-size: 11px;
+  color: #94a3b8;
+  line-height: 1;
+  margin-top: 1px;
+}
+
+.app-tabs {
+  flex: 1;
+  min-width: 0;
+}
+
+.app-tabs .ant-tabs-nav {
+  margin-bottom: 0;
+  height: 56px;
+}
+
+.app-tabs .ant-tabs-nav::before {
+  border-bottom: none !important;
+}
+
+.app-tabs .ant-tabs-nav-wrap {
+  justify-content: flex-end;
+}
+
+.app-tabs .ant-tabs-tab {
+  padding: 8px 16px !important;
+  font-size: 13px;
+  border-radius: 8px;
+  transition: all 0.2s ease;
+}
+
+.app-tabs .ant-tabs-tab:hover {
+  color: #1677ff;
+  background: rgba(22, 119, 255, 0.04);
+}
+
+.app-tabs .ant-tabs-tab-active {
+  background: rgba(22, 119, 255, 0.06);
+}
+
+.app-tabs .ant-tabs-ink-bar {
+  height: 2px !important;
+  border-radius: 1px;
+  background: #1677ff;
+}
+
+.app-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin-top: 16px;
+  padding: 24px;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.04);
+}
+
+@media (max-width: 760px) {
+  .app-shell {
+    padding: 12px;
+  }
+
+  .app-header {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0;
+    height: auto;
+    padding: 12px 16px 0;
+  }
+
+  .app-brand {
+    padding-bottom: 8px;
+    border-bottom: 1px solid #f1f5f9;
+  }
+
+  .app-tabs .ant-tabs-nav {
+    height: 44px;
+  }
+
+  .app-tabs .ant-tabs-nav-wrap {
+    justify-content: flex-start;
+  }
+
+  .app-content {
+    padding: 16px;
+  }
+}

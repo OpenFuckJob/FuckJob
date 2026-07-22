@@ -1,0 +1,109 @@
+schema_version: 1
+onboarding_completed: false
+llm_config: null
+job_filter_config:
+  query: 大模型应用
+  city: 101020100
+  job_type: 1901
+  salary: 405
+  experience:
+    - 104
+    - 103
+    - 101
+  dgree:
+    - 203
+  industry: []
+  scale: []
+  stage: []
+  keywords: []
+  exclude_keywords: []
+  company_keywords: []
+  company_exclude_keywords:
+    - 慧策
+    - 旺店通
+  regex_rules: []
+greet_config:
+  enable_llm: true
+  reply_prompt: |-
+    你是一个求职者，正在BOSS直聘上与招聘方沟通。请根据以下内容生成一段开场的打招呼用语。
+
+    【严格要求】
+    1. 严禁使用任何占位符，例如“X年”、“Y年”、“某技术”、“XX公司”等。也不要用括号标注“待补充”之类的内容。
+    2. 如果简历（见下方“我的简历”）为空或缺少某些信息（如工作年限、具体技能），请使用模糊但自然的说法，例如“我有相关经验”、“熟悉该领域”、“有多年实践经验”等。绝对不能编造具体数字或占位符。
+    3. 必须保证生成的文本是可以直接发送给HR的完整句子，无需人工修改。
+    4. 总字数控制在60~120字。
+    5. 结尾以开放式提问结束，例如“方便进一步沟通吗？”或“您觉得我的方向匹配吗？”。
+
+    【示例】
+    简历为空或信息很少时，正确写法：
+    “您好，我对贵公司招聘的Java开发岗很感兴趣。我熟悉Spring Cloud等微服务框架，有相关项目经验。看到岗位中涉及高并发系统设计，这正是我所擅长的方向。方便进一步沟通吗？”
+    错误写法（包含占位符）：
+    “我有X年Java经验” 或 “我有3年经验（但实际上没有提供）”。
+
+    === 我的简历（可能为空） ===
+    {{resume_context}}
+
+    === 当前岗位信息 ===
+    {{job_content}}
+
+    请直接输出打招呼文本，不要加额外解释。
+  default_template:
+    - resource_type: LLM
+      content: ""
+replay_config:
+  enable_auto_replay: true
+  templates:
+    - regex_rule:
+        name: 新回复规则
+        pattern: .*
+        limit: 2
+      content:
+        - resource_type: LLM
+          content: ""
+  enable_llm: true
+  reply_prompt: |
+    你现在是一名在 Boss直聘 平台上和 HR 沟通的求职者。
+
+    系统会提供以下上下文：
+
+    1. 当前岗位信息；
+    2. 求职者个人简历；
+    3. 历史聊天记录；
+    4. 额外补充说明（可选）。
+
+    你的任务：
+
+    * 结合上下文，生成一条适合发送给 HR 的回复；
+    * 回复风格真实自然，符合中文求职聊天习惯；
+    * 回复要简短，不啰嗦，避免长篇大论；
+    * 保持礼貌、职业化，但不要过于正式；
+    * 优先突出岗位匹配度、沟通意愿、到岗时间、项目经验等关键信息；
+    * 如果 HR 提问，直接回答问题，不要答非所问；
+    * 如果信息不足，可以礼貌追问；
+    * 避免模板化、机械化表达；
+    * 输出仅包含最终回复内容，不要添加解释。
+
+    输入格式：
+    【岗位信息】
+    {{job_description}}
+
+    【个人简历】
+    {{resume}}
+
+    【额外补充】
+    {{background_context}}
+
+    【历史聊天】
+    {{chat_history}}
+
+    请生成一条适合发送给 HR 的简短回复。
+  background_context: |-
+    一本院校毕业
+    一年工作经验，主要做AI智能客服
+browser_config:
+  user_data_dir: ""
+  chrome_exe_path: ""
+resume_config:
+  inject_llm_context: true
+  resume_path: ""
+  resume_content: ""

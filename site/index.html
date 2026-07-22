@@ -1,0 +1,1621 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="https://pgthinker.me/img/logo.png">
+  <title>Fuck Job — 智能求职助手，让找工作不再痛苦</title>
+  <meta name="description"
+    content="Fuck Job 是一款桌面端 AI 求职自动化工具，支持岗位智能筛选、一键批量投递、AI 自动回复、简历优化和面试准备。隐私优先，数据本地存储，服务端只做模型推理。" />
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0a0a0b;
+      --bg2: #111113;
+      --surface: #1a1a1e;
+      --surface2: #222228;
+      --border: rgba(255, 255, 255, 0.06);
+      --border2: rgba(255, 255, 255, 0.10);
+      --text: #f1f1ef;
+      --text2: #a1a09a;
+      --text3: #6b6a65;
+      --green: #c8ff3e;
+      --green-dim: rgba(200, 255, 62, 0.10);
+      --green-glow: rgba(200, 255, 62, 0.20);
+      --cyan: #4ef0d6;
+      --cyan-dim: rgba(78, 240, 214, 0.10);
+      --blue: #6ea8ff;
+      --blue-dim: rgba(110, 168, 255, 0.08);
+      --purple: #c084fc;
+      --purple-dim: rgba(192, 132, 252, 0.08);
+      --orange: #ff9f5e;
+      --orange-dim: rgba(255, 159, 94, 0.10);
+      --radius: 16px;
+      --radius-sm: 10px;
+      --radius-xs: 8px;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 32px rgba(0, 0, 0, 0.3);
+    }
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html {
+      scroll-behavior: smooth;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      overflow-x: hidden;
+    }
+
+    /* Grid background */
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+      background-size: 60px 60px;
+      mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 30%, transparent 70%);
+    }
+
+    /* Ambient glows */
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      background:
+        radial-gradient(ellipse 90% 70% at 20% 0%, rgba(200, 255, 62, 0.06), transparent 50%),
+        radial-gradient(ellipse 70% 80% at 80% 10%, rgba(78, 240, 214, 0.05), transparent 50%),
+        radial-gradient(ellipse 60% 60% at 50% 100%, rgba(110, 168, 255, 0.04), transparent 50%);
+    }
+
+    .container {
+      width: min(1200px, calc(100% - 48px));
+      margin: 0 auto;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* ─── Nav ─── */
+    .nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      background: rgba(10, 10, 11, 0.75);
+      backdrop-filter: blur(20px) saturate(180%);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .nav-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 64px;
+      gap: 24px;
+    }
+
+    .nav-brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-decoration: none;
+      color: var(--text);
+    }
+
+    .nav-logo-img {
+      width: 38px;
+      height: 38px;
+      border-radius: var(--radius-xs);
+      object-fit: contain;
+    }
+
+    .nav-title {
+      font-weight: 700;
+      font-size: 16px;
+      letter-spacing: -0.3px;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 32px;
+      list-style: none;
+    }
+
+    .nav-links a {
+      color: var(--text2);
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 500;
+      transition: color 0.2s;
+    }
+
+    .nav-links a:hover {
+      color: var(--text);
+    }
+
+    .nav-cta {
+      background: var(--green);
+      color: #0a0a0b !important;
+      padding: 8px 18px;
+      border-radius: 99px;
+      font-weight: 700 !important;
+      font-size: 13px !important;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .nav-cta:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 0 24px var(--green-glow);
+    }
+
+    /* ─── Buttons ─── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 14px 28px;
+      border-radius: 99px;
+      font-weight: 700;
+      font-size: 15px;
+      text-decoration: none;
+      border: none;
+      cursor: pointer;
+      transition: all 0.25s;
+      white-space: nowrap;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--green), #b8f41a);
+      color: #0a0a0b;
+      box-shadow: 0 0 32px rgba(200, 255, 62, 0.2);
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 48px rgba(200, 255, 62, 0.35);
+    }
+
+    .btn-outline {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border2);
+    }
+
+    .btn-outline:hover {
+      background: rgba(255, 255, 255, 0.04);
+      border-color: rgba(255, 255, 255, 0.18);
+    }
+
+    .btn-ghost {
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+    }
+
+    /* ─── Sections ─── */
+    section {
+      padding: 120px 0;
+    }
+
+    .section-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      border-radius: 99px;
+      background: var(--green-dim);
+      border: 1px solid rgba(200, 255, 62, 0.15);
+      color: var(--green);
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 20px;
+    }
+
+    .section-label .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 8px var(--green);
+    }
+
+    .section-title {
+      font-size: clamp(36px, 5vw, 56px);
+      font-weight: 800;
+      line-height: 1.08;
+      letter-spacing: -1.2px;
+      margin-bottom: 16px;
+    }
+
+    .section-desc {
+      color: var(--text2);
+      font-size: 17px;
+      max-width: 600px;
+      line-height: 1.7;
+    }
+
+    /* ─── Hero ─── */
+    .hero {
+      padding: 160px 0 80px;
+      text-align: center;
+      position: relative;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 16px;
+      border-radius: 99px;
+      background: var(--surface);
+      border: 1px solid var(--border2);
+      font-size: 13px;
+      color: var(--text2);
+      margin-bottom: 28px;
+    }
+
+    .hero-badge .live-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #22c55e;
+      animation: pulse-dot 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse-dot {
+
+      0%,
+      100% {
+        box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4);
+      }
+
+      50% {
+        box-shadow: 0 0 0 12px rgba(34, 197, 94, 0);
+      }
+    }
+
+    .hero h1 {
+      font-size: clamp(44px, 7vw, 80px);
+      font-weight: 900;
+      letter-spacing: -2px;
+      line-height: 0.95;
+      max-width: 900px;
+      margin: 0 auto 20px;
+    }
+
+    .hero h1 .highlight {
+      background: linear-gradient(135deg, var(--green) 0%, var(--cyan) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero-desc {
+      color: var(--text2);
+      font-size: 18px;
+      max-width: 640px;
+      margin: 0 auto 36px;
+      line-height: 1.75;
+    }
+
+    .hero-actions {
+      display: flex;
+      justify-content: center;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+
+    .hero-platforms {
+      display: flex;
+      justify-content: center;
+      gap: 20px;
+      margin-top: 40px;
+      color: var(--text3);
+      font-size: 13px;
+    }
+
+    .hero-platforms span {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .hero-platforms .icon {
+      width: 20px;
+      height: 20px;
+      opacity: 0.5;
+    }
+
+    /* ─── Product Preview ─── */
+    .preview-wrap {
+      margin-top: 48px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border2);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .preview-topbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      height: 44px;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg2);
+    }
+
+    .preview-dots {
+      display: flex;
+      gap: 6px;
+    }
+
+    .preview-dots span {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+
+    .preview-dots span:nth-child(1) {
+      background: #ff5f56;
+    }
+
+    .preview-dots span:nth-child(2) {
+      background: #ffbd2e;
+    }
+
+    .preview-dots span:nth-child(3) {
+      background: #27c93f;
+    }
+
+    .preview-title {
+      margin-left: 12px;
+      font-size: 12px;
+      color: var(--text3);
+      font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+
+    .preview-carousel {
+      position: relative;
+      overflow: hidden;
+      background: #0d0e0e;
+    }
+
+    .preview-slide {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      transition: opacity 0.6s ease;
+    }
+
+    .preview-slide.active {
+      opacity: 1;
+      position: relative;
+    }
+
+    .preview-slide img {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+
+    .preview-controls {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 8px;
+      z-index: 5;
+    }
+
+    .preview-dot {
+      width: 28px;
+      height: 6px;
+      border-radius: 99px;
+      background: rgba(255, 255, 255, 0.2);
+      border: none;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+
+    .preview-dot.active {
+      background: var(--green);
+      width: 40px;
+    }
+
+    /* ─── Stats ─── */
+    .stats {
+      padding: 80px 0;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 32px;
+    }
+
+    .stat-item {
+      text-align: center;
+    }
+
+    .stat-value {
+      font-size: 48px;
+      font-weight: 900;
+      line-height: 1;
+      letter-spacing: -1px;
+      background: linear-gradient(135deg, var(--green), var(--cyan));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .stat-label {
+      color: var(--text3);
+      font-size: 14px;
+      margin-top: 8px;
+    }
+
+    /* ─── Features Grid ─── */
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      margin-top: 56px;
+    }
+
+    .feature-card {
+      padding: 36px 28px;
+      border-radius: var(--radius);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      transition: all 0.3s;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .feature-card:hover {
+      border-color: var(--border2);
+      transform: translateY(-4px);
+      box-shadow: var(--shadow);
+    }
+
+    .feature-card::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+
+    .feature-card:nth-child(1)::before {
+      background: var(--green);
+    }
+
+    .feature-card:nth-child(2)::before {
+      background: var(--cyan);
+    }
+
+    .feature-card:nth-child(3)::before {
+      background: var(--blue);
+    }
+
+    .feature-card:nth-child(4)::before {
+      background: var(--purple);
+    }
+
+    .feature-card:nth-child(5)::before {
+      background: var(--orange);
+    }
+
+    .feature-card:nth-child(6)::before {
+      background: var(--green);
+    }
+
+    .feature-card:hover::before {
+      opacity: 1;
+    }
+
+    .feature-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      font-size: 22px;
+      margin-bottom: 20px;
+    }
+
+    .fc-icon-green {
+      background: var(--green-dim);
+      color: var(--green);
+    }
+
+    .fc-icon-cyan {
+      background: var(--cyan-dim);
+      color: var(--cyan);
+    }
+
+    .fc-icon-blue {
+      background: var(--blue-dim);
+      color: var(--blue);
+    }
+
+    .fc-icon-purple {
+      background: var(--purple-dim);
+      color: var(--purple);
+    }
+
+    .fc-icon-orange {
+      background: var(--orange-dim);
+      color: var(--orange);
+    }
+
+    .feature-card h3 {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 10px;
+      letter-spacing: -0.2px;
+    }
+
+    .feature-card p {
+      color: var(--text2);
+      font-size: 14px;
+      line-height: 1.65;
+    }
+
+    /* ─── How It Works ─── */
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+      margin-top: 56px;
+    }
+
+    .step-card {
+      text-align: center;
+      padding: 40px 24px;
+      border-radius: var(--radius);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      position: relative;
+    }
+
+    .step-num {
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--green-dim), var(--cyan-dim));
+      border: 1px solid rgba(200, 255, 62, 0.2);
+      display: grid;
+      place-items: center;
+      margin: 0 auto 20px;
+      font-size: 24px;
+      font-weight: 900;
+      color: var(--green);
+      font-family: "SF Mono", "Menlo", monospace;
+    }
+
+    .step-card h3 {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .step-card p {
+      color: var(--text2);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    /* ─── Privacy ─── */
+    .privacy-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-top: 56px;
+    }
+
+    .privacy-main {
+      padding: 48px 36px;
+      border-radius: var(--radius);
+      background: linear-gradient(135deg, var(--green-dim), transparent 60%);
+      border: 1px solid rgba(200, 255, 62, 0.2);
+    }
+
+    .privacy-main .privacy-icon {
+      width: 56px;
+      height: 56px;
+      border-radius: 14px;
+      background: rgba(200, 255, 62, 0.15);
+      display: grid;
+      place-items: center;
+      font-size: 26px;
+      color: var(--green);
+      margin-bottom: 20px;
+    }
+
+    .privacy-main h3 {
+      font-size: 32px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      margin-bottom: 12px;
+    }
+
+    .privacy-main p {
+      color: var(--text2);
+      font-size: 15px;
+      line-height: 1.7;
+    }
+
+    .privacy-side {
+      display: grid;
+      gap: 12px;
+    }
+
+    .privacy-item {
+      padding: 24px;
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      border: 1px solid var(--border);
+    }
+
+    .privacy-item h4 {
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+
+    .privacy-item p {
+      color: var(--text2);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    /* ─── Download ─── */
+    .download-wrap {
+      margin-top: 56px;
+      display: grid;
+      grid-template-columns: 0.9fr 1.1fr;
+      gap: 20px;
+    }
+
+    .download-card {
+      padding: 48px 40px;
+      border-radius: var(--radius);
+      background: linear-gradient(135deg, #f8f9f0, #f0f2e8);
+      color: #0a0a0b;
+    }
+
+    .download-card h2 {
+      font-size: 36px;
+      font-weight: 800;
+      letter-spacing: -0.8px;
+      margin-bottom: 12px;
+      color: #0a0a0b;
+    }
+
+    .download-card p {
+      color: rgba(10, 10, 11, 0.6);
+      font-size: 15px;
+      line-height: 1.7;
+      margin-bottom: 28px;
+    }
+
+    .download-platforms {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .dl-btn {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 24px;
+      border-radius: var(--radius-sm);
+      font-weight: 700;
+      font-size: 14px;
+      text-decoration: none;
+      transition: all 0.25s;
+      background: #0a0a0b;
+      color: #f1f1ef;
+    }
+
+    .dl-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.2);
+    }
+
+    .dl-btn .os-icon {
+      font-size: 20px;
+    }
+
+    .download-steps {
+      display: grid;
+      gap: 14px;
+      padding: 36px;
+      background: var(--surface);
+      border-radius: var(--radius);
+      border: 1px solid var(--border2);
+    }
+
+    .dl-step {
+      display: flex;
+      gap: 16px;
+      padding: 18px;
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border);
+    }
+
+    .dl-step-num {
+      width: 42px;
+      height: 42px;
+      flex-shrink: 0;
+      border-radius: 10px;
+      display: grid;
+      place-items: center;
+      font-weight: 900;
+      font-size: 18px;
+      color: var(--green);
+      background: var(--green-dim);
+      border: 1px solid rgba(200, 255, 62, 0.15);
+    }
+
+    .dl-step h4 {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .dl-step p {
+      color: var(--text2);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    /* ─── Community ─── */
+    .community-grid {
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      gap: 20px;
+      margin-top: 56px;
+    }
+
+    .community-info {
+      padding: 48px 40px;
+      border-radius: var(--radius);
+      background: linear-gradient(135deg, rgba(78, 240, 214, 0.08), transparent 60%);
+      border: 1px solid rgba(78, 240, 214, 0.15);
+    }
+
+    .community-info h2 {
+      font-size: 32px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      margin-bottom: 12px;
+    }
+
+    .community-info p {
+      color: var(--text2);
+      font-size: 15px;
+      line-height: 1.7;
+      max-width: 540px;
+    }
+
+    .qq-card {
+      padding: 36px;
+      border-radius: var(--radius);
+      background: linear-gradient(135deg, #e8f5ff, #dceeff);
+      color: #0a0a0b;
+    }
+
+    .qq-label {
+      font-size: 12px;
+      font-weight: 700;
+      color: rgba(10, 10, 11, 0.5);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .qq-num {
+      font-size: 40px;
+      font-weight: 900;
+      margin-top: 8px;
+      letter-spacing: -0.5px;
+      font-family: "SF Mono", "Menlo", monospace;
+    }
+
+    .copy-row {
+      display: flex;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .copy-row input {
+      flex: 1;
+      height: 44px;
+      padding: 0 14px;
+      border-radius: var(--radius-xs);
+      border: 1px solid rgba(10, 10, 11, 0.15);
+      background: rgba(255, 255, 255, 0.6);
+      color: #0a0a0b;
+      font-weight: 600;
+      font-size: 14px;
+    }
+
+    .copy-row button {
+      padding: 0 20px;
+      border-radius: var(--radius-xs);
+      border: none;
+      background: #0a0a0b;
+      color: #fff;
+      font-weight: 700;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .qr-wrap {
+      margin-top: 20px;
+      padding: 16px;
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.6);
+      border: 1px solid rgba(10, 10, 11, 0.1);
+      display: grid;
+      place-items: center;
+    }
+
+    .qr-wrap img {
+      width: 180px;
+      height: 180px;
+      object-fit: contain;
+      border-radius: 8px;
+    }
+
+    /* ─── FAQ ─── */
+    .faq-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 14px;
+      margin-top: 56px;
+    }
+
+    .faq-item {
+      padding: 28px;
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      border: 1px solid var(--border);
+    }
+
+    .faq-item h4 {
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .faq-item p {
+      color: var(--text2);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    /* ─── Footer ─── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 32px 0;
+    }
+
+    .footer-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      color: var(--text3);
+      font-size: 13px;
+    }
+
+    /* ─── Animations ─── */
+    .reveal {
+      opacity: 0;
+      transform: translateY(24px);
+      animation: reveal 0.7s ease forwards;
+    }
+
+    .reveal-d1 {
+      animation-delay: 0.1s;
+    }
+
+    .reveal-d2 {
+      animation-delay: 0.2s;
+    }
+
+    .reveal-d3 {
+      animation-delay: 0.3s;
+    }
+
+    @keyframes reveal {
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    /* ─── Responsive ─── */
+    @media (max-width: 1024px) {
+      .features-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+
+    @media (max-width: 768px) {
+      .nav-links {
+        display: none;
+      }
+
+      .container {
+        width: min(100% - 32px, 1200px);
+      }
+
+      section {
+        padding: 80px 0;
+      }
+
+      .hero {
+        padding-top: 120px;
+      }
+
+      .features-grid,
+      .stats-grid,
+      .steps,
+      .privacy-grid,
+      .download-wrap,
+      .community-grid,
+      .faq-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .hero-actions {
+        flex-direction: column;
+        align-items: center;
+      }
+
+      .hero-actions .btn {
+        width: 100%;
+        justify-content: center;
+      }
+
+      .footer-inner {
+        flex-direction: column;
+        text-align: center;
+      }
+    }
+  </style>
+</head>
+
+<body data-qq="659022753">
+
+  <nav class="nav">
+    <div class="container nav-inner">
+      <a class="nav-brand" href="#">
+        <img class="nav-logo-img" src="https://fk.pgthinker.me/static/logo.png" alt="Fuck Job Logo" />
+        <span class="nav-title">Fuck Job</span>
+      </a>
+      <ul class="nav-links">
+        <li><a href="#features">功能</a></li>
+        <li><a href="#how-it-works">上手指南</a></li>
+        <li><a href="#privacy">隐私设计</a></li>
+        <li><a href="#download">下载</a></li>
+        <li><a href="#faq">FAQ</a></li>
+        <li><a href="#community">社区</a></li>
+        <li><a id="navCta" class="nav-cta" href="#download">下载</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <main>
+
+    <!-- Hero -->
+    <section class="hero" id="hero">
+      <div class="container">
+        <div class="hero-badge reveal">
+          <span class="live-dot"></span> 桌面端 AI 求职自动化 · <span id="heroPlatforms">多平台支持</span> · <span id="heroVersion">v0.1.0</span>
+        </div>
+        <h1 class="reveal reveal-d1">
+          把求职流程<br>交给 <span class="highlight">AI 自动化</span>
+        </h1>
+        <p class="hero-desc reveal reveal-d1">
+          从岗位筛选、一键投递、智能回复到简历优化，Fuck Job 帮你搞定重复劳动。<br>你只需要做一件事：聚焦真正重要的面试机会。
+        </p>
+        <div class="hero-actions reveal reveal-d2">
+          <a id="heroDownloadBtn" class="btn btn-primary" href="#download">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            立即下载
+          </a>
+          <a class="btn btn-outline" href="#features">
+            了解全部功能
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </a>
+        </div>
+        <div id="heroPlatformsList" class="hero-platforms reveal reveal-d2">
+          <span>加载中...</span>
+        </div>
+
+        <div class="preview-wrap reveal reveal-d2">
+          <div class="preview-topbar">
+            <div class="preview-dots"><span></span><span></span><span></span></div>
+            <span class="preview-title">Fuck Job · 应用预览</span>
+          </div>
+          <div class="preview-carousel" data-carousel>
+            <div class="preview-slide active">
+              <img src="https://fk.pgthinker.me/static/demo1.png" alt="自动化求职工作台" loading="lazy" />
+            </div>
+            <div class="preview-slide">
+              <img src="https://fk.pgthinker.me/static/demo2.png" alt="智能配置中心" loading="lazy" />
+            </div>
+            <div class="preview-slide">
+              <img src="https://fk.pgthinker.me/static/demo3.png" alt="简历优化与面试准备" loading="lazy" />
+            </div>
+            <div class="preview-slide">
+              <img src="https://fk.pgthinker.me/static/demo4.png" alt="AI 自动回复" loading="lazy" />
+            </div>
+            <div class="preview-slide">
+              <img src="https://fk.pgthinker.me/static/demo5.png" alt="岗位面试分析" loading="lazy" />
+            </div>
+            <div class="preview-controls"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Stats -->
+    <div class="stats">
+      <div class="container">
+        <div class="stats-grid">
+          <div class="stat-item">
+            <div class="stat-value">24/7</div>
+            <div class="stat-label">全天候自动化运行</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-value">100%</div>
+            <div class="stat-label">数据本地存储</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-value">3 平台</div>
+            <div class="stat-label">跨系统支持</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-value">&lt;5 min</div>
+            <div class="stat-label">快速配置上手</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Features -->
+    <section id="features">
+      <div class="container">
+        <div class="section-label reveal"><span class="dot"></span>核心功能</div>
+        <h2 class="section-title reveal reveal-d1">求职全流程，一站自动化</h2>
+        <p class="section-desc reveal reveal-d1">从发现机会到拿下 offer，每个环节都有 AI 加持。</p>
+
+        <div class="features-grid">
+          <div class="feature-card reveal">
+            <div class="feature-icon fc-icon-green">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+              </svg>
+            </div>
+            <h3>一键自动化投递</h3>
+            <p>检查浏览器和登录状态后，自动执行岗位搜索、筛选和投递。支持单次投递、回复未读、周期投递三种模式，让系统替你跑完繁琐流程。</p>
+          </div>
+          <div class="feature-card reveal reveal-d1">
+            <div class="feature-icon fc-icon-cyan">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8" />
+                <line x1="21" y1="21" x2="16.65" y2="16.65" />
+              </svg>
+            </div>
+            <h3>智能岗位筛选</h3>
+            <p>按关键词、薪资、经验、学历、行业、城市等多维度精准定位目标岗位。支持正则表达式高级规则，排除不相关岗位，投递效率翻倍。</p>
+          </div>
+          <div class="feature-card reveal reveal-d2">
+            <div class="feature-icon fc-icon-blue">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              </svg>
+            </div>
+            <h3>AI 智能回复</h3>
+            <p>基于大语言模型根据对话上下文自动生成回复内容，或使用正则模板匹配固定场景。支持文本、图片、LLM 生成三种回复方式，沟通不中断。</p>
+          </div>
+          <div class="feature-card reveal">
+            <div class="feature-icon fc-icon-purple">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+              </svg>
+            </div>
+            <h3>简历优化工作台</h3>
+            <p>PDF 简历一键解析，AI 全文润色和逐章节优化。内置多个专业模板和主题配色，支持 Markdown 编辑和 PDF 导出，让简历脱颖而出。</p>
+          </div>
+          <div class="feature-card reveal reveal-d1">
+            <div class="feature-icon fc-icon-orange">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 20h9" />
+                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+              </svg>
+            </div>
+            <h3>面试深度分析</h3>
+            <p>基于 JD 和你的简历自动生成匹配度分析、风险点识别、项目追问清单和面试准备建议，让你有备而来。</p>
+          </div>
+          <div class="feature-card reveal reveal-d2">
+            <div class="feature-icon fc-icon-green">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+              </svg>
+            </div>
+            <h3>隐私安全保障</h3>
+            <p>简历、配置、聊天记录等所有敏感数据本地加密存储。服务端仅做模型推理，不保存任何个人招聘隐私信息。你的数据，你做主。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- How It Works -->
+    <section id="how-it-works">
+      <div class="container">
+        <div class="section-label reveal"><span class="dot"></span>快速上手</div>
+        <h2 class="section-title reveal reveal-d1">三步开启自动化求职</h2>
+        <p class="section-desc reveal reveal-d1">无需复杂配置，五分钟内即可启动。</p>
+
+        <div class="steps">
+          <div class="step-card reveal">
+            <div class="step-num">1</div>
+            <h3>下载并安装</h3>
+            <p>选择对应系统安装包，完成客户端安装。启动后即可进入配置界面。</p>
+          </div>
+          <div class="step-card reveal reveal-d1">
+            <div class="step-num">2</div>
+            <h3>配置求职策略</h3>
+            <p>上传简历 PDF，设置岗位筛选条件、自动回复模板和 LLM 模型参数。所有配置本地保存。</p>
+          </div>
+          <div class="step-card reveal reveal-d2">
+            <div class="step-num">3</div>
+            <h3>启动自动投递</h3>
+            <p>一键检查环境后，选择投递模式启动任务。实时日志展示运行状态，随时可控可停。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Privacy -->
+    <section id="privacy">
+      <div class="container">
+        <div class="section-label reveal"><span class="dot"></span>隐私设计</div>
+        <h2 class="section-title reveal reveal-d1">你的数据，永远在你手里</h2>
+        <p class="section-desc reveal reveal-d1">这不是一句口号，而是架构级别的设计选择。</p>
+
+        <div class="privacy-grid">
+          <div class="privacy-main reveal">
+            <div class="privacy-icon">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+              </svg>
+            </div>
+            <h3>本地优先架构</h3>
+            <p>简历内容、岗位筛选规则、回复模板、运行日志、聊天上下文——全部默认保存在你的设备上。<br><br>服务端只在需要 AI
+              能力时接收请求做模型推理，推理完成后不存储、不缓存、不沉淀你的任何个人信息。我们把「不存储」写进了产品架构，而不是隐私条款。</p>
+          </div>
+          <div class="privacy-side">
+            <div class="privacy-item reveal reveal-d1">
+              <h4>本地加密存储</h4>
+              <p>配置文件、简历内容和运行日志采用 AES 加密存储在本机，密钥由操作系统级密钥链管理。</p>
+            </div>
+            <div class="privacy-item reveal reveal-d2">
+              <h4>推理即焚</h4>
+              <p>服务端仅承担模型推理，请求处理完毕后不保留任何简历、聊天、岗位沟通上下文数据。</p>
+            </div>
+            <div class="privacy-item reveal reveal-d3">
+              <h4>可控可导出</h4>
+              <p>所有配置支持 YAML/JSON 导入导出，你的求职策略和数据随时可迁移、可备份。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Download -->
+    <section id="download">
+      <div class="container">
+        <div class="section-label reveal"><span class="dot"></span>立即开始</div>
+        <h2 class="section-title reveal reveal-d1">下载 Fuck Job</h2>
+        <p class="section-desc reveal reveal-d1">选择你的操作系统，开始自动化求职之旅。</p>
+
+        <div class="download-wrap">
+          <div class="download-card reveal">
+            <h2>准备好了吗？</h2>
+            <p id="downloadDesc">当前提供 Windows x64 安装包，macOS 和 Linux 版本即将发布。加入交流群获取最新版本通知。</p>
+            <p style="margin-top:4px;font-size:13px;color:rgba(10,10,11,0.45);">
+              最新版本 <strong id="downloadVersion">v0.1.0</strong>
+              · <span id="downloadDate">2026-06-05</span>
+            </p>
+            <div id="downloadButtons" class="download-platforms">
+              <span style="color:rgba(10,10,11,0.4);font-size:14px;">加载下载链接...</span>
+            </div>
+          </div>
+          <div class="download-steps reveal reveal-d1">
+            <div class="dl-step">
+              <div class="dl-step-num">1</div>
+              <div>
+                <h4>下载对应平台安装包</h4>
+                <p>获取 Windows x64 安装程序，macOS / Linux 用户进群获取预发布版本。</p>
+              </div>
+            </div>
+            <div class="dl-step">
+              <div class="dl-step-num">2</div>
+              <div>
+                <h4>配置求职策略 & 模型参数</h4>
+                <p>上传简历、设置筛选条件、配置 LLM 模型 API Key 和回复模板。</p>
+              </div>
+            </div>
+            <div class="dl-step">
+              <div class="dl-step-num">3</div>
+              <div>
+                <h4>检查环境，启动任务</h4>
+                <p>验证浏览器和登录状态后，选择投递模式，通过工作台实时监控执行进度。</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Community -->
+    <section id="community">
+      <div class="container">
+        <div class="section-label reveal"><span class="dot"></span>加入社区</div>
+        <h2 class="section-title reveal reveal-d1">遇到问题？一起交流</h2>
+        <p class="section-desc reveal reveal-d1">群里同步版本更新、配置技巧、常见问题解答，还有热心的求职搭子。</p>
+
+        <div class="community-grid">
+          <div class="community-info reveal">
+            <h2>QQ 交流群</h2>
+            <p>版本更新第一时间通知，求职策略分享，浏览器环境配置讨论，自动回复模板交流。扫码或复制群号加入，暗号「FJ」。</p>
+          </div>
+          <div class="qq-card reveal reveal-d1">
+            <div class="qq-label">QQ 群号</div>
+            <div class="qq-num" data-qq-target>659022753</div>
+            <div class="copy-row">
+              <input id="qqInput" value="659022753" readonly aria-label="QQ群号" />
+              <button id="copyQQ" type="button">复制</button>
+            </div>
+            <div class="qr-wrap">
+              <img src="https://fk.pgthinker.me/static/qrcode.jpg" alt="QQ 交流群二维码" loading="lazy" />
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FAQ -->
+    <section id="faq">
+      <div class="container">
+        <div class="section-label reveal"><span class="dot"></span>常见问题</div>
+        <h2 class="section-title reveal reveal-d1">你可能想知道的</h2>
+        <p class="section-desc reveal reveal-d1">关于数据安全、使用方式和效果边界的回答。</p>
+
+        <div class="faq-grid">
+          <div class="faq-item reveal">
+            <h4>服务端会保存我的简历或聊天记录吗？</h4>
+            <p>不会。这是产品的核心架构原则：服务端只做模型推理，请求处理完毕后不保留任何个人数据。你的简历和聊天记录只在你本地设备上。</p>
+          </div>
+          <div class="faq-item reveal">
+            <h4>需要自己有 LLM API Key 吗？</h4>
+            <p>需要。客户端集成了 LLM 调用能力，你需要配置自己的 API Key（兼容 OpenAI 格式），用于自动回复、简历优化和面试分析等 AI 功能。</p>
+          </div>
+          <div class="faq-item reveal reveal-d1">
+            <h4>支持哪些招聘平台？</h4>
+            <p>当前聚焦 BOSS 直聘。通过浏览器自动化方式运行，不依赖平台 API，但也意味着平台 UI 变动可能需要适配更新。</p>
+          </div>
+          <div class="faq-item reveal reveal-d1">
+            <h4>会不会被封号？</h4>
+            <p>合理使用风险较低。建议设置合理的投递频率，使用周期投递模式分散请求压力。工具只是辅助，自行评估使用策略和风险。</p>
+          </div>
+          <div class="faq-item reveal reveal-d2">
+            <h4>能保证拿到 offer 吗？</h4>
+            <p>不能，也不应该有工具做这种承诺。Fuck Job 解决的是重复操作和信息整理的成本，让你把精力放在真正需要人的判断力的环节上。</p>
+          </div>
+          <div class="faq-item reveal reveal-d2">
+            <h4>怎么更新到最新版本？</h4>
+            <p>客户端内置自动更新机制，启动时会检测新版本并提示升级。也可在交流群获取最新安装包手动更新。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer>
+    <div class="container footer-inner">
+      <span>Fuck Job · AI 自动化求职客户端</span>
+      <span>© 2026 Fuck Job Team</span>
+    </div>
+  </footer>
+
+  <script>
+    // ── Platform metadata ──
+    const PLATFORM_META = {
+      "windows-x86_64": {
+        os: "Windows", arch: "x64", label: "Windows x64", group: "windows",
+        icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M0 0h11.38v11.38H0V0zm12.62 0H24v11.38H12.62V0zM0 12.62h11.38V24H0v11.38zm12.62 0H24V24H12.62V12.62z"/></svg>',
+        ext: ".exe"
+      },
+      "darwin-aarch64": {
+        os: "macOS", arch: "Apple Silicon", label: "macOS (Apple Silicon)", group: "darwin",
+        icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>',
+        ext: ".dmg"
+      },
+      "darwin-x86_64": {
+        os: "macOS", arch: "Intel", label: "macOS (Intel)", group: "darwin",
+        icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>',
+        ext: ".dmg"
+      },
+      "linux-x86_64": {
+        os: "Linux", arch: "x64", label: "Linux x64", group: "linux",
+        icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12.932.002c1.56.058 3.098.826 4.092 1.987.985 1.154 1.463 2.611 1.255 4.078-1.45.095-2.914-.398-4.012-1.394-1.05-.957-1.637-2.289-1.552-3.72.078-.337.158-.654.217-.95zM7.458 21.822c-.84-1.316-1.348-2.783-1.38-4.355-.032-1.623.407-3.192 1.137-4.567C8.7 10.265 11.056 8.643 13.67 8.733h.017l.012-.001c1.486.022 2.916.456 4.14 1.212.504.31.972.67 1.398 1.076l.266.243.007.484v.004c.06 3.938.066 9.459.056 11.543h-.002c-1.744.002-3.73.016-5.584.025-1.854.01-3.686.02-5.409.002l-.104-.002.01-.003c-.469-.04-.905-.462-1.009-.909-.065-.276-.02-.64.037-.585zM7 41c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg>',
+        ext: ".AppImage"
+      }
+    };
+
+    // OS-group display order
+    const OS_ORDER = ["windows", "darwin", "linux"];
+
+    // ── QQ ──
+    const qqNumber = document.body.dataset.qq || "659022753";
+    document.querySelectorAll("[data-qq-target]").forEach(el => el.textContent = qqNumber);
+    document.getElementById("qqInput").value = qqNumber;
+
+    document.getElementById("copyQQ").addEventListener("click", async () => {
+      const btn = document.getElementById("copyQQ");
+      try {
+        await navigator.clipboard.writeText(qqNumber);
+        btn.textContent = "已复制";
+      } catch {
+        const input = document.getElementById("qqInput");
+        input.select();
+        document.execCommand("copy");
+        btn.textContent = "已复制";
+      }
+      setTimeout(() => { btn.textContent = "复制"; }, 1600);
+    });
+
+    // ── Carousel ──
+    const slides = Array.from(document.querySelectorAll(".preview-slide"));
+    const carouselEl = document.querySelector("[data-carousel]");
+    const controlsEl = carouselEl.querySelector(".preview-controls");
+    const slideData = [
+      { title: "自动化求职工作台", desc: "环境检查、任务执行、实时日志，一站式操作面板" },
+      { title: "智能配置中心", desc: "岗位筛选、回复策略、LLM 参数，全在本地灵活配置" },
+      { title: "简历优化与面试准备", desc: "围绕 JD 生成优化建议、匹配分析和准备清单" },
+      { title: "AI 自动回复模板", desc: "按聊天上下文和本地规则智能生成回复内容" },
+      { title: "岗位面试分析", desc: "综合 JD、简历和背景信息，输出风险点和追问方向" },
+    ];
+
+    let current = 0;
+    let timer;
+
+    slides.forEach((_, i) => {
+      const dot = document.createElement("button");
+      dot.className = "preview-dot" + (i === 0 ? " active" : "");
+      dot.setAttribute("aria-label", slideData[i].title);
+      dot.addEventListener("click", () => showSlide(i));
+      controlsEl.appendChild(dot);
+    });
+
+    const dots = Array.from(controlsEl.querySelectorAll(".preview-dot"));
+
+    function showSlide(i) {
+      current = i;
+      slides.forEach((s, si) => s.classList.toggle("active", si === i));
+      dots.forEach((d, di) => d.classList.toggle("active", di === i));
+    }
+
+    function startCarousel() {
+      clearInterval(timer);
+      timer = setInterval(() => showSlide((current + 1) % slides.length), 4500);
+    }
+
+    startCarousel();
+
+    // ── Fetch version info ──
+    async function loadVersionInfo() {
+      try {
+        const res = await fetch("https://fk.pgthinker.me/releases/update.json");
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        console.log("[fuckJob] update.json loaded:", data);
+
+        const version = data.version || "0.1.0";
+        const platforms = data.platforms || {};
+        const pubDate = data.pub_date ? new Date(data.pub_date).toLocaleDateString("zh-CN") : "";
+        const notes = data.notes || "";
+
+        // Collect available platform entries, sorted by OS_ORDER
+        const entries = Object.entries(platforms)
+          .map(([key, val]) => ({ key, url: val.url, meta: PLATFORM_META[key] }))
+          .filter(e => e.meta)
+          .sort((a, b) => OS_ORDER.indexOf(a.meta.group) - OS_ORDER.indexOf(b.meta.group));
+
+        console.log("[fuckJob] parsed entries:", entries.map(e => e.key));
+
+        if (entries.length === 0) return;
+
+        // Dedupe macOS: pick aarch64 if both exist
+        const deduped = [];
+        const seenGroups = new Set();
+        for (const e of entries) {
+          if (e.meta.group === "darwin") {
+            if (!seenGroups.has("darwin")) {
+              // Prefer aarch64
+              const aarch = entries.find(x => x.key === "darwin-aarch64");
+              const x86 = entries.find(x => x.key === "darwin-x86_64");
+              deduped.push(aarch || x86);
+              seenGroups.add("darwin");
+            }
+          } else if (!seenGroups.has(e.meta.group)) {
+            seenGroups.add(e.meta.group);
+            deduped.push(e);
+          }
+        }
+
+        // ── Hero: version & platform names ──
+        const heroPlatformsEl = document.getElementById("heroPlatforms");
+        const heroVersionEl = document.getElementById("heroVersion");
+        const osNames = deduped.map(e => e.meta.os);
+        heroPlatformsEl.textContent = osNames.join(" / ");
+        heroVersionEl.textContent = "v" + version;
+
+        // ── Hero: platform list ──
+        const heroList = document.getElementById("heroPlatformsList");
+        heroList.innerHTML = deduped.map(e =>
+          `<span>${e.meta.icon} ${e.meta.label}</span>`
+        ).join("");
+
+        // ── Hero CTA → first available download ──
+        const firstEntry = deduped[0];
+        const heroBtn = document.getElementById("heroDownloadBtn");
+        heroBtn.href = firstEntry.url;
+        heroBtn.textContent = "";
+        heroBtn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>下载 ' + firstEntry.meta.os + " 版";
+
+        // ── Nav CTA ──
+        const navCta = document.getElementById("navCta");
+        navCta.href = firstEntry.url;
+
+        // ── Download section: description ──
+        const downloadDesc = document.getElementById("downloadDesc");
+        downloadDesc.textContent = osNames.length >= 3
+          ? "支持 Windows、macOS、Linux 三大平台，选择你的操作系统下载安装。"
+          : "当前支持 " + osNames.join("、") + " 平台。更多平台即将支持，进群获取最新动态。";
+
+        // ── Download section: version & date ──
+        document.getElementById("downloadVersion").textContent = "v" + version;
+        document.getElementById("downloadDate").textContent = pubDate;
+
+        // ── Download section: buttons ──
+        const btnsContainer = document.getElementById("downloadButtons");
+        btnsContainer.innerHTML = deduped.map(e =>
+          `<a class="dl-btn" href="${e.url}">${e.meta.icon} ${e.meta.label}<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a>`
+        ).join("");
+
+        // Update release notes in download section if present
+        if (notes && notes !== ("更新版本 " + version)) {
+          const noteEl = document.createElement("p");
+          noteEl.style.cssText = "margin-top:8px;font-size:13px;color:rgba(10,10,11,0.45);";
+          noteEl.textContent = "更新说明：" + notes;
+          document.getElementById("downloadDate").parentElement.after(noteEl);
+        }
+
+      } catch (err) {
+        console.warn("Failed to load version info:", err);
+        // Fallback: render all known platforms from the update.json structure
+        const fallbackPlatforms = [
+          { key: "windows-x86_64", url: "https://fk.pgthinker.me/releases/0.1.0/windows/fuck_job_0.1.0_x64-setup.exe" },
+          { key: "darwin-aarch64", url: "https://fk.pgthinker.me/releases/0.1.0/darwin/fuck_job_0.1.0_aarch64.dmg" },
+          { key: "darwin-x86_64", url: "https://fk.pgthinker.me/releases/0.1.0/darwin/fuck_job_0.1.0_x64.dmg" },
+          { key: "linux-x86_64", url: "https://fk.pgthinker.me/releases/0.1.0/linux/fuck_job_0.1.0_amd64.AppImage" },
+        ];
+        const deduped = [];
+        const seen = new Set();
+        for (const p of fallbackPlatforms) {
+          const meta = PLATFORM_META[p.key];
+          if (!meta) continue;
+          if (meta.group === "darwin") {
+            if (!seen.has("darwin")) { deduped.push({ ...p, meta }); seen.add("darwin"); }
+          } else if (!seen.has(meta.group)) {
+            seen.add(meta.group);
+            deduped.push({ ...p, meta });
+          }
+        }
+
+        const osNames = deduped.map(e => e.meta.os);
+        document.getElementById("heroPlatforms").textContent = osNames.join(" / ");
+        document.getElementById("heroPlatformsList").innerHTML = deduped.map(e =>
+          `<span>${e.meta.icon} ${e.meta.label}</span>`
+        ).join("");
+        document.getElementById("heroDownloadBtn").href = deduped[0].url;
+        document.getElementById("heroDownloadBtn").innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>下载 ' + deduped[0].meta.os + " 版";
+        document.getElementById("navCta").href = deduped[0].url;
+        document.getElementById("downloadDesc").textContent = "支持 Windows、macOS、Linux 三大平台，选择你的操作系统下载安装。";
+        document.getElementById("downloadButtons").innerHTML = deduped.map(e =>
+          `<a class="dl-btn" href="${e.url}">${e.meta.icon} ${e.meta.label}<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a>`
+        ).join("");
+      }
+    }
+
+    loadVersionInfo();
+
+    // ── Reveal animations ──
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.style.animationPlayState = "running";
+        }
+      });
+    }, { threshold: 0.1 });
+
+    document.querySelectorAll(".reveal").forEach(el => {
+      el.style.animationPlayState = "paused";
+      observer.observe(el);
+    });
+
+    setTimeout(() => {
+      document.querySelectorAll(".reveal").forEach(el => {
+        const rect = el.getBoundingClientRect();
+        if (rect.top < window.innerHeight) {
+          el.style.animationPlayState = "running";
+        }
+      });
+    }, 100);
+  </script>
+
+</body>
+
+</html>
