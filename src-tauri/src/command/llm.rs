@@ -1,4 +1,6 @@
 use crate::command::base::CommandResult;
+use crate::config::RegexRule;
+use crate::error::AppError;
 use crate::llm::service::LlmService;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -49,6 +51,37 @@ pub struct OptimizeWithAnswerRequest {
 pub struct ResumeLlmResult {
     pub success: bool,
     pub data: String,
+}
+
+#[tauri::command]
+pub async fn generate_job_filter_rules(
+    app_handle: tauri::AppHandle,
+    requirement: String,
+) -> CommandResult<Vec<RegexRule>> {
+    let requirement = requirement.trim();
+    if requirement.is_empty() {
+        return CommandResult::err(AppError::validation("请输入岗位筛选需求"));
+    }
+
+    let config = match crate::config::load_app_config_inner(app_handle) {
+        Ok(value) => value,
+        Err(error) => return CommandResult::err(error),
+    };
+    let service = match service(&config) {
+        Ok(value) => value,
+        Err(error) => return CommandResult::err(error),
+    };
+
+    match service
+        .generate(build_job_filter_rules_prompt(requirement))
+        .await
+    {
+        Ok(response) => match parse_generated_job_filter_rules(&response.content) {
+            Ok(rules) => CommandResult::ok(rules),
+            Err(error) => CommandResult::err(error),
+        },
+        Err(error) => CommandResult::err(error),
+    }
 }
 
 fn service(config: &crate::config::AppRuntimeConfig) -> Result<LlmService, crate::error::AppError> {
@@ -243,6 +276,70 @@ JSON 数组格式如下：
     )
 }
 
+fn build_job_filter_rules_prompt(requirement: &str) -> String {
+    format!(
+        r#"你是岗位筛选规则生成器。请把用户的自然语言需求转换为 Rust regex crate 兼容的正则规则。
+
+用户需求：
+<requirement>
+{requirement}
+</requirement>
+
+规则字段说明：
+- name：简短中文名称。
+- pattern：Rust regex 兼容的正则表达式，禁止使用前瞻、后顾和反向引用。
+- target：只能是 Title、Company、Description、All。Title 匹配岗位标题，Company 匹配公司名，Description 和 All 匹配岗位描述。
+- mode：只能是 ACCEPT 或 REJECT。ACCEPT 表示只接受命中的岗位，REJECT 表示拒绝命中的岗位。
+
+输出要求：
+1. 只输出合法 JSON 数组，不得输出 Markdown、解释或其他文字。
+2. 每条规则只表达一个清晰意图，最多输出 12 条。
+3. 使用非捕获分组和 | 表达同类关键词，例如“Java|Golang”。
+4. 不要臆造用户未提出的筛选条件。
+
+输出格式：
+[
+  {{"name":"排除外包","pattern":"外包|驻场","target":"Description","mode":"REJECT"}}
+]"#
+    )
+}
+
+fn parse_generated_job_filter_rules(raw: &str) -> Result<Vec<RegexRule>, AppError> {
+    let cleaned = raw
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+    let mut rules: Vec<RegexRule> = serde_json::from_str(cleaned).map_err(|error| {
+        AppError::validation("大模型返回的规则格式无效").with_detail(error.to_string())
+    })?;
+
+    if rules.is_empty() {
+        return Err(AppError::validation("大模型未生成任何规则"));
+    }
+    if rules.len() > 12 {
+        return Err(AppError::validation("大模型生成的规则过多，请缩小需求范围"));
+    }
+
+    for (index, rule) in rules.iter_mut().enumerate() {
+        rule.name = rule.name.trim().to_string();
+        rule.pattern = rule.pattern.trim().to_string();
+        if rule.name.is_empty() || rule.pattern.is_empty() {
+            return Err(AppError::validation(format!(
+                "第 {} 条规则缺少名称或正则表达式",
+                index + 1
+            )));
+        }
+        regex::Regex::new(&rule.pattern).map_err(|error| {
+            AppError::validation(format!("第 {} 条规则的正则表达式无效", index + 1))
+                .with_detail(error.to_string())
+        })?;
+    }
+
+    Ok(rules)
+}
+
 fn build_optimize_resume_with_answer_prompt(request: &OptimizeWithAnswerRequest) -> String {
     format!(
         r#"你是一位资深简历精修专家。候选人针对简历中的某项缺陷回答了面试官的追问。请将他回答中包含的有效信息（技术细节、行动步骤、可量化的数据结果）重构融进简历对应章节中。
@@ -296,7 +393,8 @@ fn parse_predicted_questions(raw: &str) -> Result<Vec<PredictedQuestion>, String
 #[cfg(test)]
 mod tests {
     use super::{
-        build_optimize_resume_with_answer_prompt, build_predict_resume_questions_prompt,
+        build_job_filter_rules_prompt, build_optimize_resume_with_answer_prompt,
+        build_predict_resume_questions_prompt, parse_generated_job_filter_rules,
         OptimizeWithAnswerRequest,
     };
 
@@ -326,5 +424,39 @@ mod tests {
         assert!(prompt.contains("峰值 QPS 3000"));
         assert!(prompt.contains("## 项目经历"));
         assert!(prompt.contains("只输出优化重构后的【整个章节】"));
+    }
+
+    #[test]
+    fn job_filter_prompt_requires_structured_rust_regex_rules() {
+        let prompt = build_job_filter_rules_prompt("只看 Java，排除外包和驻场");
+
+        assert!(prompt.contains("Rust regex crate"));
+        assert!(prompt.contains("只看 Java，排除外包和驻场"));
+        assert!(prompt.contains("\"target\""));
+        assert!(prompt.contains("\"mode\""));
+    }
+
+    #[test]
+    fn generated_job_filter_rules_are_parsed_and_validated() {
+        let rules = parse_generated_job_filter_rules(
+            r#"```json
+[{"name":"排除外包","pattern":"外包|驻场","target":"Description","mode":"REJECT"}]
+```"#,
+        )
+        .unwrap();
+
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "排除外包");
+        assert_eq!(rules[0].pattern, "外包|驻场");
+    }
+
+    #[test]
+    fn generated_job_filter_rules_reject_invalid_regex() {
+        let error = parse_generated_job_filter_rules(
+            r#"[{"name":"错误规则","pattern":"(?=Java)","target":"Title","mode":"ACCEPT"}]"#,
+        )
+        .unwrap_err();
+
+        assert!(error.message.contains("正则表达式无效"));
     }
 }

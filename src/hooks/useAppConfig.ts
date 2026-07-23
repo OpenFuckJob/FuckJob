@@ -29,6 +29,8 @@ export function useAppConfig() {
 
   const updateConfig = useCallback((update: (current: AppRuntimeConfig) => AppRuntimeConfig) => {
     setConfig((current) => current ? update(current) : current);
+    setStatus((current) => current === "loading" ? current : "idle");
+    setMessage("");
   }, []);
 
   const save = useCallback(async (nextConfig?: AppRuntimeConfig) => {
@@ -37,8 +39,9 @@ export function useAppConfig() {
     setStatus("loading");
     try {
       await saveAppConfig(value);
-      savedSnapshot.current = JSON.stringify(value);
-      setConfig(value);
+      const savedValue = JSON.stringify(value);
+      savedSnapshot.current = savedValue;
+      setConfig((current) => current && JSON.stringify(current) !== savedValue ? current : value);
       setStatus("saved");
       setMessage("配置已保存");
       return true;

@@ -64,13 +64,43 @@ export interface MockInterviewQuestionRequest {
   resumeContent: string;
   history: MockInterviewChatMessage[];
   round: number;
-  maxRounds: number;
+  jobContext: string;
+  interviewType: string;
+  difficulty: string;
 }
 
 export interface MockInterviewSummaryRequest {
   sessionId: string;
   resumeContent: string;
   history: MockInterviewChatMessage[];
+  jobContext: string;
+  interviewType: string;
+  difficulty: string;
+}
+
+export interface MockInterviewDimension {
+  dimension: string;
+  score: number;
+  strengths: string[];
+  weaknesses: string[];
+  evidence: string[];
+}
+
+export interface MockResumeOptimization {
+  sectionTitle: string;
+  originalMarkdown: string;
+  optimizedMarkdown: string;
+  rationale: string;
+  evidence: string[];
+  needsEvidence: boolean;
+}
+
+export interface MockInterviewReport {
+  overallScore: number;
+  overallSummary: string;
+  dimensions: MockInterviewDimension[];
+  risks: string[];
+  optimizations: MockResumeOptimization[];
 }
 
 export interface MockInterviewStreamPayload {

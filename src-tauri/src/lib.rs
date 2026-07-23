@@ -15,7 +15,6 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let handle = app.handle().clone();
@@ -38,11 +37,6 @@ pub fn run() {
             command::config::export_app_config,
             command::config::parse_resume_pdf,
             command::config::check_browser_env,
-            command::data::get_data_directory,
-            command::data::export_data_backup,
-            command::data::restore_data_backup,
-            command::data::clear_logs,
-            command::data::reset_app_config,
             command::user_resumes::load_user_resumes,
             command::user_resumes::save_user_resumes,
             command::resume_templates::get_resume_templates,
@@ -69,6 +63,7 @@ pub fn run() {
             command::analysis::analysis_delete,
             command::llm::debug_generate_replay,
             command::llm::debug_generate_greet,
+            command::llm::generate_job_filter_rules,
             command::llm::predict_resume_questions,
             command::llm::optimize_resume_with_answer,
             command::llm_provider::get_llm_credential_status,

@@ -45,7 +45,6 @@ import {
   ProductOutlined,
   CommentOutlined,
   GlobalOutlined,
-  SaveOutlined,
   PlusOutlined,
   DeleteOutlined,
   LoadingOutlined,
@@ -164,8 +163,8 @@ export interface ConfigPageProps {
   updateResume: (next: Partial<ResumeConfig>) => void;
   updateRule: (index: number, next: Partial<RegexRule>) => void;
   addRule: () => void;
+  addRules: (rules: RegexRule[]) => void;
   removeRule: (index: number) => void;
-  saveConfig: () => void;
   importConfig: (path: string) => Promise<void>;
   exportConfig: (path: string) => Promise<void>;
 }
@@ -208,6 +207,8 @@ export function ConfigPage(props: ConfigPageProps) {
   const [browserEnvStatus, setBrowserEnvStatus] =
     useState<BrowserEnvStatus | null>(null);
   const [mockInterviewOpen, setMockInterviewOpen] = useState(false);
+  const [ruleRequirement, setRuleRequirement] = useState("");
+  const [generatingRules, setGeneratingRules] = useState(false);
   const resumeContent = props.config.resume_config.resume_content ?? "";
   const resumeSections = useMemo(
     () => extractSections(resumeContent),
@@ -227,6 +228,38 @@ export function ConfigPage(props: ConfigPageProps) {
       })
       .catch(() => {});
   }, [props.config.browser_config]);
+
+  const generateJobFilterRules = async () => {
+    const requirement = ruleRequirement.trim();
+    if (!requirement) {
+      antdMessage.warning("请先描述岗位筛选需求");
+      return;
+    }
+    if (!props.config.llm_config) {
+      props.onOpenLlmConfig();
+      return;
+    }
+
+    setGeneratingRules(true);
+    try {
+      const result = await invoke<CommandResult<RegexRule[]>>(
+        "generate_job_filter_rules",
+        { requirement },
+      );
+      if (!result.success || !result.data) {
+        throw new Error(commandErrorMessage(result.error, "生成高级规则失败"));
+      }
+      props.addRules(result.data);
+      setRuleRequirement("");
+      antdMessage.success(`已生成 ${result.data.length} 条规则，请检查后保存`);
+    } catch (error) {
+      antdMessage.error(
+        error instanceof Error ? error.message : "生成高级规则失败",
+      );
+    } finally {
+      setGeneratingRules(false);
+    }
+  };
 
   const selectConfigFile = async () => {
     const selected = await open({
@@ -661,6 +694,43 @@ export function ConfigPage(props: ConfigPageProps) {
                   ),
                   children: (
                     <div className="space-y-6 pt-4">
+                      <Card
+                        size="small"
+                        className="border-sky-200! bg-sky-50/60!"
+                      >
+                        <div className="flex flex-col gap-3">
+                          <div>
+                            <Text strong className="text-slate-800">
+                              <RobotOutlined className="mr-2 text-sky-600" />
+                              AI 生成高级规则
+                            </Text>
+                            <Text className="mt-1 block text-xs text-slate-500">
+                              用自然语言描述想保留或排除的岗位，生成结果会追加到下方，检查后再保存。
+                            </Text>
+                          </div>
+                          <div className="mb-3">
+                            <Input.TextArea
+                              value={ruleRequirement}
+                              onChange={(event) => setRuleRequirement(event.target.value)}
+                              placeholder="例如：只看 Java 或 Golang 后端岗位，排除外包、驻场和保险公司"
+                              autoSize={{ minRows: 2, maxRows: 5 }}
+                              maxLength={1000}
+                              showCount
+                            />
+                          </div>
+                          <div className="flex justify-end">
+                            <Button
+                              type="primary"
+                              icon={<RobotOutlined />}
+                              loading={generatingRules}
+                              onClick={() => void generateJobFilterRules()}
+                            >
+                              {props.config.llm_config ? "生成规则" : "先配置大模型"}
+                            </Button>
+                          </div>
+                        </div>
+                      </Card>
+
                       <div className="flex items-center justify-between">
                         <Text className="text-slate-500 text-[10px] font-bold uppercase tracking-tighter">
                           添加正则表达式来精准包含或拒绝特定岗位字段
@@ -1426,14 +1496,17 @@ export function ConfigPage(props: ConfigPageProps) {
   return (
     <div className="flex h-full w-full flex-col md:flex-row gap-6 animate-in">
       <aside className="w-full md:w-[260px] flex-shrink-0 flex flex-col gap-4">
-        {props.dirty && (
-          <Alert
-            type="warning"
-            showIcon
-            message="有未保存的更改"
-            description="保存后任务才会使用最新配置。"
-          />
-        )}
+        <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
+          {props.status === "loading" ? (
+            <><LoadingOutlined className="mr-2 text-sky-500" />正在自动保存…</>
+          ) : props.status === "error" ? (
+            <><WarningOutlined className="mr-2 text-red-500" />{props.message || "自动保存失败，修改后将重试"}</>
+          ) : props.dirty ? (
+            <><LoadingOutlined className="mr-2 text-sky-500" />等待自动保存…</>
+          ) : (
+            <><CheckCircleOutlined className="mr-2 text-emerald-500" />配置已自动保存</>
+          )}
+        </div>
         <Menu
           mode="vertical"
           selectedKeys={[activeGroup]}
@@ -1459,17 +1532,6 @@ export function ConfigPage(props: ConfigPageProps) {
           导出配置模板
         </Button>
 
-        <Button
-          type="primary"
-          icon={
-            props.status === "loading" ? <LoadingOutlined /> : <SaveOutlined />
-          }
-          onClick={props.saveConfig}
-          className="w-full rounded-xl! h-11! bg-sky-500! border-none font-bold text-white! shadow-[0_18px_36px_rgba(14,165,233,0.20)] hover:bg-sky-400!"
-          disabled={props.status === "loading"}
-        >
-          保存配置
-        </Button>
       </aside>
 
       <Form
@@ -1479,7 +1541,6 @@ export function ConfigPage(props: ConfigPageProps) {
         className="flex-1 min-w-0 h-full overflow-hidden flex flex-col"
         onSubmitCapture={(e) => {
           e.preventDefault();
-          props.saveConfig();
         }}
       >
         <div className="flex-1 h-full overflow-y-auto overflow-x-hidden rounded-3xl border border-slate-200/80 bg-white/82 px-6 py-6 md:px-12 md:py-10 backdrop-blur-3xl shadow-[0_24px_60px_rgba(15,23,42,0.06)]">

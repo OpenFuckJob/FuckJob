@@ -4,6 +4,7 @@ import {
   Card,
   Descriptions,
   Empty,
+  Modal,
   Progress,
   Row,
   Col,
@@ -22,7 +23,11 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import type { CommandResult } from "../../types/command";
 import { commandErrorMessage } from "../../types/command";
-import type { InterviewJobAnalysis } from "../../types/analysis";
+import type {
+  InterviewJobAnalysis,
+  InterviewQuestion,
+  SkillEvidence,
+} from "../../types/analysis";
 import type { JobDetail } from "../../types/job-detail";
 import { AiFeatureGate } from "@/components/AiFeatureGate";
 
@@ -261,42 +266,103 @@ const OverviewTab = ({ a }: { a: InterviewJobAnalysis }) => (
   </div>
 );
 
-const SkillMatrixTab = ({ a }: { a: InterviewJobAnalysis }) => (
-  <div>
-    {a.skill_matrix.length > 0 ? (
-      <Table
-        size="small"
-        pagination={false}
-        dataSource={a.skill_matrix}
-        rowKey={(_, i) => String(i)}
-        columns={[
-          { title: "JD 要求", dataIndex: "requirement", ellipsis: true },
-          { title: "简历证据", dataIndex: "resume_evidence", ellipsis: true },
-          { title: "差距", dataIndex: "gap", ellipsis: true },
-          { title: "补强建议", dataIndex: "prep_action", ellipsis: true },
-        ]}
-      />
-    ) : (
-      <Empty description="暂无技能匹配数据" />
-    )}
-  </div>
-);
+const detailTextStyle = {
+  whiteSpace: "pre-wrap" as const,
+  overflowWrap: "anywhere" as const,
+  lineHeight: 1.8,
+};
 
-const InterviewQuestionsTab = ({ a }: { a: InterviewJobAnalysis }) => (
-  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-    {a.likely_questions.length > 0 ? (
-      a.likely_questions.map((q, i) => (
-        <Card key={i} size="small" title={
-          <Space><Tag>{q.category}</Tag>{q.question}</Space>
-        }>
-          <Typography.Text type="secondary">提问意图：{q.why}</Typography.Text>
-          <div style={{ marginTop: 4, lineHeight: 1.8 }}>{q.answer_outline}</div>
-        </Card>
-      ))
-    ) : (
-      <Empty description="暂无面试问题预测" />
-    )}
-  </div>
-);
+const SkillMatrixTab = ({ a }: { a: InterviewJobAnalysis }) => {
+  const [selected, setSelected] = useState<SkillEvidence | null>(null);
+
+  return (
+    <div>
+      {a.skill_matrix.length > 0 ? (
+        <>
+          <Typography.Text type="secondary" style={{ display: "block", marginBottom: 8 }}>
+            点击任意一行查看完整内容
+          </Typography.Text>
+          <Table
+            size="small"
+            pagination={false}
+            dataSource={a.skill_matrix}
+            rowKey={(_, i) => String(i)}
+            onRow={(record) => ({
+              onClick: () => setSelected(record),
+              style: { cursor: "pointer" },
+            })}
+            columns={[
+              { title: "JD 要求", dataIndex: "requirement", ellipsis: true },
+              { title: "简历证据", dataIndex: "resume_evidence", ellipsis: true },
+              { title: "差距", dataIndex: "gap", ellipsis: true },
+              { title: "补强建议", dataIndex: "prep_action", ellipsis: true },
+            ]}
+          />
+          <Modal
+            title="技能匹配详情"
+            open={selected !== null}
+            onCancel={() => setSelected(null)}
+            footer={null}
+            width={760}
+          >
+            {selected && (
+              <Descriptions column={1} bordered size="small">
+                <Descriptions.Item label="JD 要求"><div style={detailTextStyle}>{selected.requirement}</div></Descriptions.Item>
+                <Descriptions.Item label="简历证据"><div style={detailTextStyle}>{selected.resume_evidence}</div></Descriptions.Item>
+                <Descriptions.Item label="差距"><div style={detailTextStyle}>{selected.gap}</div></Descriptions.Item>
+                <Descriptions.Item label="补强建议"><div style={detailTextStyle}>{selected.prep_action}</div></Descriptions.Item>
+              </Descriptions>
+            )}
+          </Modal>
+        </>
+      ) : (
+        <Empty description="暂无技能匹配数据" />
+      )}
+    </div>
+  );
+};
+
+const InterviewQuestionsTab = ({ a }: { a: InterviewJobAnalysis }) => {
+  const [selected, setSelected] = useState<InterviewQuestion | null>(null);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {a.likely_questions.length > 0 ? (
+        <>
+          <Typography.Text type="secondary">点击问题卡片查看完整内容</Typography.Text>
+          {a.likely_questions.map((q, i) => (
+            <Card
+              key={i}
+              size="small"
+              hoverable
+              onClick={() => setSelected(q)}
+              title={<Space><Tag>{q.category}</Tag>{q.question}</Space>}
+            >
+              <Typography.Text type="secondary">提问意图：{q.why}</Typography.Text>
+              <div style={{ marginTop: 4, lineHeight: 1.8 }}>{q.answer_outline}</div>
+            </Card>
+          ))}
+          <Modal
+            title={<Space><Tag>{selected?.category}</Tag><span>面试问题详情</span></Space>}
+            open={selected !== null}
+            onCancel={() => setSelected(null)}
+            footer={null}
+            width={760}
+          >
+            {selected && (
+              <Descriptions column={1} bordered size="small">
+                <Descriptions.Item label="预测问题"><div style={detailTextStyle}>{selected.question}</div></Descriptions.Item>
+                <Descriptions.Item label="提问意图"><div style={detailTextStyle}>{selected.why}</div></Descriptions.Item>
+                <Descriptions.Item label="回答思路"><div style={detailTextStyle}>{selected.answer_outline}</div></Descriptions.Item>
+              </Descriptions>
+            )}
+          </Modal>
+        </>
+      ) : (
+        <Empty description="暂无面试问题预测" />
+      )}
+    </div>
+  );
+};
 
 export default AnalysisReport;

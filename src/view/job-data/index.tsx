@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Button,
   Input,
   InputNumber,
   Modal,
   Popconfirm,
+  Segmented,
   Space,
   Table,
   Tag,
@@ -37,6 +38,8 @@ interface CollectCommunicatedJobsResult {
   messages_inserted: number;
   total: number;
 }
+
+/* ────────── Chat messages modal ────────── */
 
 const ChatMessagesModal = ({
   job,
@@ -149,6 +152,259 @@ const ChatMessagesModal = ({
   );
 };
 
+/* ────────── Kanban lane config ────────── */
+
+interface KanbanLane {
+  key: string;
+  label: string;
+  color: string;
+  bg: string;
+  border: string;
+  filter: (job: JobDetail) => boolean;
+}
+
+const KANBAN_LANES: KanbanLane[] = [
+  {
+    key: "not_sent",
+    label: "未投递",
+    color: "#64748b",
+    bg: "#f8fafc",
+    border: "#e2e8f0",
+    filter: (j) => !j.is_send_resume,
+  },
+  {
+    key: "sent",
+    label: "已投递",
+    color: "#1677ff",
+    bg: "rgba(22,119,255,0.04)",
+    border: "rgba(22,119,255,0.25)",
+    filter: (j) => j.is_send_resume && !j.is_reply,
+  },
+  {
+    key: "replied",
+    label: "已回复",
+    color: "#10b981",
+    bg: "rgba(16,185,129,0.04)",
+    border: "rgba(16,185,129,0.25)",
+    filter: (j) => j.is_reply,
+  },
+];
+
+/* ────────── Job card renderer ────────── */
+
+function JobKanbanCard({
+  job,
+  onView,
+  onChat,
+  onDelete,
+}: {
+  job: JobDetail;
+  onView: (job: JobDetail) => void;
+  onChat: (job: JobDetail) => void;
+  onDelete: (id: string) => void;
+}) {
+  const platform = getJobPlatform(job);
+  const time = new Date(job.created_at).toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  return (
+    <div
+      style={{
+        background: "#ffffff",
+        borderRadius: 10,
+        border: "1px solid #e2e8f0",
+        padding: 12,
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+        transition: "box-shadow 0.2s",
+        cursor: "default",
+      }}
+      onMouseEnter={(e) => {
+        (e.currentTarget as HTMLDivElement).style.boxShadow = "0 4px 12px rgba(0,0,0,0.06)";
+      }}
+      onMouseLeave={(e) => {
+        (e.currentTarget as HTMLDivElement).style.boxShadow = "none";
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+        <Typography.Text strong style={{ fontSize: 14, lineHeight: 1.4, flex: 1 }}>
+          {job.title}
+        </Typography.Text>
+        <Tag
+          color={platform === "liepin" ? "purple" : "green"}
+          style={{ margin: 0, flexShrink: 0, fontSize: 11 }}
+        >
+          {platform === "liepin" ? "猎聘" : "BOSS"}
+        </Tag>
+      </div>
+
+      <Typography.Text type="secondary" style={{ fontSize: 12.5 }}>
+        {job.company_name}
+      </Typography.Text>
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        {job.salary && (
+          <Tag
+            style={{
+              margin: 0,
+              fontSize: 11,
+              background: "rgba(22,119,255,0.06)",
+              color: "#1677ff",
+              border: "none",
+            }}
+          >
+            {job.salary}
+          </Tag>
+        )}
+        {job.location && (
+          <Tag
+            style={{
+              margin: 0,
+              fontSize: 11,
+              background: "#f8fafc",
+              color: "#64748b",
+              border: "none",
+            }}
+          >
+            {job.location}
+          </Tag>
+        )}
+      </div>
+
+      <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+        {time}
+      </Typography.Text>
+
+      {/* actions */}
+      <div style={{ display: "flex", gap: 4, marginTop: 2 }}>
+        <Button size="small" type="text" icon={<EyeOutlined />} onClick={() => onView(job)}>
+          详情
+        </Button>
+        <Button size="small" type="text" icon={<MessageOutlined />} onClick={() => onChat(job)}>
+          沟通
+        </Button>
+        <Popconfirm
+          title="确认删除"
+          description={`确定要删除「${job.title}」吗？`}
+          onConfirm={() => onDelete(job.id)}
+          okText="确认删除"
+          cancelText="取消"
+          okButtonProps={{ danger: true }}
+        >
+          <Button size="small" type="text" danger icon={<DeleteOutlined />}>
+            删除
+          </Button>
+        </Popconfirm>
+      </div>
+    </div>
+  );
+}
+
+/* ────────── Kanban view ────────── */
+
+function KanbanView({
+  jobs,
+  onView,
+  onChat,
+  onDelete,
+}: {
+  jobs: JobDetail[];
+  onView: (job: JobDetail) => void;
+  onChat: (job: JobDetail) => void;
+  onDelete: (id: string) => void;
+}) {
+  const lanes = useMemo(
+    () =>
+      KANBAN_LANES.map((lane) => ({
+        ...lane,
+        jobs: jobs.filter(lane.filter),
+      })),
+    [jobs],
+  );
+
+  return (
+    <div
+      style={{
+        flex: "1 1 0",
+        minHeight: 0,
+        display: "flex",
+        gap: 16,
+        overflowX: "auto",
+        paddingBottom: 4,
+      }}
+    >
+      {lanes.map((lane) => (
+        <div
+          key={lane.key}
+          style={{
+            flex: 1,
+            minWidth: 260,
+            display: "flex",
+            flexDirection: "column",
+            background: lane.bg,
+            borderRadius: 14,
+            border: `1px solid ${lane.border}`,
+          }}
+        >
+          {/* lane header */}
+          <div
+            style={{
+              padding: "10px 14px",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
+            <Typography.Text strong style={{ color: lane.color, fontSize: 14 }}>
+              {lane.label}
+            </Typography.Text>
+            <Tag color="default" style={{ margin: 0 }}>
+              {lane.jobs.length}
+            </Tag>
+          </div>
+          {/* lane cards */}
+          <div
+            style={{
+              flex: 1,
+              overflowY: "auto",
+              padding: "0 10px 10px",
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+            }}
+          >
+            {lane.jobs.length === 0 ? (
+              <Typography.Text
+                type="secondary"
+                style={{ textAlign: "center", padding: 24, fontSize: 12 }}
+              >
+                暂无
+              </Typography.Text>
+            ) : (
+              lane.jobs.map((job) => (
+                <JobKanbanCard
+                  key={job.id}
+                  job={job}
+                  onView={onView}
+                  onChat={onChat}
+                  onDelete={onDelete}
+                />
+              ))
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ────────── Page ────────── */
+
 const JobDataPage = ({ aiConfigured, onConfigureAi }: { aiConfigured: boolean; onConfigureAi: () => void }) => {
   const [jobs, setJobs] = useState<JobDetail[]>([]);
   const [loading, setLoading] = useState(false);
@@ -157,6 +413,7 @@ const JobDataPage = ({ aiConfigured, onConfigureAi }: { aiConfigured: boolean; o
   const [collectingCommunicated, setCollectingCommunicated] = useState(false);
   const [currentJob, setCurrentJob] = useState<JobDetail | null>(null);
   const [chatJob, setChatJob] = useState<JobDetail | null>(null);
+  const [viewMode, setViewMode] = useState<"table" | "kanban">("table");
   const [messageApi, contextHolder] = message.useMessage();
 
   const loadJobs = useCallback(async () => {
@@ -239,6 +496,7 @@ const JobDataPage = ({ aiConfigured, onConfigureAi }: { aiConfigured: boolean; o
     setCurrentJob(null);
   }, []);
 
+  /* ── detail fallback ── */
   if (currentJob) {
     return (
       <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -254,6 +512,7 @@ const JobDataPage = ({ aiConfigured, onConfigureAi }: { aiConfigured: boolean; o
     )
     : jobs;
 
+  /* ── table columns ── */
   const columns: ColumnsType<JobDetail> = [
     {
       title: "岗位名称",
@@ -360,6 +619,7 @@ const JobDataPage = ({ aiConfigured, onConfigureAi }: { aiConfigured: boolean; o
     >
       {contextHolder}
 
+      {/* ── header toolbar ── */}
       <div
         style={{
           display: "flex",
@@ -373,6 +633,14 @@ const JobDataPage = ({ aiConfigured, onConfigureAi }: { aiConfigured: boolean; o
           岗位数据
         </Typography.Title>
         <Space wrap>
+          <Segmented
+            value={viewMode}
+            onChange={(val) => setViewMode(val as "table" | "kanban")}
+            options={[
+              { label: "表格", value: "table" },
+              { label: "看板", value: "kanban" },
+            ]}
+          />
           <Space.Compact>
             <InputNumber
               min={1}
@@ -404,31 +672,42 @@ const JobDataPage = ({ aiConfigured, onConfigureAi }: { aiConfigured: boolean; o
         </Space>
       </div>
 
-      <div
-        style={{
-          flex: "1 1 0",
-          minHeight: 0,
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-        }}
-      >
-        <Table<JobDetail>
-          className="job-data-table"
-          rowKey="id"
-          columns={columns}
-          dataSource={filteredJobs}
-          loading={loading}
-          size="middle"
-          scroll={{ x: 1300, y: "calc(100vh - 290px)" }}
-          pagination={{
-            defaultPageSize: 15,
-            showSizeChanger: true,
-            showTotal: (t) => `共 ${t} 条`,
-          }}
+      {/* ── view body ── */}
+      {viewMode === "kanban" ? (
+        <KanbanView
+          jobs={filteredJobs}
+          onView={setCurrentJob}
+          onChat={setChatJob}
+          onDelete={(id) => void handleDelete(id)}
         />
-      </div>
+      ) : (
+        <div
+          style={{
+            flex: "1 1 0",
+            minHeight: 0,
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
+          }}
+        >
+          <Table<JobDetail>
+            className="job-data-table"
+            rowKey="id"
+            columns={columns}
+            dataSource={filteredJobs}
+            loading={loading}
+            size="middle"
+            scroll={{ x: 1300, y: "calc(100vh - 290px)" }}
+            pagination={{
+              defaultPageSize: 15,
+              showSizeChanger: true,
+              showTotal: (t) => `共 ${t} 条`,
+            }}
+          />
+        </div>
+      )}
 
+      {/* ── chat modal ── */}
       {chatJob && (
         <ChatMessagesModal
           job={chatJob}

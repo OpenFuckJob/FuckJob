@@ -1,5 +1,5 @@
 {
-  "name": "fuck_job",
+  "name": "offer_flow",
   "private": true,
   "version": "0.1.1",
   "description": "Local-first desktop job search automation and analysis tool",
@@ -19,7 +19,6 @@
     "@ant-design/icons": "^6.2.5",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.7.1",
-    "@tauri-apps/plugin-opener": "^2",
     "antd": "^6.4.3",
     "markdown-it": "^14.2.0",
     "markdown-it-container": "^4.0.0",

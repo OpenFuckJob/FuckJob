@@ -1,16 +1,21 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Drawer, Input, Space, Tag, Typography, message } from "antd";
-import { CheckOutlined, RobotOutlined, SendOutlined, ThunderboltOutlined } from "@ant-design/icons";
+import { RobotOutlined, SendOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   streamMockInterviewQuestion,
   streamMockInterviewSummary,
+  parseMockInterviewReport,
 } from "@/lib/mock-interview";
 import type {
   MockInterviewChatMessage,
+  MockInterviewReport,
+  MockResumeOptimization,
   MockInterviewStreamPayload,
 } from "@/types/analysis";
 import { AiFeatureGate } from "@/components/AiFeatureGate";
+import { MockInterviewReportView } from "./MockInterviewReportView";
+import { MockInterviewSetup, type MockInterviewSettings } from "./MockInterviewSetup";
 
 interface MockInterviewDrawerProps {
   open: boolean;
@@ -34,7 +39,6 @@ interface UiMessage extends MockInterviewChatMessage {
   streaming?: boolean;
 }
 
-const MAX_ROUNDS = 5;
 const SSE_DATA_ARTIFACT_RE = /(?:^|\r?\n)\s*data:\s*|data:(?=[\u3400-\u9fffA-Za-z0-9{["“])/g;
 const QUESTION_FOCUS_LABELS = ["技术深度", "个人贡献", "量化结果", "问题处理", "表达可信度"];
 
@@ -65,24 +69,6 @@ function toHistory(messages: UiMessage[]): MockInterviewChatMessage[] {
     .map(({ role, content }) => ({ role, content: cleanStreamText(content) }));
 }
 
-function extractFirstMarkdownSection(markdown: string): {
-  title: string;
-  content: string;
-} | null {
-  const sectionMatches = [...markdown.matchAll(/^##\s+(.+)$/gm)];
-  const ignoredTitles = new Set(["面试总结", "可补充到简历的事实点", "优化后的简历章节"]);
-  const match = sectionMatches.find((item) => !ignoredTitles.has(item[1].trim()));
-  if (!match || match.index === undefined) return null;
-
-  const start = match.index;
-  const nextMatch = sectionMatches.find((item) => (item.index ?? 0) > start);
-  const end = nextMatch?.index ?? markdown.length;
-  return {
-    title: match[1].trim(),
-    content: markdown.slice(start, end).trim(),
-  };
-}
-
 export function MockInterviewDrawer({
   open,
   resumeContent,
@@ -96,7 +82,8 @@ export function MockInterviewDrawer({
   const [answer, setAnswer] = useState("");
   const [round, setRound] = useState(0);
   const [status, setStatus] = useState<InterviewStatus>("idle");
-  const [summaryMarkdown, setSummaryMarkdown] = useState("");
+  const [report, setReport] = useState<MockInterviewReport | null>(null);
+  const [settings, setSettings] = useState<MockInterviewSettings>({ jobContext: "", interviewType: "技术面", difficulty: "中级" });
   const [applying, setApplying] = useState(false);
   const [messageApi, contextHolder] = message.useMessage();
   const messagesRef = useRef<UiMessage[]>([]);
@@ -106,9 +93,9 @@ export function MockInterviewDrawer({
   const hasResume = resumeContent.trim().length > 0;
   const busy = status === "streaming_question" || status === "streaming_summary";
   const canAnswer = status === "waiting_answer" && answer.trim().length > 0;
-  const currentFocus = round > 0 ? QUESTION_FOCUS_LABELS[Math.min(round, MAX_ROUNDS) - 1] : "";
+  const currentFocus = round > 0 ? QUESTION_FOCUS_LABELS[(round - 1) % QUESTION_FOCUS_LABELS.length] : "";
   const progressText = round > 0
-    ? `第 ${Math.min(round, MAX_ROUNDS)}/${MAX_ROUNDS} 轮：${currentFocus}`
+    ? `第 ${round} 轮：${currentFocus}`
     : "未开始";
 
   useEffect(() => {
@@ -125,7 +112,7 @@ export function MockInterviewDrawer({
     const unlisteners: UnlistenFn[] = [];
     void listen<MockInterviewStreamPayload>("mock_interview:delta", (event) => {
       if (event.payload.sessionId !== sessionIdRef.current) return;
-      appendStreamDelta(event.payload.content);
+      if (event.payload.kind === "question") appendStreamDelta(event.payload.content);
     }).then((unlisten) => unlisteners.push(unlisten));
 
     void listen<MockInterviewStreamPayload>("mock_interview:done", (event) => {
@@ -143,11 +130,6 @@ export function MockInterviewDrawer({
       unlisteners.forEach((unlisten) => unlisten());
     };
   }, [messageApi, open]);
-
-  const summarySection = useMemo(
-    () => extractFirstMarkdownSection(summaryMarkdown),
-    [summaryMarkdown],
-  );
 
   function appendStreamDelta(delta: string): void {
     const messageId = streamMessageIdRef.current;
@@ -172,6 +154,20 @@ export function MockInterviewDrawer({
     streamMessageIdRef.current = null;
     const cleanContent = cleanStreamText(content);
 
+    if (kind === "summary") {
+      setMessages((current) => current.map((item) => item.id === messageId
+        ? { ...item, content: "结构化面试报告已生成", streaming: false }
+        : item));
+      try {
+        setReport(parseMockInterviewReport(cleanContent));
+        setStatus("completed");
+      } catch (error) {
+        setStatus("error");
+        messageApi.error(error instanceof Error ? error.message : "报告解析失败");
+      }
+      return;
+    }
+
     setMessages((current) =>
       current.map((item) =>
         item.id === messageId
@@ -179,12 +175,6 @@ export function MockInterviewDrawer({
           : item,
       ),
     );
-
-    if (kind === "summary") {
-      setSummaryMarkdown(cleanContent);
-      setStatus("completed");
-      return;
-    }
 
     setStatus("waiting_answer");
   }
@@ -204,9 +194,9 @@ export function MockInterviewDrawer({
       await streamMockInterviewQuestion({
         sessionId: activeSessionId,
         resumeContent: resumeContent.trim(),
-        history: toHistory(history),
-        round: nextRound,
-        maxRounds: MAX_ROUNDS,
+      history: toHistory(history),
+      round: nextRound,
+      ...settings,
       });
     } catch (error: unknown) {
       streamMessageIdRef.current = null;
@@ -228,13 +218,13 @@ export function MockInterviewDrawer({
     setSessionId(nextSessionId);
     setMessages([]);
     setAnswer("");
-    setSummaryMarkdown("");
+    setReport(null);
     setRound(0);
     setStatus("idle");
 
     const intro = createMessage(
       "system",
-      "模拟面试开始。AI 面试官会围绕技术深度、个人贡献、量化结果、问题处理、表达可信度各问 1 轮，全部回答后生成总结和可采纳的简历优化章节。",
+      "模拟面试开始。AI 面试官会结合你的回答持续追问，并在技术深度、个人贡献、量化结果、问题处理和表达可信度之间轮换方向。你可以随时结束并生成报告。",
     );
     setMessages([intro]);
 
@@ -256,11 +246,6 @@ export function MockInterviewDrawer({
     setMessages(nextMessages);
     setAnswer("");
 
-    if (round >= MAX_ROUNDS) {
-      await handleGenerateSummary(nextMessages);
-      return;
-    }
-
     await startQuestionStream(round + 1, nextMessages);
   }
 
@@ -276,6 +261,7 @@ export function MockInterviewDrawer({
         sessionId: sessionIdRef.current,
         resumeContent: resumeContent.trim(),
         history: toHistory(history),
+        ...settings,
       });
     } catch (error: unknown) {
       streamMessageIdRef.current = null;
@@ -285,19 +271,15 @@ export function MockInterviewDrawer({
     }
   }
 
-  async function handleApply(): Promise<void> {
-    if (!summarySection) {
-      messageApi.warning("总结中没有可采纳的 Markdown 二级章节");
-      return;
-    }
-
+  async function handleApply(optimization: MockResumeOptimization): Promise<void> {
     setApplying(true);
     try {
-      await onApply(summarySection.title, summarySection.content);
+      await onApply(optimization.sectionTitle, optimization.optimizedMarkdown);
       messageApi.success("已采纳并更新简历");
     } catch (error: unknown) {
       const detail = error instanceof Error ? error.message : "更新简历失败";
       messageApi.error(detail);
+      throw error;
     } finally {
       setApplying(false);
     }
@@ -321,6 +303,7 @@ export function MockInterviewDrawer({
           icon={<RobotOutlined />}
           message="通过 5 个不同方面的问题挖掘简历事实，用户逐轮回答后生成总结和可采纳的优化章节。"
         />
+        <MockInterviewSetup value={settings} onChange={setSettings} disabled={busy || round > 0} />
 
         <div className="mock-chat-toolbar">
           <Space>
@@ -336,6 +319,11 @@ export function MockInterviewDrawer({
           >
             开始模拟面试
           </Button>
+          {status === "waiting_answer" && round > 1 && (
+            <Button onClick={() => void handleGenerateSummary()}>
+              结束面试并生成报告
+            </Button>
+          )}
         </div>
 
         {!hasResume && (
@@ -383,21 +371,12 @@ export function MockInterviewDrawer({
           </div>
         )}
 
-        {status === "completed" && (
+        {status === "completed" && report && (
           <div className="mock-optimized-preview">
             <div className="mock-optimized-header">
-              <Typography.Text strong>最终总结与优化章节</Typography.Text>
-              <Button
-                type="primary"
-                icon={<CheckOutlined />}
-                loading={applying}
-                disabled={!summarySection}
-                onClick={() => void handleApply()}
-              >
-                采纳首个章节
-              </Button>
+              <Typography.Text strong>结构化面试报告与简历优化建议</Typography.Text>
             </div>
-            <pre>{summaryMarkdown}</pre>
+            <MockInterviewReportView report={report} applying={applying} onApply={handleApply} />
           </div>
         )}
       </div>

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   MockInterviewQuestionRequest,
+  MockInterviewReport,
   MockInterviewSummaryRequest,
   OptimizeWithAnswerRequest,
   PredictedQuestion,
@@ -43,4 +44,12 @@ export function streamMockInterviewSummary(
     "stream_mock_interview_summary",
     { request },
   ).then(unwrap);
+}
+
+export function parseMockInterviewReport(content: string): MockInterviewReport {
+  const report = JSON.parse(content) as MockInterviewReport;
+  if (!Array.isArray(report.dimensions) || !Array.isArray(report.optimizations)) {
+    throw new Error("模拟面试报告格式无效");
+  }
+  return report;
 }

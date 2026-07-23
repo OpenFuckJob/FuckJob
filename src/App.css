@@ -1,9 +1,9 @@
 @import "tailwindcss";
 
 :root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  color: #172033;
-  background: #f5f7fb;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  color: #0f172a;
+  background: #f1f5f9;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -13,7 +13,7 @@
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(148, 163, 184, 0.3) transparent;
+  scrollbar-color: rgba(148, 163, 184, 0.35) transparent;
 }
 
 ::-webkit-scrollbar {
@@ -27,18 +27,19 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.3);
+  background: rgba(148, 163, 184, 0.35);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.5);
+  background: rgba(148, 163, 184, 0.6);
 }
 
 body {
   margin: 0;
   min-width: 360px;
   min-height: 100vh;
+  background-color: #f8fafc;
 }
 
 button,
@@ -58,20 +59,26 @@ input {
   justify-content: center;
   padding: 32px;
   box-sizing: border-box;
+  background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
 }
 
 .app-title {
-  margin: 0;
-  line-height: 1.2;
+  margin: 0 !important;
+  line-height: 1.2 !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.01em;
+  background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 .app-shell {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
-  padding: 16px;
+  padding: 16px 20px;
   box-sizing: border-box;
-  background: #f5f7fb;
+  background: radial-gradient(circle at 50% 0%, #f8fafc 0%, #f1f5f9 100%);
 }
 
 .app-header,
@@ -85,54 +92,58 @@ input {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
-  padding: 0 20px;
-  height: 56px;
-  border: 1px solid rgba(229, 231, 235, 0.8);
-  border-radius: 14px;
-  background: #ffffff;
+  gap: 24px;
+  padding: 0 24px;
+  height: 62px;
+  border: 1px solid rgba(226, 232, 240, 0.8);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   box-shadow:
-    0 1px 2px rgba(15, 23, 42, 0.04),
-    0 4px 16px rgba(15, 23, 42, 0.05);
+    0 1px 3px rgba(15, 23, 42, 0.03),
+    0 8px 24px -4px rgba(15, 23, 42, 0.05);
 }
 
 .app-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   flex: 0 0 auto;
 }
 
-.app-logo {
+.app-logo-badge {
   display: flex;
-  width: 34px;
-  height: 34px;
+  width: 38px;
+  height: 38px;
   align-items: center;
   justify-content: center;
-  border-radius: 10px;
-  background: linear-gradient(135deg, #1677ff 0%, #4096ff 100%);
+  border-radius: 12px;
+  background: linear-gradient(135deg, #1677ff 0%, #2f54eb 100%);
   color: #ffffff;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  box-shadow: 0 2px 8px rgba(22, 119, 255, 0.25);
-  transition: box-shadow 0.2s ease;
+  font-size: 20px;
+  box-shadow: 0 4px 12px rgba(22, 119, 255, 0.35);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
 }
 
-.app-logo:hover {
-  box-shadow: 0 2px 12px rgba(22, 119, 255, 0.4);
+.app-logo-badge:hover {
+  transform: translateY(-1px) scale(1.04);
+  box-shadow: 0 6px 16px rgba(22, 119, 255, 0.45);
 }
 
 .app-brand-info {
   display: flex;
   flex-direction: column;
-  gap: 0;
+  gap: 1px;
 }
 
 .app-brand-subtitle {
   font-size: 11px;
-  color: #94a3b8;
+  color: #64748b;
+  font-weight: 500;
+  letter-spacing: 0.02em;
   line-height: 1;
-  margin-top: 1px;
 }
 
 .app-tabs {
@@ -141,8 +152,8 @@ input {
 }
 
 .app-tabs .ant-tabs-nav {
-  margin-bottom: 0;
-  height: 56px;
+  margin-bottom: 0 !important;
+  height: 62px;
 }
 
 .app-tabs .ant-tabs-nav::before {
@@ -155,24 +166,29 @@ input {
 
 .app-tabs .ant-tabs-tab {
   padding: 8px 16px !important;
-  font-size: 13px;
-  border-radius: 8px;
-  transition: all 0.2s ease;
+  font-size: 13.5px;
+  font-weight: 500;
+  border-radius: 10px;
+  color: #64748b !important;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  margin: 0 4px !important;
 }
 
 .app-tabs .ant-tabs-tab:hover {
-  color: #1677ff;
-  background: rgba(22, 119, 255, 0.04);
-}
-
-.app-tabs .ant-tabs-tab-active {
+  color: #1677ff !important;
   background: rgba(22, 119, 255, 0.06);
 }
 
+.app-tabs .ant-tabs-tab-active {
+  color: #1677ff !important;
+  font-weight: 600;
+  background: rgba(22, 119, 255, 0.08) !important;
+}
+
 .app-tabs .ant-tabs-ink-bar {
-  height: 2px !important;
-  border-radius: 1px;
-  background: #1677ff;
+  height: 3px !important;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #1677ff 0%, #2f54eb 100%) !important;
 }
 
 .app-content {
@@ -181,10 +197,60 @@ input {
   overflow-y: auto;
   margin-top: 16px;
   padding: 24px;
-  border: 1px solid #e5e7eb;
-  border-radius: 14px;
-  background: #ffffff;
-  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.04);
+  border: 1px solid rgba(226, 232, 240, 0.8);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow:
+    0 1px 3px rgba(15, 23, 42, 0.02),
+    0 10px 30px -5px rgba(15, 23, 42, 0.04);
+}
+
+/* Modern Card Styling Overrides */
+.ant-card {
+  border-radius: 14px !important;
+  border: 1px solid rgba(226, 232, 240, 0.8) !important;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.02) !important;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+.ant-card-hoverable:hover {
+  border-color: rgba(22, 119, 255, 0.3) !important;
+  box-shadow: 0 8px 24px rgba(22, 119, 255, 0.08) !important;
+  transform: translateY(-2px);
+}
+
+.ant-btn {
+  border-radius: 8px !important;
+  font-weight: 500 !important;
+  box-shadow: none !important;
+  transition: all 0.2s ease !important;
+}
+
+.ant-btn-primary {
+  background: linear-gradient(135deg, #1677ff 0%, #2f54eb 100%) !important;
+  border: none !important;
+  box-shadow: 0 2px 6px rgba(22, 119, 255, 0.25) !important;
+}
+
+.ant-btn-primary:hover {
+  background: linear-gradient(135deg, #4096ff 0%, #1677ff 100%) !important;
+  box-shadow: 0 4px 12px rgba(22, 119, 255, 0.35) !important;
+  transform: translateY(-1px);
+}
+
+.ant-segmented {
+  background: #f1f5f9 !important;
+  padding: 3px !important;
+  border-radius: 10px !important;
+}
+
+.ant-segmented-item-selected {
+  background: #ffffff !important;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08) !important;
+  border-radius: 8px !important;
+  font-weight: 600 !important;
 }
 
 @media (max-width: 760px) {
@@ -201,12 +267,12 @@ input {
   }
 
   .app-brand {
-    padding-bottom: 8px;
+    padding-bottom: 10px;
     border-bottom: 1px solid #f1f5f9;
   }
 
   .app-tabs .ant-tabs-nav {
-    height: 44px;
+    height: 48px;
   }
 
   .app-tabs .ant-tabs-nav-wrap {

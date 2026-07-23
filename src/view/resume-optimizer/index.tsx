@@ -66,9 +66,10 @@ export function findSectionIndexByRenderedTitle(
 export interface ResumeOptimizerPageProps {
   config: AppRuntimeConfig;
   onOpenLlmConfig: () => void;
+  onUpdateResume: (content: string) => void;
 }
 
-function ResumeOptimizerPage({ config, onOpenLlmConfig }: ResumeOptimizerPageProps) {
+function ResumeOptimizerPage({ config, onOpenLlmConfig, onUpdateResume }: ResumeOptimizerPageProps) {
   const [interviewActive, setInterviewActive] = useState(false);
   const resumeContent = (config.resume_config.resume_content ?? "").trim();
 
@@ -81,6 +82,12 @@ function ResumeOptimizerPage({ config, onOpenLlmConfig }: ResumeOptimizerPagePro
 
   // Entry guard checks
   const canStart = !!config.llm_config && !!resumeContent;
+  const handleApplyOptimization = useCallback(async (sectionTitle: string, optimizedMarkdown: string) => {
+    const sections = extractSections(resumeContent);
+    const sectionIndex = findSectionIndexByRenderedTitle(sections, sectionTitle);
+    if (sectionIndex < 0) throw new Error(`未找到章节「${sectionTitle}」`);
+    onUpdateResume(replaceSectionContent(resumeContent, sections[sectionIndex], optimizedMarkdown).trim());
+  }, [onUpdateResume, resumeContent]);
 
   // When interview is active, render the full-page chat panel
   if (interviewActive) {
@@ -98,10 +105,7 @@ function ResumeOptimizerPage({ config, onOpenLlmConfig }: ResumeOptimizerPagePro
         <MockInterviewPanel
           resumeContent={resumeContent}
           onBack={() => setInterviewActive(false)}
-          onApply={async () => {
-            // Apply is handled in ConfigPage; here we just dismiss the panel.
-            setInterviewActive(false);
-          }}
+          onApply={handleApplyOptimization}
         />
       </div>
     );

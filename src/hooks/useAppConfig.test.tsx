@@ -53,6 +53,37 @@ describe("useAppConfig", () => {
     expect(result.current.config?.browser_config.user_data_dir).toBe("next");
   });
 
+  it("preserves newer edits made while an earlier version is being saved", async () => {
+    vi.mocked(api.loadAppConfig).mockResolvedValue(config);
+    let finishSave: (() => void) | undefined;
+    vi.mocked(api.saveAppConfig).mockImplementation(() => new Promise<void>((resolve) => {
+      finishSave = resolve;
+    }));
+    const { result } = renderHook(() => useAppConfig());
+    await waitFor(() => expect(result.current.config).not.toBeNull());
+
+    act(() => result.current.updateConfig((current) => ({
+      ...current,
+      browser_config: { ...current.browser_config, user_data_dir: "first" },
+    })));
+    await waitFor(() => expect(result.current.dirty).toBe(true));
+    let saving: Promise<boolean>;
+    act(() => { saving = result.current.save(); });
+    await waitFor(() => expect(result.current.status).toBe("loading"));
+
+    act(() => result.current.updateConfig((current) => ({
+      ...current,
+      browser_config: { ...current.browser_config, user_data_dir: "second" },
+    })));
+    await act(async () => {
+      finishSave?.();
+      await saving!;
+    });
+
+    expect(result.current.config?.browser_config.user_data_dir).toBe("second");
+    expect(result.current.dirty).toBe(true);
+  });
+
   it("reports save success and failure", async () => {
     vi.mocked(api.loadAppConfig).mockResolvedValue(config);
     vi.mocked(api.saveAppConfig).mockResolvedValue();

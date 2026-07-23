@@ -2,7 +2,6 @@ pub mod analysis;
 pub mod base;
 pub mod communicated_jobs;
 pub mod config;
-pub mod data;
 pub mod job;
 pub mod llm;
 pub mod llm_provider;

@@ -23,7 +23,7 @@ export function Onboarding({ config, onFinish }: { config: AppRuntimeConfig; onF
   return <main className="app-loading"><Card style={{ width: 720, maxWidth: "94vw" }}>
     <Typography.Text type="secondary">步骤 {step + 1} / 3 · {['隐私', '浏览器', '可选 AI'][step]}</Typography.Text>
     {step === 0 && <Space direction="vertical" size="large" style={{ width: "100%", marginTop: 32 }}>
-      <Typography.Title level={2}>欢迎使用 Fuck Job</Typography.Title>
+      <Typography.Title level={2}>欢迎使用 OfferFlow</Typography.Title>
       <Alert type="info" showIcon message="数据默认保存在本机" description="招聘平台访问只在你主动执行任务时发生；大模型网络请求完全可选，并发送到你选择的服务。API Key 存入系统凭据库。" />
       <Space><Button type="primary" onClick={() => setStep(1)}>继续</Button><Button onClick={() => void finish(null)}>跳过 AI，进入应用</Button></Space>
     </Space>}

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "fuckJob",
+  "productName": "OfferFlow",
   "version": "0.1.1",
   "identifier": "me.pgthinker.fj",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "",
+        "title": "OfferFlow - 智聘助手",
         "width": 1300,
         "height": 900
       }
