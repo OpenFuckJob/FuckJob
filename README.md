@@ -8,6 +8,38 @@
 
 ---
 
+## 🖼️ 界面预览
+
+### 工作台
+
+<p align="center">
+  <img
+    src="docs/images/workspace.png"
+    alt="OfferFlow 工作台——自动化任务控制、运行状态与实时日志"
+    width="92%"
+  />
+</p>
+
+<p align="center">
+  <sub>统一管理求职平台、自动化任务、运行状态和实时日志</sub>
+</p>
+
+### 配置中心
+
+<p align="center">
+  <img
+    src="docs/images/config-center.png"
+    alt="OfferFlow 配置中心——浏览器、大模型、岗位筛选与沟通策略配置"
+    width="92%"
+  />
+</p>
+
+<p align="center">
+  <sub>集中配置浏览器环境、大模型、简历、岗位筛选和沟通策略</sub>
+</p>
+
+---
+
 ## ✨ 功能概览
 
 ### 🖥️ 工作台

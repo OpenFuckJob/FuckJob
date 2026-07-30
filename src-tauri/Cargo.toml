@@ -1,6 +1,6 @@
 [package]
 name = "offer_flow"
-version = "0.1.1"
+version = "0.1.2"
 description = "Local-first desktop job search automation and analysis tool"
 authors = ["JWJW000"]
 license = "Apache-2.0"
