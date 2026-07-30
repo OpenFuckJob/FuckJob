@@ -10,6 +10,7 @@ import ConversationDebugPage from "@/view/conversation-debug";
 import JobDataPage from "@/view/job-data";
 import ResumeOptimizerPage from "@/view/resume-optimizer";
 import WorkspacePage from "@/view/workspace";
+import { AutoUpdater } from "@/lib/updater";
 
 type AppTabKey = "workspace" | "job-data" | "conversation-debug" | "resume-optimizer" | "config";
 const tabs: Array<{ key: AppTabKey; label: string }> = [
@@ -110,6 +111,7 @@ export default function App() {
         },
       }}
     >
+      <AutoUpdater />
       {!app.config.onboarding_completed ? (
         <Onboarding config={app.config} onFinish={app.save} />
       ) : (

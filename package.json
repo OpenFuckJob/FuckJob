@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "test": "vitest",
     "test:run": "vitest run",
+    "update:manifest": "node scripts/generate-update-json.mjs",
     "check:network": "node scripts/check-network-boundary.mjs",
     "tauri": "tauri"
   },
@@ -19,6 +20,8 @@
     "@ant-design/icons": "^6.2.5",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "antd": "^6.4.3",
     "markdown-it": "^14.2.0",
     "markdown-it-container": "^4.0.0",

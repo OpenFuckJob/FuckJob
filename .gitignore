@@ -27,3 +27,8 @@ release
 releases/
 .codegraph
 settings.local.json
+
+# Tauri updater signing key (never commit the private key)
+.tauri/*.key
+
+./docs/updater-release.md

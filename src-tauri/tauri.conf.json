@@ -23,6 +23,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["dmg", "app", "nsis"],
     "icon": [
       "icons/32x32.png",
@@ -31,5 +32,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUwNERGRjE4MUZEOTJENTIKUldSU0xka2ZHUDlONEp3TlVhQ2NqclA4STJFZTRod25rV3RsNVRqdEY3MG9MQzhxWlFTaVhhSU8K",
+      "endpoints": [
+        "https://fk.pgthinker.me/releases/update.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

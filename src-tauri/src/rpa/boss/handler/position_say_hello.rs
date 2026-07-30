@@ -395,8 +395,6 @@ async fn handle_greet(
         let btn = page
             .ele(".btn.btn-startchat")?
             .ok_or_else(|| anyhow::anyhow!("未找到沟通按钮"))?;
-        let redirect_url = btn.attr("redirect-url").unwrap_or_default();
-        let data_url = btn.attr("data-url").unwrap_or_default();
         let data_isfriend = btn
             .attr("data-isfriend")
             .map(|v| v == "true")
@@ -406,22 +404,45 @@ async fn handle_greet(
             return Ok(());
         }
 
-        // 发起打招呼 POST 请求
-        let post_url = format!("https://www.zhipin.com{}", data_url);
-        let script = build_start_chat_request_script(&post_url);
-        page.run_js_await(&script)?;
+        // 真实点击“立即沟通”，确保触发站点的建联逻辑和沟通次数提示。
+        btn.click()?;
         if is_job_task_stop_requested() {
             logger::info("求职任务已结束")?;
             return Ok(());
         }
-        sleep_random_ms(500, 1000);
+        // 达到站点提示阈值时会先弹出“温馨提示”，确认后才继续进入聊天。
+        // 提示框是异步渲染的，并且可能依次出现“好”和“继续沟通”两个确认按钮。
+        let mut last_confirm_text = String::new();
+        for _ in 0..15 {
+            let confirm_btn = match page.ele("span.btn.btn-sure[ka=\"dialog_confirm\"]")? {
+                Some(confirm_btn) => Some(confirm_btn),
+                None => page.ele(".chat-block-container .sure-btn")?,
+            };
+            if let Some(confirm_btn) = confirm_btn {
+                let confirm_text = confirm_btn.text_content()?.trim().to_string();
+                if confirm_text == last_confirm_text {
+                    sleep_random_ms(250, 400);
+                    continue;
+                }
+                logger::info(format!("检测到沟通确认提示，正在点击“{confirm_text}”"))?;
+                confirm_btn.click()?;
+                last_confirm_text = confirm_text;
+                sleep_random_ms(500, 1000);
+                continue;
+            }
+            if page.ele(".chat-op .btn-send")?.is_some() {
+                break;
+            }
+            sleep_random_ms(250, 400);
+        }
 
-        // 跳转到聊天页面
-        page.get(&format!("https://zhipin.com{}", redirect_url))?;
         if is_job_task_stop_requested() {
             logger::info("求职任务已结束")?;
             return Ok(());
         }
+
+        // 由站点自身完成建联和跳转；确认聊天区加载后再尝试发送消息。
+        page.wait(".chat-op .btn-send", Duration::from_secs(30))?;
 
         // 构建回复资源：优先 LLM 生成，否则使用默认模板
         let resources = build_greet_resources(&config, &greet_job).await?;
@@ -488,24 +509,6 @@ async fn build_greet_resources(
             (!resource.content.trim().is_empty()).then_some(resource)
         })
         .collect())
-}
-
-fn build_start_chat_request_script(post_url: &str) -> String {
-    format!(
-        r#"
-        (async () => {{
-            const response = await fetch({:?}, {{
-                method: 'POST',
-                headers: {{
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Accept': 'application/json, text/plain, */*'
-                }}
-            }});
-            return await response.json();
-        }})()
-        "#,
-        post_url
-    )
 }
 
 // 滚动到底部
