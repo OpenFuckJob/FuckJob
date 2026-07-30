@@ -2,7 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { extname, join, relative } from "node:path";
 
 const root = process.cwd();
-const roots = ["src", "src-tauri/src", "src-tauri/capabilities", "src-tauri/tauri.conf.json", "src-tauri/Cargo.toml", "package.json", "build.sh"];
+const roots = ["src", "src-tauri/src", "src-tauri/capabilities", "src-tauri/tauri.conf.json", "src-tauri/Cargo.toml", "package.json", "build.sh", "site", ".github/workflows"];
 const ignored = /(?:^|\/)(?:docs|target|dist|node_modules)(?:\/|$)|(?:\.test\.|\.spec\.)|(?:^|\/)check-network-boundary\.mjs$|(?:pnpm-lock|Cargo\.lock)/;
 const textExtensions = new Set([".ts", ".tsx", ".js", ".mjs", ".rs", ".json", ".yaml", ".yml", ".toml", ".sh", ""]);
 const forbidden = [
@@ -13,8 +13,6 @@ const forbidden = [
   ["legacy RPA generation endpoint", /\/rpa\/generate(?:\/|\b)/i],
   ["hardcoded DashScope search", /enable_search|dashscope[^\n]{0,100}(?:search|联网搜索)/i],
 ];
-
-const allowedUpdateEndpoint = "https://fk.pgthinker.me/releases/update.json";
 
 async function filesAt(path) {
   const full = join(root, path);
@@ -29,7 +27,7 @@ async function filesAt(path) {
 const files = (await Promise.all(roots.map(filesAt))).flat().filter((file) => !ignored.test(file) && textExtensions.has(extname(file)));
 const violations = [];
 for (const file of files) {
-  const content = (await readFile(join(root, file), "utf8")).replaceAll(allowedUpdateEndpoint, "");
+  const content = await readFile(join(root, file), "utf8");
   for (const [label, pattern] of forbidden) if (pattern.test(content)) violations.push(`${relative(root, join(root, file))}: ${label}`);
 }
 if (violations.length) {

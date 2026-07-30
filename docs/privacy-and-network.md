@@ -78,8 +78,14 @@ Fuck Job 使用 Tauri 的平台目录 API，不在代码或文档中假定固定
 
 - 原项目业务服务器、旧账号/登录/注册、积分或兑换 API。
 - 遥测、崩溃上报或云端同步。
-- 自动更新检查、更新清单或 Tauri updater。
 - DashScope/其他提供商的联网搜索开关，或任何 Web 搜索功能。
+
+## 自动更新
+
+桌面客户端启动后会向公开的 GitHub Releases 资源
+`https://github.com/OpenFuckJob/FuckJob/releases/latest/download/latest.json`
+发起一次版本检查。该请求不会携带简历、岗位、聊天、模型密钥或招聘平台登录状态。
+发现更高版本后，应用先征得用户确认，再从同一 GitHub Release 下载经过项目更新公钥验签的安装包；安装完成后自动重启。GitHub 暂时不可用不会阻止应用启动。
 
 ## 自行审计
 
@@ -89,7 +95,7 @@ Fuck Job 使用 Tauri 的平台目录 API，不在代码或文档中假定固定
 pnpm check:network
 ```
 
-该脚本扫描前端、Rust 运行时、Tauri/Cargo 配置、`package.json` 和 `build.sh`，并在发现原服务器、旧接口、硬编码搜索或更新器引用时失败。测试文件、文档、依赖锁和构建产物不会被当成运行时。
+该脚本扫描前端、Rust 运行时、Tauri/Cargo 配置、官网、GitHub 工作流、`package.json` 和 `build.sh`，并在发现原服务器、旧接口或硬编码搜索时失败。测试文件、文档、依赖锁和构建产物不会被当成运行时。
 
 可补充查看所有 URL 和敏感日志调用：
 

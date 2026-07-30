@@ -1027,7 +1027,7 @@
   <nav class="nav">
     <div class="container nav-inner">
       <a class="nav-brand" href="#">
-        <img class="nav-logo-img" src="https://fk.pgthinker.me/static/logo.png" alt="Fuck Job Logo" />
+        <img class="nav-logo-img" src="assets/logo.png" alt="Fuck Job Logo" />
         <span class="nav-title">Fuck Job</span>
       </a>
       <ul class="nav-links">
@@ -1083,19 +1083,19 @@
           </div>
           <div class="preview-carousel" data-carousel>
             <div class="preview-slide active">
-              <img src="https://fk.pgthinker.me/static/demo1.png" alt="自动化求职工作台" loading="lazy" />
+              <img src="assets/demo1.png" alt="自动化求职工作台" loading="lazy" />
             </div>
             <div class="preview-slide">
-              <img src="https://fk.pgthinker.me/static/demo2.png" alt="智能配置中心" loading="lazy" />
+              <img src="assets/demo2.png" alt="智能配置中心" loading="lazy" />
             </div>
             <div class="preview-slide">
-              <img src="https://fk.pgthinker.me/static/demo3.png" alt="简历优化与面试准备" loading="lazy" />
+              <img src="assets/demo3.png" alt="简历优化与面试准备" loading="lazy" />
             </div>
             <div class="preview-slide">
-              <img src="https://fk.pgthinker.me/static/demo4.png" alt="AI 自动回复" loading="lazy" />
+              <img src="assets/demo4.png" alt="AI 自动回复" loading="lazy" />
             </div>
             <div class="preview-slide">
-              <img src="https://fk.pgthinker.me/static/demo5.png" alt="岗位面试分析" loading="lazy" />
+              <img src="assets/demo5.png" alt="岗位面试分析" loading="lazy" />
             </div>
             <div class="preview-controls"></div>
           </div>
@@ -1327,7 +1327,7 @@
               <button id="copyQQ" type="button">复制</button>
             </div>
             <div class="qr-wrap">
-              <img src="https://fk.pgthinker.me/static/qrcode.jpg" alt="QQ 交流群二维码" loading="lazy" />
+              <img src="assets/qrcode.jpg" alt="QQ 交流群二维码" loading="lazy" />
             </div>
           </div>
         </div>
@@ -1467,15 +1467,27 @@
     // ── Fetch version info ──
     async function loadVersionInfo() {
       try {
-        const res = await fetch("https://fk.pgthinker.me/releases/update.json");
+        const res = await fetch("https://api.github.com/repos/OpenFuckJob/FuckJob/releases/latest");
         if (!res.ok) throw new Error("HTTP " + res.status);
-        const data = await res.json();
-        console.log("[fuckJob] update.json loaded:", data);
+        const release = await res.json();
+        console.log("[fuckJob] GitHub release loaded:", release.tag_name);
 
-        const version = data.version || "0.1.0";
-        const platforms = data.platforms || {};
-        const pubDate = data.pub_date ? new Date(data.pub_date).toLocaleDateString("zh-CN") : "";
-        const notes = data.notes || "";
+        const version = String(release.tag_name || "v0.1.0").replace(/^v/i, "");
+        const pubDate = release.published_at ? new Date(release.published_at).toLocaleDateString("zh-CN") : "";
+        const notes = release.body || "";
+        const assets = Array.isArray(release.assets) ? release.assets : [];
+        const findAsset = (predicate) => assets.find((asset) => predicate(String(asset.name || "").toLowerCase()));
+        const windows = findAsset((name) => name.endsWith(".exe") && !name.endsWith(".sig"));
+        const macArm = findAsset((name) => name.endsWith(".dmg") && /aarch64|arm64/.test(name));
+        const macIntel = findAsset((name) => name.endsWith(".dmg") && /x64|x86_64/.test(name));
+        const genericMac = findAsset((name) => name.endsWith(".dmg"));
+        const platforms = {};
+        if (windows) platforms["windows-x86_64"] = { url: windows.browser_download_url };
+        if (macArm) platforms["darwin-aarch64"] = { url: macArm.browser_download_url };
+        if (macIntel) platforms["darwin-x86_64"] = { url: macIntel.browser_download_url };
+        if (!macArm && !macIntel && genericMac) {
+          platforms["darwin-aarch64"] = { url: genericMac.browser_download_url };
+        }
 
         // Collect available platform entries, sorted by OS_ORDER
         const entries = Object.entries(platforms)
@@ -1555,12 +1567,11 @@
 
       } catch (err) {
         console.warn("Failed to load version info:", err);
-        // Fallback: render all known platforms from the update.json structure
+        // Fallback: point users to the latest GitHub Release page.
+        const latestReleaseUrl = "https://github.com/OpenFuckJob/FuckJob/releases/latest";
         const fallbackPlatforms = [
-          { key: "windows-x86_64", url: "https://fk.pgthinker.me/releases/0.1.0/windows/fuck_job_0.1.0_x64-setup.exe" },
-          { key: "darwin-aarch64", url: "https://fk.pgthinker.me/releases/0.1.0/darwin/fuck_job_0.1.0_aarch64.dmg" },
-          { key: "darwin-x86_64", url: "https://fk.pgthinker.me/releases/0.1.0/darwin/fuck_job_0.1.0_x64.dmg" },
-          { key: "linux-x86_64", url: "https://fk.pgthinker.me/releases/0.1.0/linux/fuck_job_0.1.0_amd64.AppImage" },
+          { key: "windows-x86_64", url: latestReleaseUrl },
+          { key: "darwin-aarch64", url: latestReleaseUrl },
         ];
         const deduped = [];
         const seen = new Set();

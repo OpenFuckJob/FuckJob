@@ -59,9 +59,6 @@ collect_artifacts() {
                 tar -czf "${output_dir}/${platform}/$(basename "$app_dir").tar.gz" -C "$(dirname "$app_dir")" "$(basename "$app_dir")"
             fi
 
-            find src-tauri/target/release/bundle/macos -maxdepth 1 -type f \
-                \( -name "*.app.tar.gz" -o -name "*.app.tar.gz.sig" \) \
-                -exec cp {} "${output_dir}/${platform}/" \; 2>/dev/null || true
             ;;
         linux)
             local appimage=$(find src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage -name "*.AppImage" 2>/dev/null | head -1)
@@ -73,12 +70,6 @@ collect_artifacts() {
         windows)
             local exe=$(find src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis -name "*.exe" 2>/dev/null | head -1)
             [[ -n "$exe" ]] && cp "$exe" "${output_dir}/${platform}/"
-
-            local nsis_dir="src-tauri/target/release/bundle/nsis"
-            if [[ -d "$nsis_dir" ]]; then
-                find "$nsis_dir" -maxdepth 1 -type f \( -name "*.exe" -o -name "*.exe.sig" \) \
-                    -exec cp {} "${output_dir}/${platform}/" \;
-            fi
 
             local msi=$(find src-tauri/target/x86_64-pc-windows-gnu/release/bundle -name "*.msi" 2>/dev/null | head -1)
             [[ -n "$msi" ]] && cp "$msi" "${output_dir}/${platform}/"
