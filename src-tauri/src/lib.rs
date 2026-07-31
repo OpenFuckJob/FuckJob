@@ -51,6 +51,8 @@ pub fn run() {
             command::rpa::run_flow::stop_job_task,
             command::rpa::run_flow::read_log_file,
             command::job::job_list,
+            command::job::job_list_with_status,
+            command::job::job_search_overview,
             command::job::job_get,
             command::job::job_create,
             command::job::job_update,

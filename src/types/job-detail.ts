@@ -15,6 +15,12 @@ export interface JobDetail {
   updated_at: string;
 }
 
+export type CommunicationStatus = "rejected" | "replied" | "no_reply";
+
+export interface JobListItem extends JobDetail {
+  communication_status: CommunicationStatus;
+}
+
 export interface ChatMessageRecord {
   id: string;
   job_id: string;

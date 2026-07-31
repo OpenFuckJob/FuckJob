@@ -8,13 +8,15 @@ import { Onboarding } from "@/view/onboarding";
 import { ConfigPage } from "@/view/config";
 import ConversationDebugPage from "@/view/conversation-debug";
 import JobDataPage from "@/view/job-data";
+import JobOverviewPage from "@/view/job-overview";
 import ResumeOptimizerPage from "@/view/resume-optimizer";
 import WorkspacePage from "@/view/workspace";
 import { AutoUpdater } from "@/lib/updater";
 
-type AppTabKey = "workspace" | "job-data" | "conversation-debug" | "resume-optimizer" | "config";
+type AppTabKey = "workspace" | "job-overview" | "job-data" | "conversation-debug" | "resume-optimizer" | "config";
 const tabs: Array<{ key: AppTabKey; label: string }> = [
   { key: "workspace", label: "工作台" },
+  { key: "job-overview", label: "求职数据" },
   { key: "job-data", label: "岗位管理" },
   { key: "resume-optimizer", label: "模拟面试" },
   { key: "config", label: "配置中心" },
@@ -61,7 +63,7 @@ function MainShell({ config, update, save, status, message, dirty, importConfig,
     removeRule={(i: number) => update((c) => ({ ...c, job_filter_config: { ...c.job_filter_config, regex_rules: c.job_filter_config.regex_rules.filter((_, x) => x !== i) } }))}
     importConfig={importConfig} exportConfig={exportConfig} />;
 
-  const content = activeTab === "workspace" ? <WorkspacePage onNavigate={(tab) => void navigate(tab)} onOpenConfig={openConfig} /> : activeTab === "job-data" ? <JobDataPage aiConfigured={!!config.llm_config} onConfigureAi={openLlm} /> : activeTab === "conversation-debug" ? <ConversationDebugPage aiConfigured={!!config.llm_config} onConfigureAi={openLlm} /> : activeTab === "resume-optimizer" ? <ResumeOptimizerPage config={config} onOpenLlmConfig={openLlm} onUpdateResume={(resume_content) => merge("resume_config", { resume_content })} /> : configPage;
+  const content = activeTab === "workspace" ? <WorkspacePage onNavigate={(tab) => void navigate(tab)} onOpenConfig={openConfig} /> : activeTab === "job-overview" ? <JobOverviewPage /> : activeTab === "job-data" ? <JobDataPage aiConfigured={!!config.llm_config} onConfigureAi={openLlm} /> : activeTab === "conversation-debug" ? <ConversationDebugPage aiConfigured={!!config.llm_config} onConfigureAi={openLlm} /> : activeTab === "resume-optimizer" ? <ResumeOptimizerPage config={config} onOpenLlmConfig={openLlm} onUpdateResume={(resume_content) => merge("resume_config", { resume_content })} /> : configPage;
   return (
     <main className="app-shell">
       <header className="app-header">

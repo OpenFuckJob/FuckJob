@@ -2,10 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Button,
   Input,
-  InputNumber,
   Modal,
   Popconfirm,
   Segmented,
+  Select,
   Space,
   Table,
   Tag,
@@ -13,7 +13,6 @@ import {
   message,
 } from "antd";
 import {
-  CloudDownloadOutlined,
   DeleteOutlined,
   EyeOutlined,
   MessageOutlined,
@@ -23,7 +22,12 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ColumnsType } from "antd/es/table";
 import type { CommandResult } from "../../types/command";
 import { commandErrorMessage } from "../../types/command";
-import type { ChatMessageRecord, JobDetail } from "../../types/job-detail";
+import type {
+  ChatMessageRecord,
+  CommunicationStatus,
+  JobDetail,
+  JobListItem,
+} from "../../types/job-detail";
 import AnalysisReport from "./AnalysisReport";
 
 const getJobPlatform = (job: JobDetail): "boss" | "liepin" =>
@@ -31,13 +35,19 @@ const getJobPlatform = (job: JobDetail): "boss" | "liepin" =>
     ? "liepin"
     : "boss";
 
-interface CollectCommunicatedJobsResult {
-  inserted: number;
-  updated: number;
-  skipped: number;
-  messages_inserted: number;
-  total: number;
-}
+const COMMUNICATION_STATUS_META: Record<
+  CommunicationStatus,
+  { label: string; color: string }
+> = {
+  rejected: { label: "明确拒绝", color: "red" },
+  replied: { label: "已回复", color: "green" },
+  no_reply: { label: "未回复", color: "orange" },
+};
+
+const renderCommunicationStatus = (status: CommunicationStatus) => {
+  const meta = COMMUNICATION_STATUS_META[status];
+  return <Tag color={meta.color}>{meta.label}</Tag>;
+};
 
 /* ────────── Chat messages modal ────────── */
 
@@ -198,7 +208,7 @@ function JobKanbanCard({
   onChat,
   onDelete,
 }: {
-  job: JobDetail;
+  job: JobListItem;
   onView: (job: JobDetail) => void;
   onChat: (job: JobDetail) => void;
   onDelete: (id: string) => void;
@@ -248,6 +258,7 @@ function JobKanbanCard({
       </Typography.Text>
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        {renderCommunicationStatus(job.communication_status)}
         {job.salary && (
           <Tag
             style={{
@@ -313,7 +324,7 @@ function KanbanView({
   onChat,
   onDelete,
 }: {
-  jobs: JobDetail[];
+  jobs: JobListItem[];
   onView: (job: JobDetail) => void;
   onChat: (job: JobDetail) => void;
   onDelete: (id: string) => void;
@@ -406,11 +417,11 @@ function KanbanView({
 /* ────────── Page ────────── */
 
 const JobDataPage = ({ aiConfigured, onConfigureAi }: { aiConfigured: boolean; onConfigureAi: () => void }) => {
-  const [jobs, setJobs] = useState<JobDetail[]>([]);
+  const [jobs, setJobs] = useState<JobListItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [keyword, setKeyword] = useState("");
-  const [pageLimit, setPageLimit] = useState(1);
-  const [collectingCommunicated, setCollectingCommunicated] = useState(false);
+  const [communicationStatusFilter, setCommunicationStatusFilter] =
+    useState<CommunicationStatus | "all">("all");
   const [currentJob, setCurrentJob] = useState<JobDetail | null>(null);
   const [chatJob, setChatJob] = useState<JobDetail | null>(null);
   const [viewMode, setViewMode] = useState<"table" | "kanban">("table");
@@ -419,7 +430,9 @@ const JobDataPage = ({ aiConfigured, onConfigureAi }: { aiConfigured: boolean; o
   const loadJobs = useCallback(async () => {
     setLoading(true);
     try {
-      const result = await invoke<CommandResult<JobDetail[]>>("job_list");
+      const result = await invoke<CommandResult<JobListItem[]>>(
+        "job_list_with_status",
+      );
       if (!result.success || result.data === null) {
         messageApi.error(
           commandErrorMessage(result.error, "加载岗位数据失败"),
@@ -462,36 +475,6 @@ const JobDataPage = ({ aiConfigured, onConfigureAi }: { aiConfigured: boolean; o
     [loadJobs, messageApi],
   );
 
-  const handleCollectCommunicated = useCallback(async () => {
-    setCollectingCommunicated(true);
-    try {
-      const result = await invoke<CommandResult<CollectCommunicatedJobsResult>>(
-        "job_collect_communicated",
-        { pageLimit },
-      );
-      if (!result.success || result.data === null) {
-        messageApi.error(
-          commandErrorMessage(result.error, "抓取已沟通过岗位失败"),
-        );
-        return;
-      }
-
-      const { inserted, updated, skipped, messages_inserted, total } = result.data;
-      messageApi.success(
-        `抓取完成：读取 ${total} 个，新增 ${inserted} 个，更新 ${updated} 个，新增沟通记录 ${messages_inserted} 条${
-          skipped > 0 ? `，跳过 ${skipped} 个` : ""
-        }`,
-      );
-      void loadJobs();
-    } catch (error: unknown) {
-      messageApi.error(
-        error instanceof Error ? error.message : "抓取已沟通过岗位失败",
-      );
-    } finally {
-      setCollectingCommunicated(false);
-    }
-  }, [loadJobs, messageApi, pageLimit]);
-
   const handleBackFromReport = useCallback(() => {
     setCurrentJob(null);
   }, []);
@@ -506,14 +489,18 @@ const JobDataPage = ({ aiConfigured, onConfigureAi }: { aiConfigured: boolean; o
     );
   }
 
-  const filteredJobs = keyword.trim()
-    ? jobs.filter((j) =>
-      j.title.toLowerCase().includes(keyword.trim().toLowerCase()),
-    )
-    : jobs;
+  const normalizedKeyword = keyword.trim().toLowerCase();
+  const filteredJobs = jobs.filter(
+    (job) =>
+      (!normalizedKeyword ||
+        job.title.toLowerCase().includes(normalizedKeyword) ||
+        job.company_name.toLowerCase().includes(normalizedKeyword)) &&
+      (communicationStatusFilter === "all" ||
+        job.communication_status === communicationStatusFilter),
+  );
 
   /* ── table columns ── */
-  const columns: ColumnsType<JobDetail> = [
+  const columns: ColumnsType<JobListItem> = [
     {
       title: "岗位名称",
       dataIndex: "title",
@@ -529,10 +516,18 @@ const JobDataPage = ({ aiConfigured, onConfigureAi }: { aiConfigured: boolean; o
       width: 160,
     },
     {
+      title: "沟通状态",
+      dataIndex: "communication_status",
+      key: "communication_status",
+      width: 110,
+      render: (status: CommunicationStatus) =>
+        renderCommunicationStatus(status),
+    },
+    {
       title: "平台",
       key: "platform",
       width: 90,
-      render: (_: unknown, record: JobDetail) =>
+      render: (_: unknown, record: JobListItem) =>
         getJobPlatform(record) === "liepin" ? (
           <Tag color="purple">猎聘</Tag>
         ) : (
@@ -557,7 +552,7 @@ const JobDataPage = ({ aiConfigured, onConfigureAi }: { aiConfigured: boolean; o
       title: "是否投递简历",
       key: "is_send_resume",
       width: 130,
-      render: (_: unknown, record: JobDetail) =>
+      render: (_: unknown, record: JobListItem) =>
         record.is_send_resume ? (
           <Tag color="blue">已投递</Tag>
         ) : (
@@ -577,7 +572,7 @@ const JobDataPage = ({ aiConfigured, onConfigureAi }: { aiConfigured: boolean; o
       key: "action",
       width: 270,
       fixed: "right",
-      render: (_: unknown, record: JobDetail) => (
+      render: (_: unknown, record: JobListItem) => (
         <Space size={4}>
           <Button
             type="link"
@@ -641,28 +636,19 @@ const JobDataPage = ({ aiConfigured, onConfigureAi }: { aiConfigured: boolean; o
               { label: "看板", value: "kanban" },
             ]}
           />
-          <Space.Compact>
-            <InputNumber
-              min={1}
-              max={20}
-              precision={0}
-              value={pageLimit}
-              onChange={(value) =>
-                setPageLimit(Math.min(20, Math.max(1, Number(value) || 1)))
-              }
-              style={{ width: 92 }}
-            />
-            <Button
-              type="primary"
-              icon={<CloudDownloadOutlined />}
-              loading={collectingCommunicated}
-              onClick={() => void handleCollectCommunicated()}
-            >
-              抓取已沟通过
-            </Button>
-          </Space.Compact>
+          <Select
+            value={communicationStatusFilter}
+            style={{ width: 140 }}
+            onChange={setCommunicationStatusFilter}
+            options={[
+              { label: "全部沟通状态", value: "all" },
+              { label: "明确拒绝", value: "rejected" },
+              { label: "未回复", value: "no_reply" },
+              { label: "已回复", value: "replied" },
+            ]}
+          />
           <Input
-            placeholder="搜索岗位名称"
+            placeholder="搜索岗位或公司"
             prefix={<SearchOutlined />}
             allowClear
             style={{ width: 260 }}
@@ -690,7 +676,7 @@ const JobDataPage = ({ aiConfigured, onConfigureAi }: { aiConfigured: boolean; o
             overflow: "hidden",
           }}
         >
-          <Table<JobDetail>
+          <Table<JobListItem>
             className="job-data-table"
             rowKey="id"
             columns={columns}

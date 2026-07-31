@@ -85,6 +85,7 @@ impl PlatformKind {
 pub enum FlowMode {
     JobHunting,
     ReplyUnread,
+    SyncChatHistory,
     PeriodicJobHunting,
 }
 
@@ -143,7 +144,7 @@ pub fn inspect_readiness(
         .as_deref()
         .unwrap_or_default()
         .trim();
-    let needs_job_filter = !matches!(mode, FlowMode::ReplyUnread);
+    let needs_job_filter = matches!(mode, FlowMode::JobHunting | FlowMode::PeriodicJobHunting);
     items.push(ReadinessItem {
         key: "job_filter".to_string(),
         label: "岗位筛选".to_string(),
@@ -153,7 +154,7 @@ pub fn inspect_readiness(
             ReadinessLevel::Blocked
         },
         message: if !needs_job_filter {
-            "回复未读模式无需岗位搜索条件".to_string()
+            "当前模式无需岗位搜索条件".to_string()
         } else if query.is_empty() {
             "请填写岗位关键词".to_string()
         } else {
@@ -202,7 +203,7 @@ pub fn inspect_readiness(
             ReadinessLevel::Blocked
         },
         message: if !needs_job_filter {
-            "回复未读模式不使用打招呼话术".to_string()
+            "当前模式不使用打招呼话术".to_string()
         } else if greet_ready {
             "打招呼资源已配置".to_string()
         } else {
@@ -211,7 +212,9 @@ pub fn inspect_readiness(
         config_group: Some("greet".to_string()),
     });
 
-    let reply_ready = !config.replay_config.enable_auto_replay
+    let needs_reply_config = matches!(mode, FlowMode::ReplyUnread);
+    let reply_ready = !needs_reply_config
+        || !config.replay_config.enable_auto_replay
         || config.replay_config.enable_llm
         || config.replay_config.templates.iter().any(|template| {
             template
@@ -227,7 +230,9 @@ pub fn inspect_readiness(
         } else {
             ReadinessLevel::Blocked
         },
-        message: if !config.replay_config.enable_auto_replay {
+        message: if !needs_reply_config {
+            "当前模式不使用自动回复".to_string()
+        } else if !config.replay_config.enable_auto_replay {
             "自动回复未启用".to_string()
         } else if reply_ready {
             "自动回复资源已配置".to_string()
@@ -237,12 +242,18 @@ pub fn inspect_readiness(
         config_group: Some("reply".to_string()),
     });
 
-    let llm_needed = config.replay_config.enable_llm
-        || config
-            .greet_config
-            .default_template
-            .iter()
-            .any(|resource| matches!(resource.resource_type, crate::config::ReplayResourceType::LLM));
+    let llm_needed = !matches!(mode, FlowMode::SyncChatHistory)
+        && (config.replay_config.enable_llm
+            || config
+                .greet_config
+                .default_template
+                .iter()
+                .any(|resource| {
+                    matches!(
+                        resource.resource_type,
+                        crate::config::ReplayResourceType::LLM
+                    )
+                }));
     items.push(ReadinessItem {
         key: "llm".to_string(),
         label: "大模型".to_string(),
@@ -266,7 +277,7 @@ pub fn inspect_readiness(
         .any(|item| item.level == ReadinessLevel::Blocked);
     let summary = vec![
         format!("平台：{}", match platform { PlatformKind::Boss => "BOSS 直聘", PlatformKind::Liepin => "猎聘" }),
-        format!("模式：{}", match mode { FlowMode::JobHunting => "单轮自动求职", FlowMode::ReplyUnread => "回复未读", FlowMode::PeriodicJobHunting => "周期投递" }),
+        format!("模式：{}", match mode { FlowMode::JobHunting => "单轮自动求职", FlowMode::ReplyUnread => "回复未读", FlowMode::SyncChatHistory => "读取聊天消息", FlowMode::PeriodicJobHunting => "周期投递" }),
         if query.is_empty() { "岗位关键词：未设置".to_string() } else { format!("岗位关键词：{query}") },
     ];
 
@@ -358,6 +369,13 @@ pub async fn execute_rpa_flow(
             execute_reply_unread(platform, config).await?;
             Ok(())
         }
+        FlowMode::SyncChatHistory => {
+            if platform != PlatformKind::Boss {
+                return Err(anyhow::anyhow!("读取聊天消息任务目前仅支持 BOSS 直聘"));
+            }
+            boss::handler::sync_chat_history().await?;
+            Ok(())
+        }
         FlowMode::PeriodicJobHunting => {
             let interval = resolve_periodic_interval_minutes(interval_minutes)
                 .map_err(|e| anyhow::anyhow!(e))?;
@@ -428,6 +446,13 @@ async fn periodic_position_say_hello(
         }
 
         logger::info(format!("本轮投递完成，等待{}分钟后继续", interval_minutes))?;
+        if platform == PlatformKind::Boss {
+            if let Err(error) = boss::handler::sync_chat_history().await {
+                logger::warning(format!(
+                    "周期间歇同步 BOSS 历史对话失败，本轮继续等待: {error}"
+                ))?;
+            }
+        }
         wait_periodic_interval(interval_minutes).await?;
     }
 }
@@ -458,6 +483,13 @@ mod tests {
         let mode: FlowMode = serde_json::from_str("\"periodic_job_hunting\"").unwrap();
 
         assert_eq!(mode, FlowMode::PeriodicJobHunting);
+    }
+
+    #[test]
+    fn flow_mode_deserializes_sync_chat_history() {
+        let mode: FlowMode = serde_json::from_str("\"sync_chat_history\"").unwrap();
+
+        assert_eq!(mode, FlowMode::SyncChatHistory);
     }
 
     #[test]

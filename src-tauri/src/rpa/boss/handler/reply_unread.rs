@@ -214,19 +214,76 @@ pub(crate) fn parse_chat_messages(body: &str) -> Result<Vec<ChatMessage>, anyhow
         }
     });
 
+    fn first_attachment_name(value: &serde_json::Value) -> Option<String> {
+        match value {
+            serde_json::Value::Object(map) => {
+                for key in [
+                    "fileName",
+                    "filename",
+                    "file_name",
+                    "resumeName",
+                    "attachmentName",
+                ] {
+                    if let Some(name) = map
+                        .get(key)
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                    {
+                        return Some(name.to_string());
+                    }
+                }
+                map.values().find_map(first_attachment_name)
+            }
+            serde_json::Value::Array(items) => {
+                items.iter().find_map(first_attachment_name)
+            }
+            _ => None,
+        }
+    }
+
+    fn resume_attachment_text(body: &serde_json::Value) -> Option<String> {
+        if body.get("type").and_then(serde_json::Value::as_i64) == Some(8) {
+            return None;
+        }
+
+        let serialized = serde_json::to_string(body).ok()?.to_lowercase();
+        let has_structured_resume = serialized.contains("\"resumeinfo\"")
+            || serialized.contains("\"resumefile\"")
+            || serialized.contains("\"resumeurl\"")
+            || serialized.contains("\"resumename\"");
+        let has_resume_name = serialized.contains("简历")
+            || serialized.contains("resume")
+            || serialized.contains("cv.");
+        let has_file_marker = serialized.contains(".pdf")
+            || serialized.contains(".doc")
+            || serialized.contains("\"filename\"")
+            || serialized.contains("\"file_name\"")
+            || serialized.contains("\"fileurl\"")
+            || serialized.contains("\"file_url\"")
+            || serialized.contains("\"attachment");
+        if !has_structured_resume && !(has_resume_name && has_file_marker) {
+            return None;
+        }
+
+        Some(match first_attachment_name(body) {
+            Some(name) => format!("简历文件：{name}"),
+            None => "简历文件：已交换简历".to_string(),
+        })
+    }
+
     let result = messages
         .iter()
         .filter_map(|msg| {
-            // 只保留 body.type == 1 的普通文本消息，其余消息（系统卡片等）过滤掉
             let body_type = msg.pointer("/body/type").and_then(|v| v.as_i64())?;
-            if body_type != 1 {
-                return None;
-            }
-            let text = msg
-                .pointer("/body/text")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+            let text = if body_type == 1 {
+                msg.pointer("/body/text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            } else {
+                resume_attachment_text(msg.get("body")?)?
+            };
             let mid = msg.get("mid").and_then(|v| v.as_i64())?;
             let from_uid = msg.pointer("/from/uid").and_then(|v| v.as_i64());
             // received=true 表示招聘者（boss）发来的消息，false 表示自己发送的

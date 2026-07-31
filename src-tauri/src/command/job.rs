@@ -3,7 +3,9 @@ use crate::config;
 use crate::dao::model::{ChatMessageRecord, InterviewJobAnalysis, JobDetail};
 use crate::dao::{analysis_dao, chat_message_dao, job_detail_dao};
 use crate::llm::service::LlmService;
-use serde::Deserialize;
+use chrono::{Duration, Local, NaiveDate, NaiveDateTime, TimeZone};
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 
 #[tauri::command]
 pub fn job_list() -> CommandResult<Vec<JobDetail>> {
@@ -11,6 +13,310 @@ pub fn job_list() -> CommandResult<Vec<JobDetail>> {
         Ok(list) => CommandResult::ok(list),
         Err(e) => CommandResult::err(e.to_string()),
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommunicationStatus {
+    Rejected,
+    Replied,
+    NoReply,
+}
+
+#[derive(Debug, Serialize)]
+pub struct JobListItem {
+    #[serde(flatten)]
+    pub job: JobDetail,
+    pub communication_status: CommunicationStatus,
+}
+
+fn is_explicit_rejection(text: &str) -> bool {
+    let normalized = text
+        .to_lowercase()
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
+    const REJECTION_PHRASES: &[&str] = &[
+        "不太合适",
+        "不合适",
+        "暂不考虑",
+        "暂时不考虑",
+        "不匹配",
+        "不符合",
+        "岗位已招满",
+        "已经招满",
+        "职位已招满",
+        "岗位关闭",
+        "职位关闭",
+        "停止招聘",
+        "没有hc",
+        "无hc",
+        "不通过",
+        "暂时没有合适",
+        "目前没有合适",
+    ];
+
+    REJECTION_PHRASES
+        .iter()
+        .any(|phrase| normalized.contains(phrase))
+}
+
+#[tauri::command]
+pub fn job_list_with_status() -> CommandResult<Vec<JobListItem>> {
+    let result = (|| -> anyhow::Result<Vec<JobListItem>> {
+        let jobs = job_detail_dao::list()?;
+        let messages = chat_message_dao::list()?;
+        let mut replied_job_ids = HashSet::new();
+        let mut rejected_job_ids = HashSet::new();
+
+        for message in messages
+            .into_iter()
+            .filter(|message| message.received && !message.text.trim().is_empty())
+        {
+            replied_job_ids.insert(message.job_id.clone());
+            if is_explicit_rejection(&message.text) {
+                rejected_job_ids.insert(message.job_id);
+            }
+        }
+
+        Ok(jobs
+            .into_iter()
+            .map(|job| {
+                let communication_status = if rejected_job_ids.contains(&job.id) {
+                    CommunicationStatus::Rejected
+                } else if replied_job_ids.contains(&job.id) {
+                    CommunicationStatus::Replied
+                } else {
+                    CommunicationStatus::NoReply
+                };
+                JobListItem {
+                    job,
+                    communication_status,
+                }
+            })
+            .collect())
+    })();
+
+    match result {
+        Ok(list) => CommandResult::ok(list),
+        Err(error) => CommandResult::err(error.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod communication_status_tests {
+    use super::is_explicit_rejection;
+
+    #[test]
+    fn recognizes_explicit_rejection_messages() {
+        assert!(is_explicit_rejection("您好，您的经历和岗位不太合适"));
+        assert!(is_explicit_rejection("这个职位已经招满了"));
+        assert!(is_explicit_rejection("目前没有 HC，感谢关注"));
+    }
+
+    #[test]
+    fn does_not_treat_normal_replies_as_rejection() {
+        assert!(!is_explicit_rejection("你好，可以发一份简历吗？"));
+        assert!(!is_explicit_rejection("感谢关注，我们先沟通一下"));
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct OverviewMetrics {
+    pub total_jobs: usize,
+    pub communicated_jobs: usize,
+    pub replied_jobs: usize,
+    pub reply_rate: f64,
+    pub resume_sent_jobs: usize,
+    pub high_match_jobs: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OverviewDailyActivity {
+    pub date: String,
+    pub jobs: usize,
+    pub replies: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OverviewConversation {
+    pub job_id: String,
+    pub company_name: String,
+    pub title: String,
+    pub last_message: String,
+    pub last_message_at: i64,
+    pub received: bool,
+    pub message_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct JobSearchOverview {
+    pub days: u32,
+    pub metrics: OverviewMetrics,
+    pub daily_activity: Vec<OverviewDailyActivity>,
+    pub active_conversations: Vec<OverviewConversation>,
+}
+
+#[tauri::command]
+pub fn job_search_overview(days: Option<u32>) -> CommandResult<JobSearchOverview> {
+    match build_job_search_overview(days.unwrap_or(30).clamp(1, 365)) {
+        Ok(overview) => CommandResult::ok(overview),
+        Err(error) => CommandResult::err(error.to_string()),
+    }
+}
+
+fn build_job_search_overview(days: u32) -> anyhow::Result<JobSearchOverview> {
+    let jobs = job_detail_dao::list()?;
+    let messages = chat_message_dao::list()?;
+    let analyses = analysis_dao::list()?;
+    let now = Local::now();
+    let cutoff = now - Duration::days(i64::from(days));
+    let cutoff_millis = cutoff.timestamp_millis();
+    let recent_message_job_ids: HashSet<&str> = messages
+        .iter()
+        .filter(|message| message.time >= cutoff_millis)
+        .map(|message| message.job_id.as_str())
+        .collect();
+
+    let selected_jobs: Vec<&JobDetail> = jobs
+        .iter()
+        .filter(|job| {
+            recent_message_job_ids.contains(job.id.as_str())
+                || job
+                    .resume_sent_at
+                    .as_deref()
+                    .into_iter()
+                    .chain([job.updated_at.as_str(), job.created_at.as_str()])
+                    .filter_map(parse_local_datetime)
+                    .any(|time| time >= cutoff)
+        })
+        .collect();
+    let selected_job_ids: HashSet<&str> = selected_jobs.iter().map(|job| job.id.as_str()).collect();
+    let selected_messages: Vec<&ChatMessageRecord> = messages
+        .iter()
+        .filter(|message| {
+            selected_job_ids.contains(message.job_id.as_str()) && message.time >= cutoff_millis
+        })
+        .collect();
+
+    let communicated_ids: HashSet<&str> = selected_messages
+        .iter()
+        .map(|message| message.job_id.as_str())
+        .chain(
+            selected_jobs
+                .iter()
+                .filter(|job| job.is_reply)
+                .map(|job| job.id.as_str()),
+        )
+        .collect();
+    let replied_ids: HashSet<&str> = selected_messages
+        .iter()
+        .filter(|message| message.received)
+        .map(|message| message.job_id.as_str())
+        .chain(
+            selected_jobs
+                .iter()
+                .filter(|job| job.is_reply)
+                .map(|job| job.id.as_str()),
+        )
+        .collect();
+    let high_match_ids: HashSet<&str> = analyses
+        .iter()
+        .filter(|analysis| analysis.match_score >= 80)
+        .map(|analysis| analysis.job_id.as_str())
+        .collect();
+    let communicated_jobs = communicated_ids.len();
+
+    let metrics = OverviewMetrics {
+        total_jobs: selected_jobs.len(),
+        communicated_jobs,
+        replied_jobs: replied_ids.len(),
+        reply_rate: if communicated_jobs == 0 {
+            0.0
+        } else {
+            replied_ids.len() as f64 * 100.0 / communicated_jobs as f64
+        },
+        resume_sent_jobs: selected_jobs
+            .iter()
+            .filter(|job| job.is_send_resume)
+            .count(),
+        high_match_jobs: selected_jobs
+            .iter()
+            .filter(|job| high_match_ids.contains(job.id.as_str()))
+            .count(),
+    };
+
+    let mut jobs_by_date: HashMap<NaiveDate, usize> = HashMap::new();
+    for job in &selected_jobs {
+        let time = job
+            .resume_sent_at
+            .as_deref()
+            .and_then(parse_local_datetime)
+            .or_else(|| parse_local_datetime(&job.created_at));
+        if let Some(time) = time {
+            *jobs_by_date.entry(time.date_naive()).or_default() += 1;
+        }
+    }
+    let mut replies_by_date: HashMap<NaiveDate, usize> = HashMap::new();
+    for message in selected_messages.iter().filter(|message| message.received) {
+        if let Some(time) = Local.timestamp_millis_opt(message.time).single() {
+            *replies_by_date.entry(time.date_naive()).or_default() += 1;
+        }
+    }
+    let daily_activity = (0..days.min(30))
+        .rev()
+        .map(|offset| {
+            let date = (now - Duration::days(i64::from(offset))).date_naive();
+            OverviewDailyActivity {
+                date: date.format("%m-%d").to_string(),
+                jobs: jobs_by_date.get(&date).copied().unwrap_or(0),
+                replies: replies_by_date.get(&date).copied().unwrap_or(0),
+            }
+        })
+        .collect();
+
+    let job_map: HashMap<&str, &JobDetail> =
+        jobs.iter().map(|job| (job.id.as_str(), job)).collect();
+    let mut grouped: HashMap<&str, Vec<&ChatMessageRecord>> = HashMap::new();
+    for message in selected_messages {
+        grouped
+            .entry(message.job_id.as_str())
+            .or_default()
+            .push(message);
+    }
+    let mut active_conversations: Vec<OverviewConversation> = grouped
+        .into_iter()
+        .filter_map(|(job_id, mut items)| {
+            let job = job_map.get(job_id)?;
+            items.sort_by_key(|message| message.time);
+            let last = items.last()?;
+            Some(OverviewConversation {
+                job_id: job_id.to_string(),
+                company_name: job.company_name.clone(),
+                title: job.title.clone(),
+                last_message: last.text.clone(),
+                last_message_at: last.time,
+                received: last.received,
+                message_count: items.len(),
+            })
+        })
+        .collect();
+    active_conversations
+        .sort_by_key(|conversation| std::cmp::Reverse(conversation.last_message_at));
+    active_conversations.truncate(8);
+
+    Ok(JobSearchOverview {
+        days,
+        metrics,
+        daily_activity,
+        active_conversations,
+    })
+}
+
+fn parse_local_datetime(value: &str) -> Option<chrono::DateTime<Local>> {
+    NaiveDateTime::parse_from_str(value.trim(), "%Y-%m-%d %H:%M:%S")
+        .ok()
+        .and_then(|value| Local.from_local_datetime(&value).single())
 }
 
 #[tauri::command]

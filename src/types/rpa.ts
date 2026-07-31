@@ -14,6 +14,7 @@ export interface EnvCheckResult {
 export type FlowMode =
   | "job_hunting"
   | "reply_unread"
+  | "sync_chat_history"
   | "periodic_job_hunting";
 
 export interface JobTaskStatus {

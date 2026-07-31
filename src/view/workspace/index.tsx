@@ -122,6 +122,11 @@ const FLOW_MODE_OPTIONS: FlowModeOption[] = [
     description: "处理当前平台未读沟通消息。",
   },
   {
+    key: "sync_chat_history",
+    label: "读取聊天消息",
+    description: "同步已读会话、岗位和历史消息，不会点开未读消息。",
+  },
+  {
     key: "periodic_job_hunting",
     label: "周期投递",
     description: "每轮完成后按设定间隔继续下一轮。",
@@ -476,6 +481,9 @@ const WorkspacePage = ({
               ]}
               onChange={(nextPlatform) => {
                 setPlatform(nextPlatform);
+                if (nextPlatform !== "boss" && selectedMode === "sync_chat_history") {
+                  setSelectedMode("job_hunting");
+                }
                 setLogFilter(nextPlatform);
                 setCheckPhase("idle");
                 setEnvResult(null);
@@ -696,7 +704,9 @@ const WorkspacePage = ({
             style={{ width: "100%" }}
           >
             <Space direction="vertical" style={{ width: "100%" }} size={12}>
-              {FLOW_MODE_OPTIONS.map((option) => (
+              {FLOW_MODE_OPTIONS.filter(
+                (option) => platform === "boss" || option.key !== "sync_chat_history",
+              ).map((option) => (
                 <Card
                   key={option.key}
                   size="small"
