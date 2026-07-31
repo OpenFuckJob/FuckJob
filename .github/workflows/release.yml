@@ -37,7 +37,7 @@ jobs:
         run: pnpm test:run
 
       - name: Test updater metadata rewrite
-        run: node --test scripts/rewrite-updater-json.test.mjs
+        run: node --test scripts/rewrite-updater-json.node-test.mjs
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
