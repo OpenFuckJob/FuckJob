@@ -84,6 +84,19 @@ describe("useAppConfig", () => {
     expect(result.current.dirty).toBe(true);
   });
 
+  it("applies an explicitly saved onboarding config to the live state", async () => {
+    vi.mocked(api.loadAppConfig).mockResolvedValue(config);
+    vi.mocked(api.saveAppConfig).mockResolvedValue();
+    const { result } = renderHook(() => useAppConfig());
+    await waitFor(() => expect(result.current.config).not.toBeNull());
+
+    const completed = { ...config, onboarding_completed: true };
+    await act(() => result.current.save(completed));
+
+    expect(result.current.config?.onboarding_completed).toBe(true);
+    expect(result.current.dirty).toBe(false);
+  });
+
   it("reports save success and failure", async () => {
     vi.mocked(api.loadAppConfig).mockResolvedValue(config);
     vi.mocked(api.saveAppConfig).mockResolvedValue();

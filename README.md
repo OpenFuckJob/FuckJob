@@ -198,6 +198,24 @@ FuckJob/
 
 ---
 
+## 💬 交流社区
+
+欢迎加入 Fuck Job QQ 交流群，交流使用经验、问题反馈和功能建议。
+
+<p align="center">
+  <img
+    src="docs/images/image2.jpg"
+    alt="Fuck Job QQ 交流群二维码，群号 659022753"
+    width="320"
+  />
+</p>
+
+<p align="center">
+  <strong>QQ群：659022753</strong>
+</p>
+
+---
+
 ## 📄 许可
 
 本项目基于 [Apache License 2.0](https://github.com/OpenFuckJob/FuckJob/blob/master/LICENSE) 开源。

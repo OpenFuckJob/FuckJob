@@ -36,12 +36,13 @@ export function useAppConfig() {
   const save = useCallback(async (nextConfig?: AppRuntimeConfig) => {
     const value = nextConfig ?? config;
     if (!value) return false;
+    const configAtSaveStart = config;
     setStatus("loading");
     try {
       await saveAppConfig(value);
       const savedValue = JSON.stringify(value);
       savedSnapshot.current = savedValue;
-      setConfig((current) => current && JSON.stringify(current) !== savedValue ? current : value);
+      setConfig((current) => current === configAtSaveStart ? value : current);
       setStatus("saved");
       setMessage("配置已保存");
       return true;

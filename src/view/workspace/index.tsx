@@ -212,20 +212,18 @@ const WorkspacePage = ({
         "get_job_task_status",
       );
       if (result.success && result.data) {
-        const wasRunning = taskRunning;
-        setTaskRunning(result.data.running);
-        if (!result.data.running) {
-          setRunningPlatform(null);
-        }
-        // reload jobs whenever task state flips (stat stale remediation)
-        if (wasRunning !== result.data.running) {
-          void loadJobs();
-        }
+        const running = result.data.running;
+        setTaskRunning((wasRunning) => {
+          // Reload jobs whenever task state flips (stat stale remediation).
+          if (wasRunning !== running) void loadJobs();
+          return running;
+        });
+        setRunningPlatform((current) => running ? current ?? platform : null);
       }
     } catch {
       // ignore
     }
-  }, [loadJobs, taskRunning]);
+  }, [loadJobs, platform]);
 
   const refreshLog = useCallback(async () => {
     try {
@@ -292,26 +290,34 @@ const WorkspacePage = ({
 
   const handleRpaFlow = useCallback(
     async (mode: FlowMode, intervalMinutes?: number) => {
+      const startedPlatform = platform;
+      setTaskRunning(true);
+      setRunningPlatform(startedPlatform);
       try {
         const result = await invoke<CommandResult<void>>("rpa_flow", {
-          platform,
+          platform: startedPlatform,
           mode,
           intervalMinutes: mode === "periodic_job_hunting" ? intervalMinutes : undefined,
         });
         if (!result.success) {
           messageApi.error(commandErrorMessage(result.error, "启动失败"));
+          setTaskRunning(false);
+          setRunningPlatform(null);
           return;
         }
-        setTaskRunning(true);
-        setRunningPlatform(platform);
-        messageApi.success(`${PLATFORM_META[platform].label} ${getFlowModeLabel(mode)}已启动`);
+        setTaskRunning(false);
+        setRunningPlatform(null);
+        void loadJobs();
+        messageApi.success(`${PLATFORM_META[startedPlatform].label} ${getFlowModeLabel(mode)}已完成`);
       } catch (error: unknown) {
+        setTaskRunning(false);
+        setRunningPlatform(null);
         messageApi.error(
           error instanceof Error ? error.message : "启动失败",
         );
       }
     },
-    [messageApi, platform],
+    [loadJobs, messageApi, platform],
   );
 
   const handleStartConfirm = useCallback(async () => {
@@ -632,21 +638,12 @@ const WorkspacePage = ({
           <Space wrap>
             <Button
               type="primary"
+              danger={taskRunning}
               size="large"
-              icon={<PlayCircleOutlined />}
-              disabled={taskRunning}
-              onClick={() => setStartModalOpen(true)}
+              icon={taskRunning ? <StopOutlined /> : <PlayCircleOutlined />}
+              onClick={taskRunning ? () => void handleStopTask() : () => setStartModalOpen(true)}
             >
-              启动 {currentPlatform.shortLabel} 任务
-            </Button>
-            <Button
-              danger
-              size="large"
-              icon={<StopOutlined />}
-              onClick={handleStopTask}
-              disabled={!taskRunning}
-            >
-              停止任务
+              {taskRunning ? `停止 ${runningPlatformLabel} 任务` : `启动 ${currentPlatform.shortLabel} 任务`}
             </Button>
             {taskRunning && (
               <Typography.Text type="warning" style={{ alignSelf: "center", fontWeight: 500 }}>

@@ -4,4 +4,5 @@ import type { LlmCommandResult, LlmConnectionReport, LlmCredentialStatus } from 
 export const getLlmCredentialStatus = () => invoke<LlmCommandResult<LlmCredentialStatus>>('get_llm_credential_status')
 export const setLlmApiKey = (apiKey: string) => invoke<LlmCommandResult<LlmCredentialStatus>>('set_llm_api_key', { apiKey })
 export const clearLlmApiKey = () => invoke<LlmCommandResult<LlmCredentialStatus>>('clear_llm_api_key')
+export const listLlmModels = (baseUrl: string) => invoke<LlmCommandResult<string[]>>('list_llm_models', { baseUrl })
 export const testLlmConnection = () => invoke<LlmCommandResult<LlmConnectionReport>>('test_llm_connection')

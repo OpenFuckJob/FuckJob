@@ -19,8 +19,8 @@ job_filter_config:
   exclude_keywords: []
   company_keywords: []
   company_exclude_keywords:
-    - 慧策
-    - 旺店通
+    - 华为
+    - 外企德科
   regex_rules: []
 greet_config:
   enable_llm: true
