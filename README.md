@@ -38,6 +38,26 @@
   <sub>集中配置浏览器环境、大模型、简历、岗位筛选和沟通策略</sub>
 </p>
 
+
+### 其它
+
+<p align="center">
+  <img
+    src="docs/images/44cf0035743838319083bdadb8413429.png"
+    alt=""
+    width="92%"
+  />
+</p>
+
+<p align="center">
+  <img
+    src="docs/images/679a38de1219dea3516656eab712a690.png"
+    alt=""
+    width="92%"
+  />
+</p>
+
+
 ---
 
 ## ✨ 功能概览
