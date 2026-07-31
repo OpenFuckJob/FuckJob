@@ -158,21 +158,57 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           mkdir -p release-metadata
-          gh release download "$RELEASE_TAG" \
-            --pattern latest.json \
-            --dir release-metadata
-          gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" \
+          RELEASE_ID="$(
+            gh api "repos/$GH_REPO/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"$RELEASE_TAG\") | .id"
+          )"
+          if [ -z "$RELEASE_ID" ]; then
+            echo "Release $RELEASE_TAG was not found."
+            exit 1
+          fi
+
+          gh api "repos/$GH_REPO/releases/$RELEASE_ID" \
             > release-metadata/release.json
+          LATEST_ASSET_ID="$(
+            jq -r '.assets[] | select(.name == "latest.json") | .id' \
+              release-metadata/release.json
+          )"
+          if [ -z "$LATEST_ASSET_ID" ]; then
+            echo "latest.json was not found in release $RELEASE_TAG."
+            exit 1
+          fi
+
+          gh api \
+            -H "Accept: application/octet-stream" \
+            "repos/$GH_REPO/releases/assets/$LATEST_ASSET_ID" \
+            > release-metadata/latest.json
           node scripts/rewrite-updater-json.mjs \
             release-metadata/latest.json \
             release-metadata/release.json
-          gh release upload "$RELEASE_TAG" \
-            release-metadata/latest.json \
-            --clobber
+
+          gh api \
+            --method DELETE \
+            "repos/$GH_REPO/releases/assets/$LATEST_ASSET_ID"
+          curl --fail-with-body --retry 3 \
+            --request POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "Content-Type: application/json" \
+            --data-binary @release-metadata/latest.json \
+            "https://uploads.github.com/repos/$GH_REPO/releases/$RELEASE_ID/assets?name=latest.json"
 
       - name: Publish complete release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
-        run: gh release edit "$RELEASE_TAG" --draft=false --latest
+        run: |
+          RELEASE_ID="$(
+            gh api "repos/$GH_REPO/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"$RELEASE_TAG\") | .id"
+          )"
+          gh api \
+            --method PATCH \
+            -F draft=false \
+            -f make_latest=true \
+            "repos/$GH_REPO/releases/$RELEASE_ID"
