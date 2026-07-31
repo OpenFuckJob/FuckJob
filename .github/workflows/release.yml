@@ -36,6 +36,9 @@ jobs:
       - name: Run frontend tests
         run: pnpm test:run
 
+      - name: Test updater metadata rewrite
+        run: node --test scripts/rewrite-updater-json.test.mjs
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -146,6 +149,27 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Rewrite updater URLs to public release downloads
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p release-metadata
+          gh release download "$RELEASE_TAG" \
+            --pattern latest.json \
+            --dir release-metadata
+          gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" \
+            > release-metadata/release.json
+          node scripts/rewrite-updater-json.mjs \
+            release-metadata/latest.json \
+            release-metadata/release.json
+          gh release upload "$RELEASE_TAG" \
+            release-metadata/latest.json \
+            --clobber
+
       - name: Publish complete release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
