@@ -4,6 +4,17 @@ import { pathToFileURL } from "node:url";
 const API_ASSET_URL =
   /^https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+\/releases\/assets\/(?<id>\d+)$/;
 
+function publicAssetUrl(asset, releaseTag) {
+  const draftUrl = new URL(asset.browser_download_url);
+  const downloadMarker = "/releases/download/";
+  const markerIndex = draftUrl.pathname.indexOf(downloadMarker);
+  if (markerIndex < 0 || !asset.name) {
+    throw new Error(`Release 资产地址无效：${asset.browser_download_url}`);
+  }
+  const repositoryPath = draftUrl.pathname.slice(0, markerIndex);
+  return `${draftUrl.origin}${repositoryPath}${downloadMarker}${encodeURIComponent(releaseTag)}/${encodeURIComponent(asset.name)}`;
+}
+
 export function rewriteUpdaterUrls(updater, release) {
   if (!updater?.platforms || typeof updater.platforms !== "object") {
     throw new Error("latest.json 缺少 platforms");
@@ -12,9 +23,14 @@ export function rewriteUpdaterUrls(updater, release) {
     throw new Error("Release 元数据不完整");
   }
 
-  const assetsById = new Map(
-    release.assets.map((asset) => [String(asset.id), asset.browser_download_url]),
-  );
+  const assetsById = new Map();
+  const rewrittenUrls = new Map();
+  for (const asset of release.assets) {
+    const publicUrl = publicAssetUrl(asset, release.tag_name);
+    assetsById.set(String(asset.id), publicUrl);
+    rewrittenUrls.set(asset.browser_download_url, publicUrl);
+    if (asset.url) rewrittenUrls.set(asset.url, publicUrl);
+  }
   const publicAssetUrls = new Set(assetsById.values());
   const expectedReleasePath = `/releases/download/${release.tag_name}/`;
   const rewritten = structuredClone(updater);
@@ -28,6 +44,8 @@ export function rewriteUpdaterUrls(updater, release) {
         throw new Error(`${platform} 引用了不存在的 Release 资产 ${match.groups.id}`);
       }
       target.url = publicUrl;
+    } else if (rewrittenUrls.has(target.url)) {
+      target.url = rewrittenUrls.get(target.url);
     }
     if (
       !publicAssetUrls.has(target.url) ||

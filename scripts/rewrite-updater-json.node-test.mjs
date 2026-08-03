@@ -8,6 +8,8 @@ const release = {
   assets: [
     {
       id: 123,
+      name: "OfferFlow_0.1.6_x64-setup.exe",
+      url: "https://api.github.com/repos/OpenFuckJob/FuckJob/releases/assets/123",
       browser_download_url:
         "https://github.com/OpenFuckJob/FuckJob/releases/download/v0.1.6/OfferFlow_0.1.6_x64-setup.exe",
     },
@@ -67,4 +69,32 @@ test("accepts an already-public URL for the same release", () => {
   );
 
   assert.equal(result.platforms["windows-x86_64"].url, publicUrl);
+});
+
+test("rewrites draft untagged asset URLs to the final tagged release URL", () => {
+  const draftRelease = {
+    ...release,
+    assets: [
+      {
+        ...release.assets[0],
+        browser_download_url:
+          "https://github.com/OpenFuckJob/FuckJob/releases/download/untagged-f484c740cbb349d3be94/OfferFlow_0.1.6_x64-setup.exe",
+      },
+    ],
+  };
+  const result = rewriteUpdaterUrls(
+    {
+      platforms: {
+        "windows-x86_64": {
+          url: draftRelease.assets[0].browser_download_url,
+        },
+      },
+    },
+    draftRelease,
+  );
+
+  assert.equal(
+    result.platforms["windows-x86_64"].url,
+    "https://github.com/OpenFuckJob/FuckJob/releases/download/v0.1.6/OfferFlow_0.1.6_x64-setup.exe",
+  );
 });
