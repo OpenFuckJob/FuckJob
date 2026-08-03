@@ -21,6 +21,8 @@ job_filter_config:
   company_exclude_keywords:
     - 华为
     - 外企德科
+  enable_semantic_filter: false
+  semantic_filter_intent: null
   regex_rules: []
 greet_config:
   enable_llm: true

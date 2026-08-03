@@ -242,8 +242,37 @@ pub fn inspect_readiness(
         config_group: Some("reply".to_string()),
     });
 
+    let semantic_filter_needed = matches!(
+        mode,
+        FlowMode::JobHunting | FlowMode::PeriodicJobHunting
+    ) && config.job_filter_config.enable_semantic_filter;
+    let semantic_intent_ready = !semantic_filter_needed
+        || config
+            .job_filter_config
+            .semantic_filter_intent
+            .as_deref()
+            .is_some_and(|intent| !intent.trim().is_empty());
+    items.push(ReadinessItem {
+        key: "job_intent".to_string(),
+        label: "岗位意图复核".to_string(),
+        level: if semantic_intent_ready {
+            ReadinessLevel::Ready
+        } else {
+            ReadinessLevel::Blocked
+        },
+        message: if !semantic_filter_needed {
+            "AI 岗位意图复核未启用".to_string()
+        } else if semantic_intent_ready {
+            "目标岗位要求已配置".to_string()
+        } else {
+            "AI 岗位意图复核已启用，请填写目标岗位要求".to_string()
+        },
+        config_group: Some("job".to_string()),
+    });
+
     let llm_needed = !matches!(mode, FlowMode::SyncChatHistory)
         && (config.replay_config.enable_llm
+            || config.job_filter_config.enable_semantic_filter
             || config
                 .greet_config
                 .default_template
@@ -267,7 +296,7 @@ pub fn inspect_readiness(
         } else if config.llm_config.is_some() {
             "大模型服务已配置".to_string()
         } else {
-            "话术使用了大模型，请先配置模型服务".to_string()
+            "当前功能使用了大模型，请先配置模型服务".to_string()
         },
         config_group: Some("llm".to_string()),
     });

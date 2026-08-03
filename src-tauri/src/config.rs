@@ -48,6 +48,8 @@ pub fn default_app_config() -> AppRuntimeConfig {
             exclude_keywords: Vec::new(),
             company_keywords: Vec::new(),
             company_exclude_keywords: Vec::new(),
+            enable_semantic_filter: false,
+            semantic_filter_intent: None,
             regex_rules: Vec::new(),
         },
         platform_filter_config: PlatformFilterConfig::default(),
@@ -478,6 +480,14 @@ pub struct JobFilterConfig {
 
     /// 排除公司关键字
     pub company_exclude_keywords: Vec<String>,
+
+    /// 是否在确定性规则通过后使用大模型复核岗位意图
+    #[serde(default)]
+    pub enable_semantic_filter: bool,
+
+    /// 用户期望投递的岗位画像（自然语言）
+    #[serde(default)]
+    pub semantic_filter_intent: Option<String>,
 
     /// 正则筛选规则
     pub regex_rules: Vec<RegexRule>,

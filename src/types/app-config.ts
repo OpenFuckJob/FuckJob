@@ -36,6 +36,8 @@ export interface JobFilterConfig {
   exclude_keywords: string[];
   company_keywords: string[];
   company_exclude_keywords: string[];
+  enable_semantic_filter: boolean;
+  semantic_filter_intent: string | null;
   regex_rules: RegexRule[];
 }
 

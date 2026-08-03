@@ -51,9 +51,35 @@ pub async fn position_say_hello(config: &AppRuntimeConfig) -> Result<(), anyhow:
                         job.title, job.company_name
                     ))?;
 
-                    if !verify::filter_verify(&job, &config) {
-                        logger::info("猎聘岗位不匹配，跳过")?;
+                    let filter_decision = verify::filter_decision(&job, &config);
+                    if !filter_decision.matched {
+                        logger::info(format!(
+                            "猎聘岗位不匹配，跳过：{}",
+                            filter_decision.reason
+                        ))?;
                         continue;
+                    }
+                    if config.job_filter_config.enable_semantic_filter {
+                        match crate::llm::evaluate_job_match(&config, &job).await {
+                            Ok(decision) if decision.matched => logger::info(format!(
+                                "猎聘 AI 岗位复核通过（{}分）：{}",
+                                decision.score, decision.reason
+                            ))?,
+                            Ok(decision) => {
+                                logger::info(format!(
+                                    "猎聘 AI 岗位复核未通过，跳过（{}分）：{}",
+                                    decision.score, decision.reason
+                                ))?;
+                                continue;
+                            }
+                            Err(error) => {
+                                logger::warning(format!(
+                                    "猎聘 AI 岗位复核失败，为避免误投已跳过：{}",
+                                    error
+                                ))?;
+                                continue;
+                            }
+                        }
                     }
 
                     match greet_job(page, job.clone(), config.clone()).await {

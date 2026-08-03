@@ -677,6 +677,45 @@ export function ConfigPage(props: ConfigPageProps) {
               </Col>
             </Row>
 
+            <Card size="small" className="mt-4 border-violet-200! bg-violet-50/50!">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <Text strong>AI 岗位意图复核</Text>
+                  <div className="mt-1 text-xs leading-5 text-slate-500">
+                    关键词和正则规则通过后，再根据岗位职责复核一次；复核失败或模型异常时会跳过岗位，避免误投。
+                  </div>
+                </div>
+                <Switch
+                  checked={props.config.job_filter_config.enable_semantic_filter}
+                  onChange={(checked) =>
+                    props.updateJobFilter({ enable_semantic_filter: checked })
+                  }
+                />
+              </div>
+              {props.config.job_filter_config.enable_semantic_filter && (
+                <Form.Item
+                  className="mb-0! mt-4"
+                  label="目标岗位要求"
+                  name={["job_filter_config", "semantic_filter_intent"]}
+                  extra={
+                    props.config.llm_config
+                      ? "建议同时写清希望投递和明确排除的岗位方向。"
+                      : "尚未配置大模型，启动任务前会提示配置。"
+                  }
+                >
+                  <Input.TextArea
+                    autoSize={{ minRows: 3, maxRows: 6 }}
+                    placeholder="例如：只投 AI 应用开发、Agent 工程师；需要以编码和系统落地为主。不投产品经理、销售、运营、纯算法研究岗位。"
+                    onChange={(event) =>
+                      props.updateJobFilter({
+                        semantic_filter_intent: event.target.value || null,
+                      })
+                    }
+                  />
+                </Form.Item>
+              )}
+            </Card>
+
             <Collapse
               ghost
               className="mt-4"
