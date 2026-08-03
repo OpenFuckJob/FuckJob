@@ -56,6 +56,7 @@ import {
   WarningOutlined,
   InfoCircleOutlined,
   RobotOutlined,
+  DatabaseOutlined,
 } from "@ant-design/icons";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -63,6 +64,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { commandErrorMessage, type CommandResult } from "@/types/command";
 import type { BrowserEnvStatus } from "@/types/rpa";
 import { LlmConfigPanel } from "./LlmConfigPanel";
+import { DataManagementPanel } from "./DataManagementPanel";
 import { AiFeatureGate } from "@/components/AiFeatureGate";
 
 const { Title, Text } = Typography;
@@ -170,6 +172,7 @@ const configGroupKeys = [
   "resume",
   "greet",
   "reply",
+  "data",
 ] as const;
 type VisibleConfigGroup = (typeof configGroupKeys)[number];
 
@@ -190,6 +193,9 @@ const menuItems = [
   { type: "group" as const, label: "沟通策略", children: [
     { key: "greet", icon: <CommentOutlined />, label: "打招呼配置" },
     { key: "reply", icon: <CommentOutlined />, label: "自动回复" },
+  ] },
+  { type: "group" as const, label: "数据管理", children: [
+    { key: "data", icon: <DatabaseOutlined />, label: "备份与设备共享" },
   ] },
 ];
 
@@ -449,6 +455,8 @@ export function ConfigPage(props: ConfigPageProps) {
     switch (activeGroup) {
       case "llm":
         return <LlmConfigPanel config={props.config.llm_config} onChange={props.updateLlm} onPersist={props.persistLlm} />;
+      case "data":
+        return <DataManagementPanel />;
       case "job":
         return (
           <Space direction="vertical" size="large" className="w-full">

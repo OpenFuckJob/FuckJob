@@ -30,6 +30,10 @@ pub fn list() -> Result<Vec<ChatMessageRecord>> {
     store().load_all()
 }
 
+pub fn create(record: ChatMessageRecord) -> Result<()> {
+    store().insert(record)
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ChatMessageSaveResult {
     pub inserted: usize,

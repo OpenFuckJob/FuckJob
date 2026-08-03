@@ -13,7 +13,8 @@ export type ConfigGroup =
   | "reply"
   | "browser"
   | "resume"
-  | "rules";
+  | "rules"
+  | "data";
 
 export interface RegexRule {
   name: string;

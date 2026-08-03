@@ -47,6 +47,7 @@ reqwest = { version = "0.13.4", features = [
     "rustls",
 ], default-features = false }
 tempfile = "3.27.0"
+zip = "2.2.0"
 rig-core = "0.40.0"
 futures = "0.3.30"
 

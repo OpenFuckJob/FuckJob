@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::time::Duration;
 
 use crate::{
@@ -21,6 +22,18 @@ pub async fn position_say_hello(config: &AppRuntimeConfig) -> Result<(), anyhow:
 
     browser::with_browser(|page| {
         Box::pin(async move {
+            let mut processed_job_ids: HashSet<String> = job_detail_dao::list()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|j| j.id)
+                .collect();
+            logger::info(format!(
+                "猎聘本地已存储 {} 条岗位记录",
+                processed_job_ids.len()
+            ))?;
+
+            let mut seen_job_ids: HashSet<String> = HashSet::new();
+
             logger::info(format!("正在打开猎聘职位搜索页: {}", search_url))?;
             page.get(&search_url)?;
             sleep_random_ms(1200, 2000);
@@ -45,6 +58,19 @@ pub async fn position_say_hello(config: &AppRuntimeConfig) -> Result<(), anyhow:
                         logger::info("猎聘求职任务已结束")?;
                         return Ok(());
                     }
+
+                    let db_id = format!("liepin:{}", job.platform_job_id);
+                    if processed_job_ids.contains(&db_id)
+                        || processed_job_ids.contains(&job.platform_job_id)
+                        || seen_job_ids.contains(&job.platform_job_id)
+                    {
+                        logger::info(format!(
+                            "猎聘岗位已沟通过，跳过：{} - {}",
+                            job.title, job.company_name
+                        ))?;
+                        continue;
+                    }
+                    seen_job_ids.insert(job.platform_job_id.clone());
 
                     logger::info(format!(
                         "猎聘当前处理岗位:{} 公司:{}",
@@ -83,7 +109,10 @@ pub async fn position_say_hello(config: &AppRuntimeConfig) -> Result<(), anyhow:
                     }
 
                     match greet_job(page, job.clone(), config.clone()).await {
-                        Ok(()) => {}
+                        Ok(()) => {
+                            processed_job_ids.insert(format!("liepin:{}", job.platform_job_id));
+                            processed_job_ids.insert(job.platform_job_id.clone());
+                        }
                         Err(error) => {
                             logger::warning(greet_failure_message(
                                 &job.title,

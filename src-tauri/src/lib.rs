@@ -76,7 +76,10 @@ pub fn run() {
             command::llm_provider::list_llm_models,
             command::llm_provider::test_llm_connection,
             command::mock_interview::stream_mock_interview_question,
-            command::mock_interview::stream_mock_interview_summary
+            command::mock_interview::stream_mock_interview_summary,
+            command::data_management::export_data_bundle,
+            command::data_management::inspect_data_bundle,
+            command::data_management::import_data_bundle
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
