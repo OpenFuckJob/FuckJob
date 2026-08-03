@@ -4,6 +4,7 @@ import { rewriteUpdaterUrls } from "./rewrite-updater-json.mjs";
 
 const release = {
   tag_name: "v0.1.6",
+  body: "本版本新增模拟面试异步报告。",
   repository: { full_name: "OpenFuckJob/FuckJob" },
   assets: [
     {
@@ -42,6 +43,17 @@ test("rewrites GitHub API asset URLs to public browser downloads", () => {
     release.assets[0].browser_download_url,
   );
   assert.match(updater.platforms["windows-x86_64"].url, /api\.github\.com/);
+  assert.equal(result.notes, release.body);
+});
+
+test("keeps updater notes when the release has no description", () => {
+  const publicUrl = release.assets[0].browser_download_url;
+  const result = rewriteUpdaterUrls(
+    { notes: "原始说明", platforms: { "windows-x86_64": { url: publicUrl } } },
+    { ...release, body: "  " },
+  );
+
+  assert.equal(result.notes, "原始说明");
 });
 
 test("rejects API URLs that reference a missing release asset", () => {

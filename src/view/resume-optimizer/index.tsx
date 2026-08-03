@@ -1,10 +1,26 @@
-import { useCallback, useState } from "react";
-import { Alert, Button, Card, Typography } from "antd";
-import { RobotOutlined, CopyOutlined, ThunderboltOutlined } from "@ant-design/icons";
+import { useEffect, useState } from "react";
+import { message } from "antd";
 import type { AppRuntimeConfig } from "@/types/app-config";
+import type { MockInterviewQuestionReview } from "@/types/analysis";
+import { MockInterviewHome } from "./MockInterviewHome";
 import { MockInterviewPanel } from "./MockInterviewPanel";
-
-/* ────────── helpers kept for ConfigPage use ────────── */
+import { MockInterviewReportPage } from "./MockInterviewReportPage";
+import { MockInterviewSetupPage } from "./MockInterviewSetupPage";
+import {
+  deleteInterviewSession,
+  generateInterviewReport,
+  getInterviewSession,
+  listInterviewSessions,
+  saveInterviewSession,
+  subscribeInterviewSessions,
+} from "./interview-store";
+import {
+  DEFAULT_INTERVIEW_SETTINGS,
+  createInterviewSession,
+  type InterviewSession,
+  type MockInterviewSettings,
+} from "./interview-types";
+import "./style.css";
 
 export interface ResumeMarkdownSection {
   title: string;
@@ -15,53 +31,29 @@ export interface ResumeMarkdownSection {
 export function extractSections(content: string): ResumeMarkdownSection[] {
   const lines = content.split("\n");
   const sections: ResumeMarkdownSection[] = [];
-
   const firstHeaderIdx = lines.findIndex((line) => line.match(/^##\s+/));
-  if (firstHeaderIdx > 0) {
-    sections.push({ title: "个人信息", start: 0, end: firstHeaderIdx });
-  } else if (firstHeaderIdx === -1 && lines.some((l) => l.trim())) {
-    sections.push({ title: "个人信息", start: 0, end: lines.length });
-  }
-
+  if (firstHeaderIdx > 0) sections.push({ title: "个人信息", start: 0, end: firstHeaderIdx });
+  else if (firstHeaderIdx === -1 && lines.some((line) => line.trim())) sections.push({ title: "个人信息", start: 0, end: lines.length });
   let currentSection: { title: string; start: number } | null = null;
-  for (let i = 0; i < lines.length; i++) {
-    const match = lines[i].match(/^##\s+(.+)/);
-    if (match) {
-      if (currentSection) {
-        sections.push({ ...currentSection, end: i });
-      }
-      currentSection = { title: match[1].trim(), start: i };
-    }
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index].match(/^##\s+(.+)/);
+    if (!match) continue;
+    if (currentSection) sections.push({ ...currentSection, end: index });
+    currentSection = { title: match[1].trim(), start: index };
   }
-  if (currentSection) {
-    sections.push({ ...currentSection, end: lines.length });
-  }
-
+  if (currentSection) sections.push({ ...currentSection, end: lines.length });
   return sections;
 }
 
-export function replaceSectionContent(
-  content: string,
-  section: ResumeMarkdownSection,
-  nextSectionContent: string,
-): string {
+export function replaceSectionContent(content: string, section: ResumeMarkdownSection, nextSectionContent: string): string {
   const lines = content.split("\n");
-  const before = lines.slice(0, section.start).join("\n");
-  const after = lines.slice(section.end).join("\n");
-  return [before, nextSectionContent, after].filter(Boolean).join("\n");
+  return [lines.slice(0, section.start).join("\n"), nextSectionContent, lines.slice(section.end).join("\n")].filter(Boolean).join("\n");
 }
 
-export function findSectionIndexByRenderedTitle(
-  sections: ResumeMarkdownSection[],
-  renderedTitle: string,
-): number {
+export function findSectionIndexByRenderedTitle(sections: ResumeMarkdownSection[], renderedTitle: string): number {
   const normalizedTitle = renderedTitle.replace(/^#+\s*/, "").trim();
-  return sections.findIndex(
-    (section) => section.title.trim() === normalizedTitle,
-  );
+  return sections.findIndex((section) => section.title.trim() === normalizedTitle);
 }
-
-/* ────────── Standalone mock interview page ────────── */
 
 export interface ResumeOptimizerPageProps {
   config: AppRuntimeConfig;
@@ -69,124 +61,106 @@ export interface ResumeOptimizerPageProps {
   onUpdateResume: (content: string) => void;
 }
 
-function ResumeOptimizerPage({ config, onOpenLlmConfig, onUpdateResume }: ResumeOptimizerPageProps) {
-  const [interviewActive, setInterviewActive] = useState(false);
+type PageState =
+  | { name: "home" }
+  | { name: "setup" }
+  | { name: "session"; sessionId: string }
+  | { name: "report"; sessionId: string; initialTab?: "summary" | "abilities" | "questions" | "transcript" };
+
+function ResumeOptimizerPage({ config, onOpenLlmConfig }: ResumeOptimizerPageProps) {
+  const [page, setPage] = useState<PageState>({ name: "home" });
+  const [sessions, setSessions] = useState<InterviewSession[]>(listInterviewSessions);
+  const [settings, setSettings] = useState<MockInterviewSettings>({ ...DEFAULT_INTERVIEW_SETTINGS });
+  const [messageApi, contextHolder] = message.useMessage();
   const resumeContent = (config.resume_config.resume_content ?? "").trim();
-
-  const handleCopyResume = useCallback(async () => {
-    if (!resumeContent) return;
-    try {
-      await navigator.clipboard.writeText(resumeContent);
-    } catch { /* ignore */ }
-  }, [resumeContent]);
-
-  // Entry guard checks
   const canStart = !!config.llm_config && !!resumeContent;
-  const handleApplyOptimization = useCallback(async (sectionTitle: string, optimizedMarkdown: string) => {
-    const sections = extractSections(resumeContent);
-    const sectionIndex = findSectionIndexByRenderedTitle(sections, sectionTitle);
-    if (sectionIndex < 0) throw new Error(`未找到章节「${sectionTitle}」`);
-    onUpdateResume(replaceSectionContent(resumeContent, sections[sectionIndex], optimizedMarkdown).trim());
-  }, [onUpdateResume, resumeContent]);
 
-  // When interview is active, render the full-page chat panel
-  if (interviewActive) {
-    return (
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          height: "100%",
-          maxWidth: 860,
-          margin: "0 auto",
-          width: "100%",
-        }}
-      >
-        <MockInterviewPanel
-          resumeContent={resumeContent}
-          onBack={() => setInterviewActive(false)}
-          onApply={handleApplyOptimization}
-        />
-      </div>
-    );
-  }
+  useEffect(() => subscribeInterviewSessions(() => setSessions(listInterviewSessions())), []);
+  useEffect(() => {
+    sessions
+      .filter((session) => session.status === "report_queued" || session.status === "report_generating")
+      .forEach((session) => void generateInterviewReport(session.id));
+  }, [sessions]);
 
-  // Entry screen
+  const startSession = (nextSettings: MockInterviewSettings, resumeSnapshot = resumeContent) => {
+    const session = saveInterviewSession(createInterviewSession(nextSettings, resumeSnapshot));
+    setPage({ name: "session", sessionId: session.id });
+  };
+
+  const restartSession = (sessionId: string) => {
+    const source = getInterviewSession(sessionId);
+    if (!source) return;
+    startSession({ ...source.settings, focusAreas: [...source.settings.focusAreas] }, resumeContent || source.resumeSnapshot);
+  };
+
+  const practiceQuestion = (sessionId: string, review: MockInterviewQuestionReview) => {
+    const source = getInterviewSession(sessionId);
+    if (!source) return;
+    startSession({
+      ...source.settings,
+      duration: "quick",
+      focusAreas: [review.module].filter(Boolean),
+      customFocus: `专项练习：${review.question}`,
+    }, resumeContent || source.resumeSnapshot);
+  };
+
   return (
-    <div style={{ maxWidth: 720, margin: "0 auto" }}>
-      <Typography.Title level={4} style={{ marginBottom: 16 }}>
-        <RobotOutlined style={{ marginRight: 10 }} />
-        AI 模拟面试
-      </Typography.Title>
-      <Typography.Paragraph type="secondary">
-        基于简历内容，AI 面试官通过 5 轮追问挖掘你的项目事实（技术深度、个人贡献、量化结果、问题处理、表达可信度），
-        最终生成简历优化建议章节，可一键采纳到简历配置。
-      </Typography.Paragraph>
+    <div className="mi-root">
+      {contextHolder}
+      {page.name === "home" && (
+        <MockInterviewHome
+          sessions={sessions}
+          canStart={canStart}
+          onCreate={() => {
+            if (!canStart) {
+              messageApi.warning("请先完成AI模型配置和简历配置");
+              return;
+            }
+            setSettings({ ...DEFAULT_INTERVIEW_SETTINGS });
+            setPage({ name: "setup" });
+          }}
+          onContinue={(sessionId) => setPage({ name: "session", sessionId })}
+          onOpenReport={(sessionId) => setPage({ name: "report", sessionId })}
+          onOpenTranscript={(sessionId) => setPage({ name: "report", sessionId, initialTab: "transcript" })}
+          onRestart={restartSession}
+          onDelete={(sessionId) => deleteInterviewSession(sessionId)}
+          onRetryReport={(sessionId) => {
+            setPage({ name: "report", sessionId });
+            void generateInterviewReport(sessionId);
+          }}
+        />
+      )}
 
-      <Card
-        style={{ marginTop: 20 }}
-        styles={{ body: { padding: 24, textAlign: "center" } }}
-      >
-        {!config.llm_config ? (
-          <Alert
-            type="warning"
-            showIcon
-            message="未配置 AI 模型"
-            description="模拟面试需要大模型支持，请先在配置中心完成模型配置。"
-            action={
-              <Button type="primary" size="small" onClick={onOpenLlmConfig}>
-                去配置
-              </Button>
-            }
-          />
-        ) : !resumeContent ? (
-          <Alert
-            type="info"
-            showIcon
-            message="简历内容为空"
-            description={
-              <span>
-                模拟面试需要简历内容作为对话基础。请在
-                <Button type="link" size="small" onClick={onOpenLlmConfig} style={{ padding: "0 4px" }}>
-                  配置中心 → 简历配置
-                </Button>
-                中填写或粘贴你的 Markdown 简历。
-              </span>
-            }
-          />
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 16, alignItems: "center" }}>
-            <div
-              style={{
-                padding: "16px 24px",
-                background: "linear-gradient(135deg, #f0f5ff 0%, #e6f0ff 100%)",
-                borderRadius: 12,
-                border: "1px solid rgba(22,119,255,0.15)",
-                width: "100%",
-                boxSizing: "border-box",
-              }}
-            >
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                当前简历已就绪（{resumeContent.length} 字）
-              </Typography.Text>
-              <div style={{ display: "flex", justifyContent: "center", gap: 8, marginTop: 8 }}>
-                <Button
-                  type="primary"
-                  size="large"
-                  icon={<ThunderboltOutlined />}
-                  disabled={!canStart}
-                  onClick={() => setInterviewActive(true)}
-                >
-                  开始模拟面试
-                </Button>
-                <Button size="large" icon={<CopyOutlined />} onClick={() => void handleCopyResume()}>
-                  复制简历
-                </Button>
-              </div>
-            </div>
-          </div>
-        )}
-      </Card>
+      {page.name === "setup" && (
+        <MockInterviewSetupPage
+          value={settings}
+          resumeReady={!!resumeContent}
+          aiReady={!!config.llm_config}
+          onChange={setSettings}
+          onBack={() => setPage({ name: "home" })}
+          onConfigureAi={onOpenLlmConfig}
+          onStart={() => startSession(settings)}
+        />
+      )}
+
+      {page.name === "session" && (
+        <MockInterviewPanel
+          sessionId={page.sessionId}
+          onBack={() => setPage({ name: "home" })}
+          onReport={() => setPage({ name: "report", sessionId: page.sessionId })}
+        />
+      )}
+
+      {page.name === "report" && (
+        <MockInterviewReportPage
+          sessionId={page.sessionId}
+          sessions={sessions}
+          initialTab={page.initialTab}
+          onBack={() => setPage({ name: "home" })}
+          onRestart={() => restartSession(page.sessionId)}
+          onPracticeQuestion={(review) => practiceQuestion(page.sessionId, review)}
+        />
+      )}
     </div>
   );
 }

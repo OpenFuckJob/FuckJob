@@ -1,552 +1,449 @@
-import { useEffect, useRef, useState } from "react";
-import { Alert, Button, Input, Space, Tag, Typography, message } from "antd";
-import { ArrowLeftOutlined, RobotOutlined, SendOutlined, ThunderboltOutlined } from "@ant-design/icons";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  streamMockInterviewQuestion,
-  streamMockInterviewSummary,
-  parseMockInterviewReport,
-} from "@/lib/mock-interview";
-import type {
-  MockInterviewChatMessage,
-  MockInterviewReport,
-  MockResumeOptimization,
-  MockInterviewStreamPayload,
-} from "@/types/analysis";
-import { MockInterviewReportView } from "./MockInterviewReportView";
-import { MockInterviewSetup, type MockInterviewSettings } from "./MockInterviewSetup";
+  Alert,
+  Button,
+  Input,
+  Modal,
+  Progress,
+  Tag,
+  Typography,
+  message,
+} from "antd";
+import {
+  ArrowDownOutlined,
+  ArrowLeftOutlined,
+  CheckCircleFilled,
+  ClockCircleOutlined,
+  EyeOutlined,
+  PauseCircleOutlined,
+  RedoOutlined,
+  SendOutlined,
+  StopOutlined,
+} from "@ant-design/icons";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { streamMockInterviewQuestion } from "@/lib/mock-interview";
+import type { MockInterviewChatMessage, MockInterviewStreamPayload } from "@/types/analysis";
+import {
+  generateInterviewReport,
+  getInterviewSession,
+  saveInterviewSession,
+  subscribeInterviewSessions,
+  updateInterviewSession,
+} from "./interview-store";
+import { DURATION_META, type InterviewMessage, type InterviewSession } from "./interview-types";
 
 export interface MockInterviewPanelProps {
-  resumeContent: string;
-  onApply: (sectionTitle: string, optimizedMarkdown: string) => Promise<void>;
+  sessionId: string;
   onBack: () => void;
+  onReport: () => void;
 }
 
-type InterviewStatus =
-  | "idle"
-  | "streaming_question"
-  | "waiting_answer"
-  | "streaming_summary"
-  | "completed"
-  | "error";
-
-interface UiMessage extends MockInterviewChatMessage {
-  id: string;
-  streaming?: boolean;
-}
-
+type QuestionState = "idle" | "generating" | "waiting" | "error";
 const SSE_DATA_ARTIFACT_RE = /(?:^|\r?\n)\s*data:\s*|data:(?=[㐀-鿿A-Za-z0-9{[""])/g;
-const QUESTION_FOCUS_LABELS = ["技术深度", "个人贡献", "量化结果", "问题处理", "表达可信度"];
-
-function createSessionId(): string {
-  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
-
-function createMessage(
-  role: UiMessage["role"],
-  content: string,
-  streaming = false,
-): UiMessage {
-  return {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    role,
-    content,
-    streaming,
-  };
-}
 
 function cleanStreamText(content: string): string {
   return content.replace(SSE_DATA_ARTIFACT_RE, "");
 }
 
-function toHistory(messages: UiMessage[]): MockInterviewChatMessage[] {
-  return messages
-    .filter((m) => m.content.trim())
-    .map(({ role, content }) => ({ role, content: cleanStreamText(content) }));
+function createMessage(
+  role: InterviewMessage["role"],
+  content: string,
+  extra: Partial<InterviewMessage> = {},
+): InterviewMessage {
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    role,
+    content,
+    createdAt: new Date().toISOString(),
+    ...extra,
+  };
 }
 
-export function MockInterviewPanel({
-  resumeContent,
-  onApply,
-  onBack,
-}: MockInterviewPanelProps) {
-  const [sessionId, setSessionId] = useState(createSessionId);
-  const [messages, setMessages] = useState<UiMessage[]>([]);
-  const [answer, setAnswer] = useState("");
-  const [round, setRound] = useState(0);
-  const [status, setStatus] = useState<InterviewStatus>("idle");
-  const [report, setReport] = useState<MockInterviewReport | null>(null);
-  const [settings, setSettings] = useState<MockInterviewSettings>({ jobContext: "", interviewType: "技术面", difficulty: "中级" });
-  const [applying, setApplying] = useState(false);
-  const [started, setStarted] = useState(false);
+function toHistory(messages: InterviewMessage[]): MockInterviewChatMessage[] {
+  return messages.filter((item) => item.content.trim()).map(({ role, content }) => ({ role, content }));
+}
+
+function overallProgress(session: InterviewSession): number {
+  const value = session.modules.reduce((sum, module, index) => {
+    if (index < session.currentModuleIndex) return sum + module.weight;
+    if (index > session.currentModuleIndex) return sum;
+    return sum + module.weight * Math.min(1, module.completedQuestions / Math.max(1, module.targetQuestions));
+  }, 0);
+  return Math.min(100, Math.round(value));
+}
+
+function shouldFollowUp(session: InterviewSession, answer: InterviewMessage): boolean {
+  if (answer.skipped || answer.content.length > 260) return false;
+  const module = session.modules[session.currentModuleIndex];
+  if (!module || module.followUpQuestions >= Math.min(2, module.completedQuestions)) return false;
+  const hasEvidence = /\d|%|负责|主导|设计|实现|结果|提升|降低|解决/.test(answer.content);
+  return answer.content.length < 130 || !hasEvidence;
+}
+
+export function MockInterviewPanel({ sessionId, onBack, onReport }: MockInterviewPanelProps) {
+  const [session, setSession] = useState(() => getInterviewSession(sessionId));
+  const [questionState, setQuestionState] = useState<QuestionState>("idle");
+  const [streamingMessageId, setStreamingMessageId] = useState<string>();
+  const [endOpen, setEndOpen] = useState(false);
+  const [skipOpen, setSkipOpen] = useState(false);
+  const [viewingModuleId, setViewingModuleId] = useState<string>();
+  const [showNewMessage, setShowNewMessage] = useState(false);
   const [messageApi, contextHolder] = message.useMessage();
-
-  const messagesRef = useRef<UiMessage[]>([]);
-  const sessionIdRef = useRef(sessionId);
-  const streamMessageIdRef = useRef<string | null>(null);
-  const chatListRef = useRef<HTMLDivElement>(null);
-
-  const busy = status === "streaming_question" || status === "streaming_summary";
-  const canAnswer = status === "waiting_answer" && answer.trim().length > 0;
-  const currentFocus = round > 0 ? QUESTION_FOCUS_LABELS[(round - 1) % QUESTION_FOCUS_LABELS.length] : "";
-  const progressText = round > 0
-    ? `第 ${round} 轮：${currentFocus}`
-    : "面试进行中";
+  const listRef = useRef<HTMLDivElement>(null);
+  const nearBottomRef = useRef(true);
+  const activeRef = useRef(true);
+  const streamMessageIdRef = useRef<string | undefined>(undefined);
+  const startedRef = useRef(false);
 
   useEffect(() => {
-    messagesRef.current = messages;
-    // Auto-scroll to bottom
-    if (chatListRef.current) {
-      chatListRef.current.scrollTop = chatListRef.current.scrollHeight;
-    }
-  }, [messages]);
-
-  useEffect(() => {
-    sessionIdRef.current = sessionId;
+    activeRef.current = true;
+    const unsubscribe = subscribeInterviewSessions(() => setSession(getInterviewSession(sessionId)));
+    updateInterviewSession(sessionId, (current) => ({ ...current, status: "in_progress" }));
+    return () => {
+      activeRef.current = false;
+      unsubscribe();
+    };
   }, [sessionId]);
 
   useEffect(() => {
     const unlisteners: UnlistenFn[] = [];
-
     void listen<MockInterviewStreamPayload>("mock_interview:delta", (event) => {
-      if (event.payload.sessionId !== sessionIdRef.current) return;
-      if (event.payload.kind === "question") appendStreamDelta(event.payload.content);
+      if (event.payload.sessionId !== sessionId || event.payload.kind !== "question") return;
+      const id = streamMessageIdRef.current;
+      if (!id) return;
+      const delta = cleanStreamText(event.payload.content);
+      updateInterviewSession(sessionId, (current) => ({
+        ...current,
+        messages: current.messages.map((item) => item.id === id ? { ...item, content: cleanStreamText(item.content + delta) } : item),
+      }));
     }).then((unlisten) => unlisteners.push(unlisten));
+    return () => unlisteners.forEach((unlisten) => unlisten());
+  }, [sessionId]);
 
-    void listen<MockInterviewStreamPayload>("mock_interview:done", (event) => {
-      if (event.payload.sessionId !== sessionIdRef.current) return;
-      completeStreamMessage(event.payload.kind, event.payload.content);
-    }).then((unlisten) => unlisteners.push(unlisten));
+  const askNextQuestion = async (source?: InterviewSession, forceCore = false) => {
+    let current = source ?? getInterviewSession(sessionId);
+    if (!current || questionState === "generating") return;
 
-    void listen<MockInterviewStreamPayload>("mock_interview:error", (event) => {
-      if (event.payload.sessionId !== sessionIdRef.current) return;
-      setStatus("error");
-      messageApi.error(event.payload.content || "流式生成失败");
-    }).then((unlisten) => unlisteners.push(unlisten));
+    let nextModuleIndex = current.currentModuleIndex;
+    while (
+      nextModuleIndex < current.modules.length &&
+      current.modules[nextModuleIndex].completedQuestions >= current.modules[nextModuleIndex].targetQuestions
+    ) nextModuleIndex += 1;
 
-    return () => {
-      unlisteners.forEach((unlisten) => unlisten());
-    };
-  }, [messageApi]);
+    if (nextModuleIndex >= current.modules.length) {
+      await finishInterview(current);
+      return;
+    }
+    if (nextModuleIndex !== current.currentModuleIndex) {
+      current = saveInterviewSession({ ...current, currentModuleIndex: nextModuleIndex });
+    }
 
-  function appendStreamDelta(delta: string): void {
-    const messageId = streamMessageIdRef.current;
-    if (!messageId) return;
-    const cleanDelta = cleanStreamText(delta);
-    if (!cleanDelta) return;
+    const lastCandidate = [...current.messages].reverse().find((item) => item.role === "candidate");
+    const questionKind = !forceCore && lastCandidate && shouldFollowUp(current, lastCandidate) ? "followup" : "core";
+    const module = current.modules[current.currentModuleIndex];
+    const placeholder = createMessage("interviewer", "", { moduleId: module.id, questionKind });
+    streamMessageIdRef.current = placeholder.id;
+    setStreamingMessageId(placeholder.id);
+    setQuestionState("generating");
+    current = saveInterviewSession({ ...current, messages: [...current.messages, placeholder], status: "in_progress" });
 
-    setMessages((current) =>
-      current.map((item) =>
-        item.id === messageId
-          ? { ...item, content: cleanStreamText(`${item.content}${cleanDelta}`) }
-          : item,
-      ),
-    );
-  }
-
-  function completeStreamMessage(
-    kind: MockInterviewStreamPayload["kind"],
-    content: string,
-  ): void {
-    const messageId = streamMessageIdRef.current;
-    streamMessageIdRef.current = null;
-    const cleanContent = cleanStreamText(content);
-
-    if (kind === "summary") {
-      setMessages((current) => current.map((item) => item.id === messageId
-        ? { ...item, content: "结构化面试报告已生成", streaming: false }
-        : item));
-      try {
-        setReport(parseMockInterviewReport(cleanContent));
-        setStatus("completed");
-      } catch (error) {
-        setStatus("error");
-        messageApi.error(error instanceof Error ? error.message : "报告解析失败");
+    try {
+      const content = await streamMockInterviewQuestion({
+        sessionId,
+        resumeContent: current.resumeSnapshot,
+        history: toHistory(current.messages.filter((item) => item.id !== placeholder.id)),
+        round: current.mainQuestionCount + current.followUpCount + 1,
+        jobContext: current.settings.jobContext,
+        interviewType: current.settings.interviewType,
+        difficulty: current.settings.difficulty,
+        moduleName: module.name,
+        moduleDescription: module.description,
+        questionKind,
+        focusAreas: [...current.settings.focusAreas, current.settings.customFocus].filter(Boolean),
+        moduleQuestion: module.completedQuestions + 1,
+        moduleTargetQuestions: module.targetQuestions,
+      });
+      updateInterviewSession(sessionId, (latest) => ({
+        ...latest,
+        mainQuestionCount: latest.mainQuestionCount + (questionKind === "core" ? 1 : 0),
+        followUpCount: latest.followUpCount + (questionKind === "followup" ? 1 : 0),
+        modules: latest.modules.map((item, index) => index === latest.currentModuleIndex ? {
+          ...item,
+          completedQuestions: item.completedQuestions + (questionKind === "core" ? 1 : 0),
+          followUpQuestions: item.followUpQuestions + (questionKind === "followup" ? 1 : 0),
+        } : item),
+        messages: latest.messages.map((item) => item.id === placeholder.id ? { ...item, content: cleanStreamText(content) } : item),
+      }));
+      if (activeRef.current) setQuestionState("waiting");
+    } catch (error) {
+      updateInterviewSession(sessionId, (latest) => ({
+        ...latest,
+        messages: latest.messages.filter((item) => item.id !== placeholder.id),
+      }));
+      if (activeRef.current) {
+        setQuestionState("error");
+        messageApi.error(error instanceof Error ? error.message : "问题生成失败");
       }
-      return;
-    }
-
-    setMessages((current) =>
-      current.map((item) =>
-        item.id === messageId
-          ? { ...item, content: cleanContent || cleanStreamText(item.content), streaming: false }
-          : item,
-      ),
-    );
-
-    setStatus("waiting_answer");
-  }
-
-  async function startQuestionStream(
-    nextRound: number,
-    history: UiMessage[],
-    activeSessionId = sessionIdRef.current,
-  ): Promise<void> {
-    const streamingMessage = createMessage("interviewer", "", true);
-    streamMessageIdRef.current = streamingMessage.id;
-    setMessages((current) => [...current, streamingMessage]);
-    setRound(nextRound);
-    setStatus("streaming_question");
-
-    try {
-      await streamMockInterviewQuestion({
-        sessionId: activeSessionId,
-        resumeContent: resumeContent.trim(),
-      history: toHistory(history),
-      round: nextRound,
-      ...settings,
-      });
-    } catch (error: unknown) {
-      streamMessageIdRef.current = null;
-      setStatus("error");
-      const detail = error instanceof Error ? error.message : "生成问题失败";
-      messageApi.error(detail);
-    }
-  }
-
-  async function handleStart(): Promise<void> {
-    const nextSessionId = createSessionId();
-    sessionIdRef.current = nextSessionId;
-    setSessionId(nextSessionId);
-    setMessages([]);
-    setAnswer("");
-    setReport(null);
-    setRound(0);
-    setStatus("idle");
-    setStarted(true);
-
-    const intro = createMessage(
-      "system",
-      "模拟面试开始。AI 面试官会结合你的回答持续追问，并在技术深度、个人贡献、量化结果、问题处理和表达可信度之间轮换方向。你可以随时结束并生成报告。",
-    );
-    setMessages([intro]);
-
-    setTimeout(() => {
-      void startQuestionStream(1, [intro], nextSessionId);
-    }, 0);
-  }
-
-  async function handleSendAnswer(): Promise<void> {
-    const trimmed = answer.trim();
-    if (!trimmed) {
-      messageApi.warning("请输入您的真实回答");
-      return;
-    }
-
-    const candidateMessage = createMessage("candidate", trimmed);
-    const nextMessages = [...messagesRef.current, candidateMessage];
-    setMessages(nextMessages);
-    setAnswer("");
-
-    await startQuestionStream(round + 1, nextMessages);
-  }
-
-  async function handleGenerateSummary(history = messagesRef.current): Promise<void> {
-    const streamingMessage = createMessage("interviewer", "", true);
-    streamMessageIdRef.current = streamingMessage.id;
-    setMessages((current) => [...current, streamingMessage]);
-    setStatus("streaming_summary");
-
-    try {
-      await streamMockInterviewSummary({
-        sessionId: sessionIdRef.current,
-        resumeContent: resumeContent.trim(),
-        history: toHistory(history),
-        ...settings,
-      });
-    } catch (error: unknown) {
-      streamMessageIdRef.current = null;
-      setStatus("error");
-      const detail = error instanceof Error ? error.message : "生成总结失败";
-      messageApi.error(detail);
-    }
-  }
-
-  async function handleApply(optimization: MockResumeOptimization): Promise<void> {
-    setApplying(true);
-    try {
-      await onApply(optimization.sectionTitle, optimization.optimizedMarkdown);
-      messageApi.success("已采纳并更新简历");
-    } catch (error: unknown) {
-      const detail = error instanceof Error ? error.message : "更新简历失败";
-      messageApi.error(detail);
-      throw error;
     } finally {
-      setApplying(false);
+      streamMessageIdRef.current = undefined;
+      if (activeRef.current) setStreamingMessageId(undefined);
     }
-  }
+  };
 
-  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && canAnswer && !busy) {
-      e.preventDefault();
-      void handleSendAnswer();
+  useEffect(() => {
+    if (!session || startedRef.current) return;
+    startedRef.current = true;
+    const last = session.messages[session.messages.length - 1];
+    if (!last || last.role === "candidate") void askNextQuestion(session);
+    else setQuestionState("waiting");
+  }, [session?.id]);
+
+  useEffect(() => {
+    if (!session || viewingModuleId) return;
+    if (nearBottomRef.current && listRef.current) {
+      listRef.current.scrollTop = listRef.current.scrollHeight;
+      setShowNewMessage(false);
+    } else if (session.messages.length) {
+      setShowNewMessage(true);
     }
-  }
+  }, [session?.messages, viewingModuleId]);
 
-  // Entry screen — not yet started
-  if (!started) {
-    return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 16, alignItems: "center", padding: "24px 0" }}>
-        {contextHolder}
-        <Alert
-          type="info"
-          showIcon
-          icon={<RobotOutlined />}
-          message="通过 5 个不同方面的问题挖掘简历事实，逐轮回答后生成总结和可采纳的优化章节。"
-          style={{ width: "100%", maxWidth: 560 }}
-        />
-        <MockInterviewSetup value={settings} onChange={setSettings} />
-        <Button
-          type="primary"
-          size="large"
-          icon={<ThunderboltOutlined />}
-          onClick={() => void handleStart()}
-          style={{ minWidth: 160 }}
-        >
-          开始模拟面试
-        </Button>
-      </div>
+  const currentModule = session?.modules[session.currentModuleIndex];
+  const estimatedRemaining = useMemo(() => {
+    if (!session) return "";
+    const meta = DURATION_META[session.settings.duration];
+    const maxMinutes = Number(meta.minutes.match(/(\d+)(?=分钟)/)?.[1] || 30);
+    return `${Math.max(2, Math.ceil(maxMinutes * (1 - overallProgress(session) / 100)))}分钟`;
+  }, [session]);
+
+  if (!session) return <Alert type="error" showIcon message="未找到模拟面试记录" action={<Button onClick={onBack}>返回</Button>} />;
+
+  const setDraft = (draft: string) => {
+    setSession((current) => current ? { ...current, draft } : current);
+    window.setTimeout(() => updateInterviewSession(sessionId, (current) => ({ ...current, draft })), 0);
+  };
+
+  const sendAnswer = async (skipped = false) => {
+    const current = getInterviewSession(sessionId);
+    if (!current || questionState !== "waiting" || (!skipped && !current.draft.trim())) return;
+    const candidate = createMessage(
+      "candidate",
+      skipped ? "本题暂时不会，选择跳过。" : current.draft.trim(),
+      { moduleId: current.modules[current.currentModuleIndex]?.id, skipped },
     );
-  }
+    const next = saveInterviewSession({ ...current, draft: "", messages: [...current.messages, candidate] });
+    setQuestionState("idle");
+    await askNextQuestion(next);
+  };
 
-  // Chat view
+  const finishInterview = async (source?: InterviewSession) => {
+    const current = source ?? getInterviewSession(sessionId);
+    if (!current) return;
+    saveInterviewSession({
+      ...current,
+      completedAt: new Date().toISOString(),
+      status: "report_queued",
+      draft: "",
+    });
+    setEndOpen(false);
+    onReport();
+    void generateInterviewReport(sessionId);
+  };
+
+  const saveAndExit = () => {
+    updateInterviewSession(sessionId, (current) => ({ ...current, status: "paused" }));
+    onBack();
+  };
+
+  const jumpToModule = (moduleId: string, completed: boolean) => {
+    if (!completed && moduleId !== currentModule?.id) return;
+    if (moduleId === currentModule?.id) {
+      setViewingModuleId(undefined);
+      listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
+      return;
+    }
+    const element = listRef.current?.querySelector(`[data-module-id="${moduleId}"]`);
+    if (element) {
+      setViewingModuleId(moduleId);
+      element.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
+
+  const enoughForReport = session.mainQuestionCount >= 5 || (Date.now() - new Date(session.createdAt).getTime()) >= 10 * 60 * 1000;
+
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        height: "100%",
-        minHeight: 0,
-        background: "transparent",
-      }}
-    >
+    <div className="mi-session-page">
       {contextHolder}
-
-      {/* Header bar */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-          padding: "10px 16px",
-          borderBottom: "1px solid rgba(0,0,0,0.06)",
-          background: "rgba(255,255,255,0.8)",
-          backdropFilter: "blur(8px)",
-          flexShrink: 0,
-          borderRadius: "10px 10px 0 0",
-        }}
-      >
-        <Button
-          type="text"
-          size="small"
-          icon={<ArrowLeftOutlined />}
-          onClick={onBack}
-          style={{ color: "#64748b" }}
-        >
-          返回
-        </Button>
-        <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 8 }}>
-          <RobotOutlined style={{ color: "#1677ff" }} />
-          <Typography.Text strong style={{ fontSize: 14 }}>AI 模拟面试</Typography.Text>
-        </div>
-        <Space size={6}>
-          <Tag color={status === "completed" ? "green" : "blue"}>{progressText}</Tag>
-          {busy && <Tag>流式生成中</Tag>}
-        </Space>
-        {status === "waiting_answer" && round > 1 && (
-          <Button size="small" onClick={() => void handleGenerateSummary()}>
-            结束面试并生成报告
-          </Button>
-        )}
-        {status === "completed" || status === "error" ? (
-          <Button
-            size="small"
-            icon={<ThunderboltOutlined />}
-            onClick={() => void handleStart()}
-          >
-            重新开始
-          </Button>
-        ) : null}
-      </div>
-
-      {/* Message list */}
-      <div
-        ref={chatListRef}
-        style={{
-          flex: 1,
-          overflowY: "auto",
-          padding: "16px 16px 8px",
-          display: "flex",
-          flexDirection: "column",
-          gap: 12,
-          minHeight: 0,
-        }}
-      >
-        {messages.length === 0 ? (
-          <div style={{ textAlign: "center", color: "#94a3b8", paddingTop: 40, fontSize: 14 }}>
-            AI 面试官会逐字流式提问，请耐心等待…
+      <header className="mi-session-header">
+        <div className="mi-session-header-top">
+          <Button type="text" icon={<ArrowLeftOutlined />} onClick={saveAndExit}>保存并退出</Button>
+          <div className="mi-session-title">
+            <Typography.Text strong>{session.settings.jobTitle || "通用岗位面试"}</Typography.Text>
+            <Typography.Text type="secondary">{session.settings.interviewType} · {session.settings.difficulty}</Typography.Text>
           </div>
-        ) : (
-          messages.map((item) => {
-            const isCandidate = item.role === "candidate";
-            const isSystem = item.role === "system";
-            return (
-              <div
-                key={item.id}
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: isCandidate ? "flex-end" : "flex-start",
-                  gap: 4,
-                }}
-              >
-                {!isCandidate && (
-                  <Typography.Text type="secondary" style={{ fontSize: 11, paddingLeft: 4 }}>
-                    {isSystem ? "系统提示" : "面试官"}
-                    {item.streaming && (
-                      <span style={{ marginLeft: 6, color: "#1677ff" }}>●</span>
-                    )}
-                  </Typography.Text>
-                )}
-                <div
-                  style={{
-                    maxWidth: "82%",
-                    padding: isSystem ? "8px 14px" : "10px 16px",
-                    borderRadius: isCandidate ? "16px 4px 16px 16px" : "4px 16px 16px 16px",
-                    background: isCandidate
-                      ? "linear-gradient(135deg, #1677ff, #0958d9)"
-                      : isSystem
-                        ? "rgba(100,116,139,0.08)"
-                        : "rgba(255,255,255,0.95)",
-                    border: isCandidate
-                      ? "none"
-                      : isSystem
-                        ? "1px solid rgba(100,116,139,0.15)"
-                        : "1px solid rgba(22,119,255,0.15)",
-                    boxShadow: isCandidate
-                      ? "0 2px 8px rgba(22,119,255,0.25)"
-                      : isSystem
-                        ? "none"
-                        : "0 1px 4px rgba(0,0,0,0.06)",
-                    wordBreak: "break-word",
-                    whiteSpace: "pre-wrap",
-                  }}
-                >
-                  <Typography.Text
-                    style={{
-                      color: isCandidate ? "#fff" : isSystem ? "#64748b" : "#0f172a",
-                      fontSize: isSystem ? 12 : 14,
-                      lineHeight: 1.65,
-                    }}
-                  >
-                    {item.content || (item.streaming ? "" : "...")}
-                    {item.streaming && (
-                      <span
-                        style={{
-                          display: "inline-block",
-                          width: 2,
-                          height: "1em",
-                          background: "#1677ff",
-                          marginLeft: 2,
-                          verticalAlign: "text-bottom",
-                          animation: "cursor-blink 1s step-end infinite",
-                        }}
-                      />
-                    )}
-                  </Typography.Text>
-                </div>
-                {isCandidate && (
-                  <Typography.Text type="secondary" style={{ fontSize: 11, paddingRight: 4 }}>
-                    我
-                  </Typography.Text>
-                )}
-              </div>
-            );
-          })
-        )}
+          <div className="mi-save-status"><CheckCircleFilled /> 已自动保存</div>
+        </div>
+        <div className="mi-session-header-progress">
+          <div>
+            <strong>{currentModule?.name || "面试总结"}</strong>
+            <span>整体进度 {overallProgress(session)}%</span>
+          </div>
+          <Progress percent={overallProgress(session)} showInfo={false} />
+          <span><ClockCircleOutlined /> 预计剩余{estimatedRemaining}</span>
+          <Button icon={<StopOutlined />} onClick={() => setEndOpen(true)}>提前结束面试</Button>
+        </div>
+      </header>
 
-        {/* Summary section shown inline at bottom of chat */}
-        {status === "completed" && report && (
+      <div className="mi-session-body">
+        <aside className="mi-outline">
+          <Typography.Text strong>面试大纲</Typography.Text>
+          <div className="mi-outline-list">
+            {session.modules.map((module, index) => {
+              const completed = index < session.currentModuleIndex || module.completedQuestions >= module.targetQuestions;
+              const active = index === session.currentModuleIndex;
+              return (
+                <button
+                  type="button"
+                  key={module.id}
+                  className={`mi-outline-item ${completed ? "is-completed" : ""} ${active ? "is-active" : ""} ${viewingModuleId === module.id ? "is-viewing" : ""}`}
+                  onClick={() => jumpToModule(module.id, completed)}
+                >
+                  <span className="mi-outline-marker">{completed ? <CheckCircleFilled /> : index + 1}</span>
+                  <span><strong>{module.name}</strong><small>核心题 {module.completedQuestions}/{module.targetQuestions}</small></span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="mi-outline-summary">
+            <span>{session.mainQuestionCount}个核心问题</span>
+            <span>{session.followUpCount}次动态追问</span>
+          </div>
+        </aside>
+
+        <main className="mi-conversation">
           <div
-            style={{
-              marginTop: 8,
-              padding: "16px",
-              background: "linear-gradient(135deg, rgba(22,119,255,0.04), rgba(22,119,255,0.08))",
-              borderRadius: 12,
-              border: "1px solid rgba(22,119,255,0.2)",
+            className="mi-message-list"
+            ref={listRef}
+            onScroll={(event) => {
+              const element = event.currentTarget;
+              nearBottomRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+              if (nearBottomRef.current) setShowNewMessage(false);
             }}
           >
-            <div style={{ marginBottom: 12 }}>
-              <Typography.Text strong style={{ color: "#1677ff", fontSize: 13 }}>
-                ✦ 结构化面试报告与简历优化建议
-              </Typography.Text>
+            <div className="mi-interview-intro">
+              <Typography.Text strong>模拟面试已开始</Typography.Text>
+              <Typography.Text type="secondary">面试官会根据你的回答动态追问，过程中不会展示评分与参考答案。</Typography.Text>
             </div>
-            <MockInterviewReportView report={report} applying={applying} onApply={handleApply} />
+            {session.messages.map((item) => {
+              const module = session.modules.find((entry) => entry.id === item.moduleId);
+              if (item.role === "system") return <div key={item.id} className="mi-system-line">{item.content}</div>;
+              const candidate = item.role === "candidate";
+              return (
+                <article
+                  key={item.id}
+                  data-module-id={!candidate ? item.moduleId : undefined}
+                  className={`mi-message ${candidate ? "is-candidate" : "is-interviewer"}`}
+                >
+                  <div className="mi-message-meta">
+                    <span>{candidate ? "我" : "面试官"}</span>
+                    {!candidate && <Tag>{item.questionKind === "followup" ? "深入追问" : module?.name || "核心问题"}</Tag>}
+                    {item.skipped && <Tag color="gold">已跳过</Tag>}
+                  </div>
+                  <div className="mi-message-content">
+                    {item.content || (streamingMessageId === item.id ? "面试官正在结合你的回答组织问题…" : "")}
+                    {streamingMessageId === item.id && <span className="mi-stream-cursor" />}
+                  </div>
+                </article>
+              );
+            })}
+            {questionState === "error" && (
+              <Alert
+                type="error"
+                showIcon
+                message="本题生成失败"
+                description="面试记录已保存，可以重新生成当前问题。"
+                action={<Button icon={<RedoOutlined />} onClick={() => void askNextQuestion(undefined, true)}>重新生成</Button>}
+              />
+            )}
           </div>
-        )}
+
+          {showNewMessage && (
+            <Button
+              className="mi-new-message"
+              icon={<ArrowDownOutlined />}
+              onClick={() => {
+                listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
+                setShowNewMessage(false);
+              }}
+            >
+              返回最新消息
+            </Button>
+          )}
+
+          <div className="mi-composer">
+            {viewingModuleId ? (
+              <div className="mi-history-viewing">
+                <EyeOutlined />
+                <span>正在查看“{session.modules.find((item) => item.id === viewingModuleId)?.name}”的历史内容</span>
+                <Button type="primary" onClick={() => jumpToModule(currentModule?.id || "", true)}>返回当前问题</Button>
+              </div>
+            ) : (
+              <>
+                <Input.TextArea
+                  value={session.draft}
+                  autoSize={{ minRows: 3, maxRows: 8 }}
+                  maxLength={3000}
+                  disabled={questionState !== "waiting"}
+                  placeholder={questionState === "generating" ? "面试官正在结合你的回答生成问题…" : "输入你的回答，Enter换行，Ctrl/⌘ + Enter发送"}
+                  onChange={(event) => setDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+                      event.preventDefault();
+                      void sendAnswer();
+                    }
+                  }}
+                />
+                <div className="mi-composer-actions">
+                  <Button type="text" icon={<PauseCircleOutlined />} disabled={questionState !== "waiting"} onClick={() => setSkipOpen(true)}>暂时不会</Button>
+                  <Typography.Text type="secondary">已输入 {session.draft.length} 字</Typography.Text>
+                  <Button type="primary" icon={<SendOutlined />} disabled={questionState !== "waiting" || !session.draft.trim()} onClick={() => void sendAnswer()}>发送回答</Button>
+                </div>
+              </>
+            )}
+          </div>
+        </main>
       </div>
 
-      {/* Input area — fixed at bottom, only shown while not completed */}
-      {status !== "completed" && (
-        <div
-          style={{
-            padding: "12px 16px",
-            borderTop: "1px solid rgba(0,0,0,0.06)",
-            background: "rgba(255,255,255,0.9)",
-            backdropFilter: "blur(8px)",
-            flexShrink: 0,
-            borderRadius: "0 0 10px 10px",
-          }}
-        >
-          <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
-            <Input.TextArea
-              value={answer}
-              onChange={(e) => setAnswer(e.target.value)}
-              onKeyDown={handleKeyDown}
-              rows={3}
-              disabled={status !== "waiting_answer"}
-              placeholder={
-                status === "idle"
-                  ? "等待 AI 面试官提问…"
-                  : status === "streaming_question" || status === "streaming_summary"
-                    ? "AI 正在生成，请稍候…"
-                    : status === "error"
-                      ? "发生错误，请重新开始"
-                      : "回答这一轮追问，尽量补充技术细节、个人贡献、量化数据（⌘/Ctrl+Enter 发送）"
-              }
-              maxLength={2000}
-              showCount
-              style={{
-                flex: 1,
-                resize: "none",
-                borderRadius: 10,
-                fontSize: 14,
-              }}
-            />
-            <Button
-              type="primary"
-              icon={<SendOutlined />}
-              disabled={!canAnswer}
-              loading={busy}
-              onClick={() => void handleSendAnswer()}
-              style={{
-                height: 76,
-                width: 48,
-                borderRadius: 10,
-                flexShrink: 0,
-              }}
-            />
-          </div>
-        </div>
-      )}
+      <Modal
+        title="提前结束面试？"
+        open={endOpen}
+        onCancel={() => setEndOpen(false)}
+        footer={enoughForReport ? [
+          <Button key="continue" onClick={() => setEndOpen(false)}>继续面试</Button>,
+          <Button key="finish" type="primary" onClick={() => void finishInterview()}>结束并生成报告</Button>,
+        ] : [
+          <Button key="continue" onClick={() => setEndOpen(false)}>继续面试</Button>,
+          <Button key="save" onClick={saveAndExit}>保存为未完成并退出</Button>,
+        ]}
+      >
+        {enoughForReport
+          ? <Typography.Paragraph>报告将根据目前完成的{session.mainQuestionCount}个核心问题生成，未覆盖能力会标记为“本次未充分考察”。</Typography.Paragraph>
+          : <Alert type="warning" showIcon message="当前回答较少，暂时不足以形成有效报告" description="至少完成5个核心问题或进行10分钟后，才能生成正式报告。" />}
+      </Modal>
 
-      {/* Blinking cursor CSS */}
-      <style>{`
-        @keyframes cursor-blink {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0; }
-        }
-      `}</style>
+      <Modal
+        title="确定跳过这个问题？"
+        open={skipOpen}
+        okText="确认跳过"
+        cancelText="继续回答"
+        onCancel={() => setSkipOpen(false)}
+        onOk={() => {
+          setSkipOpen(false);
+          void sendAnswer(true);
+        }}
+      >
+        <Typography.Paragraph>报告中会记录该能力点未充分回答，并继续进入后续问题。</Typography.Paragraph>
+      </Modal>
     </div>
   );
 }

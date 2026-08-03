@@ -66,6 +66,8 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Create or reuse draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -79,11 +81,20 @@ jobs:
               exit 1
             fi
           else
-            gh release create "$RELEASE_TAG" \
-              --verify-tag \
-              --draft \
-              --generate-notes \
-              --title "OfferFlow $RELEASE_TAG"
+            NOTES_FILE="docs/releases/$RELEASE_TAG.md"
+            if [ -f "$NOTES_FILE" ]; then
+              gh release create "$RELEASE_TAG" \
+                --verify-tag \
+                --draft \
+                --notes-file "$NOTES_FILE" \
+                --title "OfferFlow $RELEASE_TAG"
+            else
+              gh release create "$RELEASE_TAG" \
+                --verify-tag \
+                --draft \
+                --generate-notes \
+                --title "OfferFlow $RELEASE_TAG"
+            fi
           fi
 
   build:

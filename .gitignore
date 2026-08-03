@@ -25,6 +25,8 @@ dist-ssr
 
 release
 releases/
+!docs/releases/
+!docs/releases/*.md
 .codegraph
 settings.local.json
 
@@ -32,3 +34,5 @@ settings.local.json
 .tauri/*.key
 
 ./docs/updater-release.md
+
+designs/

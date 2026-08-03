@@ -57,17 +57,11 @@ import {
   InfoCircleOutlined,
   RobotOutlined,
 } from "@ant-design/icons";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { commandErrorMessage, type CommandResult } from "@/types/command";
 import type { BrowserEnvStatus } from "@/types/rpa";
-import { MockInterviewDrawer } from "@/view/resume-optimizer/MockInterviewDrawer";
-import {
-  extractSections,
-  findSectionIndexByRenderedTitle,
-  replaceSectionContent,
-} from "@/view/resume-optimizer";
 import { LlmConfigPanel } from "./LlmConfigPanel";
 import { AiFeatureGate } from "@/components/AiFeatureGate";
 
@@ -206,14 +200,8 @@ export function ConfigPage(props: ConfigPageProps) {
   const [form] = Form.useForm();
   const [browserEnvStatus, setBrowserEnvStatus] =
     useState<BrowserEnvStatus | null>(null);
-  const [mockInterviewOpen, setMockInterviewOpen] = useState(false);
   const [ruleRequirement, setRuleRequirement] = useState("");
   const [generatingRules, setGeneratingRules] = useState(false);
-  const resumeContent = props.config.resume_config.resume_content ?? "";
-  const resumeSections = useMemo(
-    () => extractSections(resumeContent),
-    [resumeContent],
-  );
 
   useEffect(() => {
     setActiveGroup(toVisibleConfigGroup(props.initialGroup));
@@ -415,35 +403,6 @@ export function ConfigPage(props: ConfigPageProps) {
       loading();
     }
   };
-
-  const applyMockInterviewOptimization = useCallback(
-    async (sectionTitle: string, optimizedMarkdown: string) => {
-      const sectionIndex = findSectionIndexByRenderedTitle(
-        resumeSections,
-        sectionTitle,
-      );
-
-      if (sectionIndex < 0) {
-        throw new Error(`未找到章节「${sectionTitle}」`);
-      }
-
-      const nextContent = replaceSectionContent(
-        resumeContent,
-        resumeSections[sectionIndex],
-        optimizedMarkdown,
-      ).trim();
-
-      form.setFieldsValue({
-        resume_config: {
-          ...props.config.resume_config,
-          resume_content: nextContent,
-        },
-      });
-      props.updateResume({ resume_content: nextContent });
-      antdMessage.success("模拟面试优化已应用到简历配置");
-    },
-    [form, props, resumeContent, resumeSections],
-  );
 
   // 当外部配置改变时（如首次加载），更新表单
   useEffect(() => {
@@ -1468,13 +1427,6 @@ export function ConfigPage(props: ConfigPageProps) {
                   选择 PDF 简历并解析为可用于后续自动化的文本内容
                 </Text>
               </div>
-              <Button
-                icon={<RobotOutlined />}
-                disabled={!resumeContent.trim()}
-                onClick={() => props.config.llm_config ? setMockInterviewOpen(true) : props.onOpenLlmConfig()}
-              >
-                模拟面试优化
-              </Button>
             </div>
             <AiFeatureGate configured={!!props.config.llm_config} onConfigure={props.onOpenLlmConfig}><></></AiFeatureGate>
             <Divider className="!my-0 opacity-10" />
@@ -1586,14 +1538,6 @@ export function ConfigPage(props: ConfigPageProps) {
           {renderContent()}
         </div>
       </Form>
-      <MockInterviewDrawer
-        open={mockInterviewOpen}
-        aiConfigured={!!props.config.llm_config}
-        onConfigureAi={props.onOpenLlmConfig}
-        resumeContent={resumeContent}
-        onClose={() => setMockInterviewOpen(false)}
-        onApply={applyMockInterviewOptimization}
-      />
     </div>
   );
 }

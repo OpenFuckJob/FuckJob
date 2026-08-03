@@ -67,6 +67,12 @@ export interface MockInterviewQuestionRequest {
   jobContext: string;
   interviewType: string;
   difficulty: string;
+  moduleName: string;
+  moduleDescription: string;
+  questionKind: "core" | "followup";
+  focusAreas: string[];
+  moduleQuestion: number;
+  moduleTargetQuestions: number;
 }
 
 export interface MockInterviewSummaryRequest {
@@ -101,6 +107,19 @@ export interface MockInterviewReport {
   dimensions: MockInterviewDimension[];
   risks: string[];
   optimizations: MockResumeOptimization[];
+  questionReviews?: MockInterviewQuestionReview[];
+}
+
+export interface MockInterviewQuestionReview {
+  questionIndex: number;
+  question: string;
+  answer: string;
+  module: string;
+  score: number;
+  summary: string;
+  strengths: string[];
+  improvements: string[];
+  answerOutline: string[];
 }
 
 export interface MockInterviewStreamPayload {

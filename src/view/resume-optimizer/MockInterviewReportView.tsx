@@ -1,110 +1,208 @@
-import { useState } from "react";
-import { Alert, Button, Card, Col, Modal, Progress, Row, Space, Tag, Typography } from "antd";
-import { CheckOutlined, EyeOutlined } from "@ant-design/icons";
-import type { MockInterviewReport, MockResumeOptimization } from "@/types/analysis";
+import { useMemo, useState } from "react";
+import {
+  Button,
+  Card,
+  Empty,
+  Progress,
+  Segmented,
+  Space,
+  Tabs,
+  Tag,
+  Typography,
+} from "antd";
+import { ArrowRightOutlined, CheckCircleFilled, MessageOutlined, RiseOutlined } from "@ant-design/icons";
+import type { MockInterviewQuestionReview, MockInterviewReport } from "@/types/analysis";
+import type { InterviewSession } from "./interview-types";
 
 interface MockInterviewReportViewProps {
   report: MockInterviewReport;
-  applying: boolean;
-  onApply: (optimization: MockResumeOptimization) => Promise<void>;
+  session: InterviewSession;
+  comparisonSessions: InterviewSession[];
+  initialTab?: "summary" | "abilities" | "questions" | "transcript";
+  onPracticeQuestion: (review: MockInterviewQuestionReview) => void;
+  onRestart: () => void;
 }
 
-const markdownStyle = {
-  margin: 0,
-  maxHeight: 360,
-  overflow: "auto",
-  whiteSpace: "pre-wrap" as const,
-  overflowWrap: "anywhere" as const,
-  fontSize: 12,
-  lineHeight: 1.7,
-  background: "#f8fafc",
-  borderRadius: 8,
-  padding: 12,
-};
+function scoreLabel(score: number): string {
+  if (score >= 85) return "表现突出";
+  if (score >= 75) return "表现良好";
+  if (score >= 60) return "基本达到要求";
+  return "需要重点提升";
+}
 
-export function MockInterviewReportView({ report, applying, onApply }: MockInterviewReportViewProps) {
-  const [selected, setSelected] = useState<MockResumeOptimization | null>(null);
-  const applySelected = async () => {
-    if (!selected) return;
-    try {
-      await onApply(selected);
-      setSelected(null);
-    } catch {
-      // The parent presents the actionable error and the comparison remains open.
-    }
-  };
+function scoreColor(score: number): string {
+  if (score >= 80) return "#16a34a";
+  if (score >= 60) return "#d97706";
+  return "#dc2626";
+}
 
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <Card size="small">
-        <Row gutter={16} align="middle">
-          <Col><Progress type="circle" size={76} percent={report.overallScore} /></Col>
-          <Col flex={1}>
-            <Typography.Text strong>总体评价</Typography.Text>
-            <Typography.Paragraph style={{ margin: "6px 0 0", whiteSpace: "pre-wrap" }}>
-              {report.overallSummary}
-            </Typography.Paragraph>
-          </Col>
-        </Row>
+export function MockInterviewReportView(props: MockInterviewReportViewProps) {
+  const [questionFilter, setQuestionFilter] = useState("all");
+  const [selectedQuestion, setSelectedQuestion] = useState(0);
+  const dimensions = [...props.report.dimensions].sort((left, right) => right.score - left.score);
+  const strongest = dimensions[0];
+  const weakest = dimensions[dimensions.length - 1];
+  const questionReviews = props.report.questionReviews ?? [];
+  const filteredQuestions = useMemo(() => questionReviews.filter((item) => {
+    if (questionFilter === "strong") return item.score >= 80;
+    if (questionFilter === "improve") return item.score < 80;
+    if (questionFilter === "skipped") return !item.answer.trim() || /跳过|不会/.test(item.answer);
+    return true;
+  }), [questionFilter, questionReviews]);
+  const activeQuestion = filteredQuestions[Math.min(selectedQuestion, Math.max(0, filteredQuestions.length - 1))];
+
+  const summary = (
+    <div className="mi-report-stack">
+      <Card className="mi-report-hero">
+        <div className="mi-report-score">
+          <Progress
+            type="circle"
+            size={104}
+            percent={props.report.overallScore}
+            strokeColor={scoreColor(props.report.overallScore)}
+            format={(value) => <span><strong>{value}</strong><small>综合得分</small></span>}
+          />
+        </div>
+        <div className="mi-report-conclusion">
+          <Tag color={props.report.overallScore >= 75 ? "success" : "warning"}>{scoreLabel(props.report.overallScore)}</Tag>
+          <Typography.Title level={4}>本次面试总体评价</Typography.Title>
+          <Typography.Paragraph>{props.report.overallSummary}</Typography.Paragraph>
+          <div className="mi-report-highlights">
+            <div><span>最强能力</span><strong>{strongest?.dimension || "--"}</strong></div>
+            <div><span>优先提升</span><strong>{weakest?.dimension || "--"}</strong></div>
+            <div><span>有效覆盖</span><strong>{props.session.modules.filter((item) => item.completedQuestions > 0).length}/{props.session.modules.length} 模块</strong></div>
+          </div>
+        </div>
       </Card>
 
-      <Typography.Text strong>能力维度</Typography.Text>
-      <Row gutter={[10, 10]}>
-        {report.dimensions.map((item) => (
-          <Col xs={24} lg={12} key={item.dimension}>
-            <Card size="small" title={<Space><span>{item.dimension}</span><Tag color={item.score >= 80 ? "green" : item.score >= 60 ? "orange" : "red"}>{item.score}</Tag></Space>}>
-              {item.strengths.length > 0 && <Typography.Paragraph style={{ marginBottom: 6 }}><b>优势：</b>{item.strengths.join("；")}</Typography.Paragraph>}
-              {item.weaknesses.length > 0 && <Typography.Paragraph style={{ marginBottom: 6 }}><b>薄弱点：</b>{item.weaknesses.join("；")}</Typography.Paragraph>}
-              {item.evidence.length > 0 && <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}><b>依据：</b>{item.evidence.join("；")}</Typography.Paragraph>}
-            </Card>
-          </Col>
-        ))}
-      </Row>
+      <div className="mi-report-columns">
+        <Card title="突出表现" className="mi-report-positive">
+          {(strongest?.strengths.length ? strongest.strengths : ["本次报告暂无明确优势项"]).map((item) => (
+            <div className="mi-report-list-item" key={item}><CheckCircleFilled /> <span>{item}</span></div>
+          ))}
+        </Card>
+        <Card title="优先改进" className="mi-report-improve">
+          {(weakest?.weaknesses.length ? weakest.weaknesses : props.report.risks).slice(0, 4).map((item) => (
+            <div className="mi-report-list-item" key={item}><ArrowRightOutlined /> <span>{item}</span></div>
+          ))}
+        </Card>
+      </div>
 
-      {report.risks.length > 0 && <Alert type="warning" showIcon message="需要关注" description={report.risks.join("；")} />}
+      <Card title={<Space><RiseOutlined />下一步建议</Space>}>
+        <div className="mi-next-actions">
+          <Button type="primary" onClick={props.onRestart}>使用相同岗位重新面试</Button>
+          {questionReviews.length > 0 && <Button onClick={() => props.onPracticeQuestion(questionReviews.find((item) => item.score === Math.min(...questionReviews.map((entry) => entry.score))) || questionReviews[0])}>重新练习薄弱问题</Button>}
+        </div>
+      </Card>
 
-      <Typography.Text strong>简历优化建议</Typography.Text>
-      {report.optimizations.length === 0 ? (
-        <Alert type="info" message="本次面试没有生成可安全采纳的简历修改" />
-      ) : report.optimizations.map((item) => (
-        <Card
-          key={`${item.sectionTitle}-${item.rationale}`}
-          size="small"
-          title={<Space><span>{item.sectionTitle}</span>{item.needsEvidence && <Tag color="orange">需要补充证据</Tag>}</Space>}
-          extra={<Button size="small" icon={<EyeOutlined />} onClick={() => setSelected(item)}>查看修改对比</Button>}
-        >
-          <Typography.Text>{item.rationale}</Typography.Text>
-          {item.evidence.length > 0 && <Typography.Paragraph type="secondary" style={{ margin: "6px 0 0" }}>面试依据：{item.evidence.join("；")}</Typography.Paragraph>}
+      {props.comparisonSessions.length > 1 && (
+        <Card title="同岗位最近表现">
+          <div className="mi-score-trend">
+            {props.comparisonSessions.slice(0, 3).reverse().map((session) => (
+              <div key={session.id}>
+                <span>{new Date(session.createdAt).toLocaleDateString("zh-CN")}</span>
+                <strong>{session.report?.overallScore ?? "--"}</strong>
+                <Progress percent={session.report?.overallScore ?? 0} showInfo={false} />
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+
+  const abilities = (
+    <div className="mi-ability-list">
+      {props.report.dimensions.map((item) => (
+        <Card key={item.dimension} className="mi-ability-card">
+          <div className="mi-ability-heading">
+            <div><Typography.Title level={5}>{item.dimension}</Typography.Title><Typography.Text type="secondary">{scoreLabel(item.score)}</Typography.Text></div>
+            <strong style={{ color: scoreColor(item.score) }}>{item.score}</strong>
+          </div>
+          <Progress percent={item.score} showInfo={false} strokeColor={scoreColor(item.score)} />
+          <div className="mi-ability-details">
+            {!!item.strengths.length && <div><b>做得好的部分</b><ul>{item.strengths.map((value) => <li key={value}>{value}</li>)}</ul></div>}
+            {!!item.weaknesses.length && <div><b>可以改进</b><ul>{item.weaknesses.map((value) => <li key={value}>{value}</li>)}</ul></div>}
+            {!!item.evidence.length && <div className="mi-evidence"><b>判断依据</b>{item.evidence.map((value) => <p key={value}>{value}</p>)}</div>}
+          </div>
         </Card>
       ))}
-
-      <Modal
-        title={selected ? `简历修改对比 · ${selected.sectionTitle}` : "简历修改对比"}
-        open={selected !== null}
-        onCancel={() => setSelected(null)}
-        width={960}
-        footer={selected ? [
-          <Button key="cancel" onClick={() => setSelected(null)}>暂不采纳</Button>,
-          <Button
-            key="apply"
-            type="primary"
-            icon={<CheckOutlined />}
-            loading={applying}
-            disabled={selected.needsEvidence}
-            onClick={() => void applySelected()}
-          >
-            确认采纳
-          </Button>,
-        ] : null}
-      >
-        {selected?.needsEvidence && <Alert type="warning" showIcon message="这项修改缺少事实依据，补充证据后才能采纳" style={{ marginBottom: 12 }} />}
-        {selected && (
-          <Row gutter={[12, 12]}>
-            <Col xs={24} md={12}><Typography.Text strong>修改前</Typography.Text><pre style={{ ...markdownStyle, marginTop: 6 }}>{selected.originalMarkdown}</pre></Col>
-            <Col xs={24} md={12}><Typography.Text strong>修改后</Typography.Text><pre style={{ ...markdownStyle, marginTop: 6 }}>{selected.optimizedMarkdown}</pre></Col>
-          </Row>
-        )}
-      </Modal>
     </div>
+  );
+
+  const questions = questionReviews.length ? (
+    <div className="mi-question-review">
+      <aside>
+        <Segmented
+          block
+          value={questionFilter}
+          onChange={(value) => { setQuestionFilter(String(value)); setSelectedQuestion(0); }}
+          options={[
+            { label: "全部", value: "all" },
+            { label: "较好", value: "strong" },
+            { label: "待提升", value: "improve" },
+            { label: "跳过", value: "skipped" },
+          ]}
+        />
+        <div className="mi-question-list">
+          {filteredQuestions.map((item, index) => (
+            <button type="button" key={`${item.questionIndex}-${item.question}`} className={index === selectedQuestion ? "is-active" : ""} onClick={() => setSelectedQuestion(index)}>
+              <span>问题 {item.questionIndex}</span>
+              <strong>{item.question}</strong>
+              <Tag color={item.score >= 80 ? "success" : item.score >= 60 ? "warning" : "error"}>{item.score}</Tag>
+            </button>
+          ))}
+        </div>
+      </aside>
+      <main>
+        {activeQuestion ? (
+          <div className="mi-question-detail">
+            <Tag>{activeQuestion.module}</Tag>
+            <Typography.Title level={4}>{activeQuestion.question}</Typography.Title>
+            <section><Typography.Text type="secondary">你的回答</Typography.Text><p>{activeQuestion.answer || "本题未作答"}</p></section>
+            <section><Typography.Text type="secondary">本题评价</Typography.Text><p>{activeQuestion.summary}</p></section>
+            <div className="mi-report-columns">
+              <div><b>做得好的部分</b><ul>{activeQuestion.strengths.map((item) => <li key={item}>{item}</li>)}</ul></div>
+              <div><b>可以改进</b><ul>{activeQuestion.improvements.map((item) => <li key={item}>{item}</li>)}</ul></div>
+            </div>
+            <section className="mi-answer-outline"><b>建议回答结构</b><ol>{activeQuestion.answerOutline.map((item) => <li key={item}>{item}</li>)}</ol></section>
+            <Button type="primary" onClick={() => props.onPracticeQuestion(activeQuestion)}>重新练习这道题</Button>
+          </div>
+        ) : <Empty description="当前筛选下没有问题" />}
+      </main>
+    </div>
+  ) : <Empty description="当前模型未返回逐题复盘，可在能力评估中查看本次反馈" />;
+
+  const transcript = (
+    <div className="mi-transcript">
+      {props.session.modules.map((module) => {
+        const messages = props.session.messages.filter((item) => item.moduleId === module.id);
+        if (!messages.length) return null;
+        return (
+          <section key={module.id}>
+            <Typography.Title level={5}>{module.name}</Typography.Title>
+            {messages.map((item) => (
+              <div key={item.id} className={`mi-transcript-message ${item.role === "candidate" ? "is-candidate" : ""}`}>
+                <b>{item.role === "candidate" ? "我" : "面试官"}</b>
+                <p>{item.content}</p>
+              </div>
+            ))}
+          </section>
+        );
+      })}
+    </div>
+  );
+
+  return (
+    <Tabs
+      className="mi-report-tabs"
+      defaultActiveKey={props.initialTab || "summary"}
+      items={[
+        { key: "summary", label: "总体结论", children: summary },
+        { key: "abilities", label: "能力评估", children: abilities },
+        { key: "questions", label: `逐题复盘${questionReviews.length ? ` (${questionReviews.length})` : ""}`, children: questions },
+        { key: "transcript", label: <span><MessageOutlined /> 完整对话</span>, children: transcript },
+      ]}
+    />
   );
 }

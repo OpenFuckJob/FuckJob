@@ -35,6 +35,10 @@ export function rewriteUpdaterUrls(updater, release) {
   const expectedReleasePath = `/releases/download/${release.tag_name}/`;
   const rewritten = structuredClone(updater);
 
+  if (typeof release.body === "string" && release.body.trim()) {
+    rewritten.notes = release.body.trim();
+  }
+
   for (const [platform, target] of Object.entries(rewritten.platforms)) {
     if (!target?.url) throw new Error(`${platform} 缺少下载地址`);
     const match = target.url.match(API_ASSET_URL);

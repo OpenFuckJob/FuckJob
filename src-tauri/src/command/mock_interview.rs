@@ -22,6 +22,12 @@ pub struct MockInterviewQuestionRequest {
     pub job_context: String,
     pub interview_type: String,
     pub difficulty: String,
+    pub module_name: String,
+    pub module_description: String,
+    pub question_kind: String,
+    pub focus_areas: Vec<String>,
+    pub module_question: u32,
+    pub module_target_questions: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,6 +49,22 @@ struct MockInterviewReport {
     dimensions: Vec<MockInterviewDimension>,
     risks: Vec<String>,
     optimizations: Vec<MockResumeOptimization>,
+    #[serde(default)]
+    question_reviews: Vec<MockInterviewQuestionReview>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MockInterviewQuestionReview {
+    question_index: u32,
+    question: String,
+    answer: String,
+    module: String,
+    score: u8,
+    summary: String,
+    strengths: Vec<String>,
+    improvements: Vec<String>,
+    answer_outline: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -221,14 +243,19 @@ fn build_question_prompt(request: &MockInterviewQuestionRequest) -> String {
 历史对话：
 {history}
 
-当前轮次：第 {round} 轮
-本轮提问维度：{focus_name}
+当前问题序号：第 {round} 题
+当前面试模块：{module_name}
+模块目标：{module_description}
+当前模块进度：第 {module_question}/{module_target_questions} 个核心问题
+问题类型：{question_kind}
+用户设置的侧重点：{focus_areas}
+辅助考察维度：{focus_name}
 维度说明：{focus_description}
 
 请只输出这一轮面试官要问的一个问题。
 要求：
-1. 问题必须基于简历、目标岗位和历史回答，并严格围绕“本轮提问维度”展开。
-2. 本轮方向必须不同于上一轮问题；五个方向循环轮换，避免在同一方向连续追问。
+1. 问题必须基于简历、目标岗位和历史回答，并围绕当前面试模块展开。
+2. question_kind 为 followup 时必须承接上一条回答追问可验证细节；为 core 时提出该模块尚未覆盖的新问题。
 3. 只问一个简短、口语化的问题，最多 60 个中文字符；不要堆叠多个子问题。
 4. 不要输出解释、编号、总结，也不要重复历史对话中已经问过的问题。
 5. 必须承接候选人上一轮回答；如果存在模糊、矛盾或缺少证据的表述，优先追问可验证细节。
@@ -240,7 +267,17 @@ fn build_question_prompt(request: &MockInterviewQuestionRequest) -> String {
         history = format_history(&request.history),
         round = request.round,
         focus_name = focus.name,
-        focus_description = focus.description
+        focus_description = focus.description,
+        module_name = request.module_name,
+        module_description = request.module_description,
+        question_kind = request.question_kind,
+        focus_areas = if request.focus_areas.is_empty() {
+            "AI 智能规划".to_string()
+        } else {
+            request.focus_areas.join("、")
+        },
+        module_question = request.module_question,
+        module_target_questions = request.module_target_questions
     )
 }
 
@@ -307,24 +344,28 @@ fn build_summary_prompt(request: &MockInterviewSummaryRequest) -> String {
     }}
   ],
   "risks": ["真实性、岗位匹配或表达风险"],
-  "optimizations": [
+  "optimizations": [],
+  "questionReviews": [
     {{
-      "sectionTitle": "原简历中真实存在的二级章节标题",
-      "originalMarkdown": "包含 ## 标题的原章节完整 Markdown",
-      "optimizedMarkdown": "包含相同 ## 标题的优化后完整 Markdown",
-      "rationale": "修改原因和目标",
-      "evidence": ["采用的面试回答事实"],
-      "needsEvidence": false
+      "questionIndex": 1,
+      "question": "面试官问题原文",
+      "answer": "候选人回答原文",
+      "module": "所属面试模块",
+      "score": 0到100的整数,
+      "summary": "本题评价",
+      "strengths": ["做得好的部分"],
+      "improvements": ["可以改进的部分"],
+      "answerOutline": ["基于真实经历的建议回答结构，不编造示范答案"]
     }}
   ]
 }}
 
 要求：
 1. dimensions 必须覆盖技术深度、个人贡献、量化结果、问题处理、表达可信度。
-2. optimizations 最多 3 项，只能修改原简历中存在的章节。
-3. 不得编造经历或数据；证据不足时 needsEvidence 必须为 true，optimizedMarkdown 不得加入未经证实的信息。
-4. originalMarkdown 必须原样引用原简历章节，optimizedMarkdown 才能修改。
-5. 优化内容应匹配目标岗位。"#,
+2. optimizations 固定返回空数组，本报告不生成或修改简历。
+3. questionReviews 必须覆盖所有已回答或跳过的核心问题，追问可合并到对应核心问题。
+4. 不得编造经历或数据；每项评分和评价必须能追溯到对话原文。
+5. 未充分考察的能力要在评价中明确说明，不能直接给低分。"#,
         resume_content = request.resume_content,
         history = format_history(&request.history),
         job_context = fallback_context(&request.job_context),
@@ -419,11 +460,18 @@ mod tests {
             job_context: "高级 Java 后端，要求高并发".to_string(),
             interview_type: "技术面".to_string(),
             difficulty: "高级".to_string(),
+            module_name: "项目深挖".to_string(),
+            module_description: "项目事实与个人贡献".to_string(),
+            question_kind: "followup".to_string(),
+            focus_areas: vec!["高并发".to_string()],
+            module_question: 2,
+            module_target_questions: 4,
         };
 
         let prompt = build_question_prompt(&request);
 
-        assert!(prompt.contains("当前轮次：第 2 轮"));
+        assert!(prompt.contains("当前问题序号：第 2 题"));
+        assert!(prompt.contains("当前面试模块：项目深挖"));
         assert!(prompt.contains("QPS 大约 3000"));
         assert!(prompt.contains("高级 Java 后端"));
         assert!(prompt.contains("必须承接候选人上一轮回答"));
@@ -450,12 +498,18 @@ mod tests {
                 job_context: String::new(),
                 interview_type: "技术面".to_string(),
                 difficulty: "中级".to_string(),
+                module_name: "专业能力".to_string(),
+                module_description: "岗位核心专业能力".to_string(),
+                question_kind: "core".to_string(),
+                focus_areas: vec![],
+                module_question: 1,
+                module_target_questions: 3,
             };
 
             let prompt = build_question_prompt(&request);
 
-            assert!(prompt.contains(&format!("本轮提问维度：{focus}")));
-            assert!(prompt.contains("五个方向循环轮换"));
+            assert!(prompt.contains(&format!("辅助考察维度：{focus}")));
+            assert!(prompt.contains("当前面试模块：专业能力"));
         }
 
         let sixth_round = MockInterviewQuestionRequest {
@@ -466,8 +520,14 @@ mod tests {
             job_context: String::new(),
             interview_type: "技术面".to_string(),
             difficulty: "中级".to_string(),
+            module_name: "专业能力".to_string(),
+            module_description: "岗位核心专业能力".to_string(),
+            question_kind: "core".to_string(),
+            focus_areas: vec![],
+            module_question: 1,
+            module_target_questions: 3,
         };
-        assert!(build_question_prompt(&sixth_round).contains("本轮提问维度：技术深度"));
+        assert!(build_question_prompt(&sixth_round).contains("辅助考察维度：技术深度"));
     }
 
     #[test]
@@ -488,7 +548,7 @@ mod tests {
 
         assert!(prompt.contains("\"overallScore\""));
         assert!(prompt.contains("\"optimizations\""));
-        assert!(prompt.contains("originalMarkdown"));
+        assert!(prompt.contains("\"questionReviews\""));
         assert!(prompt.contains("不得编造经历或数据"));
     }
 

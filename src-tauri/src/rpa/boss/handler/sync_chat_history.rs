@@ -154,9 +154,8 @@ fn is_resume_file_message(message: &ChatMessage) -> bool {
 
     let has_resume_name =
         normalized.contains("简历") || normalized.contains("resume") || normalized.contains("cv.");
-    let has_document_extension = normalized.contains(".pdf")
-        || normalized.contains(".docx")
-        || normalized.contains(".doc");
+    let has_document_extension =
+        normalized.contains(".pdf") || normalized.contains(".docx") || normalized.contains(".doc");
     has_resume_name && has_document_extension
 }
 
@@ -182,11 +181,7 @@ fn upsert_synced_job(
             }
             changed = true;
         }
-        changed |= fill_if_empty_or_placeholder(
-            &mut job.title,
-            snapshot.title,
-            &["聊天同步岗位"],
-        );
+        changed |= fill_if_empty_or_placeholder(&mut job.title, snapshot.title, &["聊天同步岗位"]);
         changed |= fill_if_empty_or_placeholder(
             &mut job.company_name,
             snapshot.company_name,
@@ -206,16 +201,34 @@ fn upsert_synced_job(
         return Ok(JobSyncChange::None);
     }
 
+    let SyncedJobSnapshot {
+        title,
+        company_name,
+        detail,
+        salary,
+        location,
+    } = snapshot;
+    let Some(title) = title
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty() && value != "聊天同步岗位")
+    else {
+        logger::warning(format!(
+            "同步会话 {job_id} 时未获取到真实岗位名称，本次只保存聊天记录，不创建占位岗位"
+        ))?;
+        return Ok(JobSyncChange::None);
+    };
+
     job_detail_dao::create(JobDetail {
         id: job_id.to_string(),
         platform: "boss".to_string(),
-        title: snapshot.title.unwrap_or_else(|| "聊天同步岗位".to_string()),
-        company_name: snapshot
-            .company_name
-            .unwrap_or_else(|| "BOSS 会话".to_string()),
-        detail: snapshot.detail.unwrap_or_default(),
-        salary: snapshot.salary.unwrap_or_default(),
-        location: snapshot.location,
+        title,
+        company_name: company_name
+            .map(|value| value.trim().to_string())
+            .filter(|value| value != "BOSS 会话")
+            .unwrap_or_default(),
+        detail: detail.unwrap_or_default(),
+        salary: salary.unwrap_or_default(),
+        location,
         is_reply: has_received,
         is_send_resume: has_resume_file,
         created_at: now.clone(),
