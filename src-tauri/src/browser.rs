@@ -1,4 +1,4 @@
-use std::{future::Future, path::PathBuf, pin::Pin, sync::RwLock};
+use std::{future::Future, net::TcpListener, path::PathBuf, pin::Pin, sync::RwLock};
 
 use anyhow::{anyhow, Result};
 use once_cell::sync::Lazy;
@@ -125,6 +125,8 @@ static BROWSER_SESSION: Lazy<RwLock<BrowserSession>> =
     Lazy::new(|| RwLock::new(BrowserSession::Empty));
 static APP_HANDLE: Lazy<RwLock<Option<tauri::AppHandle>>> = Lazy::new(|| RwLock::new(None));
 
+const BROWSER_START_ATTEMPTS: usize = 3;
+
 enum BrowserSession {
     Empty,
     Ready(ChromiumPage),
@@ -161,7 +163,7 @@ pub fn init_browser_session(config: &BrowserConfig) -> Result<()> {
         .map_err(|e| anyhow!("获取浏览器会话写锁失败: {}", e))?;
 
     match &*session {
-        BrowserSession::Ready(browser) if browser.tabs().is_ok() => return Ok(()),
+        BrowserSession::Ready(browser) if is_browser_session_usable(browser) => return Ok(()),
         BrowserSession::InUse { .. } => return Ok(()),
         _ => {}
     }
@@ -172,6 +174,13 @@ pub fn init_browser_session(config: &BrowserConfig) -> Result<()> {
             close_requested: false,
         },
     );
+    let previous_session = match previous_session {
+        BrowserSession::Ready(mut browser) => {
+            browser.close_browser();
+            BrowserSession::Empty
+        }
+        previous => previous,
+    };
 
     let browser = match create_browser(config) {
         Ok(browser) => browser,
@@ -187,15 +196,50 @@ pub fn init_browser_session(config: &BrowserConfig) -> Result<()> {
 }
 
 fn create_browser(config: &BrowserConfig) -> Result<ChromiumPage> {
-    let mut browser_config = rust_drission::BrowserConfig::new()
-        .headless(false)
-        .user_data_dir(config.user_data_dir.clone());
+    let mut last_error = None;
 
-    if let Some(chrome_exe_path) = config.chrome_exe_path.as_ref() {
-        browser_config = browser_config.chrome_path(chrome_exe_path.clone());
+    for attempt in 1..=BROWSER_START_ATTEMPTS {
+        let port = allocate_browser_debug_port()?;
+        let mut browser_config = rust_drission::BrowserConfig::new()
+            .headless(false)
+            .set_local_port(port)
+            .user_data_dir(config.user_data_dir.clone());
+
+        if let Some(chrome_exe_path) = config.chrome_exe_path.as_ref() {
+            browser_config = browser_config.chrome_path(chrome_exe_path.clone());
+        }
+
+        match ChromiumPage::new(browser_config) {
+            Ok(browser) => return Ok(browser),
+            Err(error) if is_browser_start_retryable(&error.to_string()) => {
+                last_error = Some(anyhow!(
+                    "第 {attempt}/{BROWSER_START_ATTEMPTS} 次启动使用调试端口 {port} 失败：{error}"
+                ));
+            }
+            Err(error) => return Err(error.into()),
+        }
     }
 
-    Ok(ChromiumPage::new(browser_config)?)
+    Err(last_error.unwrap_or_else(|| anyhow!("浏览器启动失败")))
+}
+
+fn allocate_browser_debug_port() -> Result<u16> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|error| anyhow!("无法分配浏览器调试端口：{error}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| anyhow!("无法读取浏览器调试端口：{error}"))?
+        .port();
+    drop(listener);
+    Ok(port)
+}
+
+fn is_browser_start_retryable(error: &str) -> bool {
+    error.contains("Chrome did not become ready within 5 seconds after launch")
+}
+
+fn is_browser_session_usable(browser: &ChromiumPage) -> bool {
+    browser.url().is_ok()
 }
 
 pub async fn with_browser<T, F>(f: F) -> Result<T>
@@ -236,7 +280,7 @@ fn take_browser_session() -> Result<ChromiumPage> {
     }
 }
 
-fn restore_browser_session(browser: ChromiumPage, error: Option<&anyhow::Error>) -> Result<()> {
+fn restore_browser_session(mut browser: ChromiumPage, error: Option<&anyhow::Error>) -> Result<()> {
     let mut session = BROWSER_SESSION
         .write()
         .map_err(|e| anyhow!("获取浏览器会话写锁失败: {}", e))?;
@@ -249,7 +293,7 @@ fn restore_browser_session(browser: ChromiumPage, error: Option<&anyhow::Error>)
     );
     *session =
         if close_requested || error.is_some_and(|err| !reuse_browser_session_after_error(err)) {
-            let _ = browser.close();
+            browser.close_browser();
             BrowserSession::Empty
         } else {
             BrowserSession::Ready(browser)
@@ -264,8 +308,8 @@ pub fn close_browser_session() -> Result<()> {
         .map_err(|e| anyhow!("获取浏览器会话写锁失败: {}", e))?;
 
     match std::mem::replace(&mut *session, BrowserSession::Empty) {
-        BrowserSession::Ready(browser) => {
-            let _ = browser.close();
+        BrowserSession::Ready(mut browser) => {
+            browser.close_browser();
         }
         BrowserSession::InUse { .. } => {
             *session = BrowserSession::InUse {
@@ -313,6 +357,8 @@ fn is_browser_disconnected_error(error: &anyhow::Error) -> bool {
     let message = error.to_string();
     message.contains("Connection closed")
         || message.contains("Trying to work with closed connection")
+        || message.contains("Session with given id not found")
+        || message.contains("code=-32001")
 }
 
 #[cfg(test)]
@@ -334,9 +380,37 @@ mod tests {
     }
 
     #[test]
+    fn stale_cdp_session_errors_discard_browser_session() {
+        let error = anyhow!(
+            "CDP error: id=Some(11), code=-32001, message=Session with given id not found."
+        );
+
+        assert!(!reuse_browser_session_after_error(&error));
+    }
+
+    #[test]
     fn normal_operation_errors_keep_browser_session() {
         let error = anyhow!("登录失败");
 
         assert!(reuse_browser_session_after_error(&error));
+    }
+
+    #[test]
+    fn allocates_a_nonzero_local_debug_port() {
+        let port = allocate_browser_debug_port().expect("allocate browser debug port");
+
+        assert_ne!(port, 0);
+        let _listener = TcpListener::bind(("127.0.0.1", port))
+            .expect("allocated browser debug port should be available");
+    }
+
+    #[test]
+    fn retries_only_browser_readiness_timeout() {
+        assert!(is_browser_start_retryable(
+            "HTTP request failed: Chrome did not become ready within 5 seconds after launch"
+        ));
+        assert!(!is_browser_start_retryable(
+            "Failed to launch Chrome: No such file or directory"
+        ));
     }
 }
