@@ -70,6 +70,45 @@ fn first_nonempty_string(value: &Value, keys: &[&str]) -> Option<String> {
     }
 }
 
+/// 从聊天面板中的岗位元素 `<div class="position-content">` 提取岗位快照。
+fn extract_job_snapshot_from_dom(page: &rust_drission::Page) -> SyncedJobSnapshot {
+    let position_div = match page.element(".position-content") {
+        Ok(Some(el)) => el,
+        _ => return SyncedJobSnapshot::default(),
+    };
+
+    let title = position_div
+        .element(".position-name")
+        .ok()
+        .flatten()
+        .and_then(|el| el.text_content().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let salary = position_div
+        .element(".salary")
+        .ok()
+        .flatten()
+        .and_then(|el| el.text_content().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let location = position_div
+        .element(".city")
+        .ok()
+        .flatten()
+        .and_then(|el| el.text_content().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    SyncedJobSnapshot {
+        title,
+        salary,
+        location,
+        ..Default::default()
+    }
+}
+
 fn parse_job_snapshot(body: &str) -> SyncedJobSnapshot {
     let Ok(root) = serde_json::from_str::<Value>(body) else {
         return SyncedJobSnapshot::default();
@@ -401,13 +440,15 @@ pub async fn sync_chat_history() -> Result<ChatHistorySyncResult, anyhow::Error>
 
                     let messages = parse_chat_messages(&history_body)
                         .context("解析周期间歇历史对话失败")?;
-                    let snapshot = merge_snapshot(
+                    let dom_snapshot = extract_job_snapshot_from_dom(page);
+                    let api_snapshot = merge_snapshot(
                         boss_data_body
                             .as_deref()
                             .map(parse_job_snapshot)
                             .unwrap_or_default(),
                         parse_job_snapshot(&history_body),
                     );
+                    let snapshot = merge_snapshot(dom_snapshot, api_snapshot);
                     match upsert_synced_job(&job_id, snapshot, &messages)? {
                         JobSyncChange::Inserted => result.jobs_inserted += 1,
                         JobSyncChange::Updated => result.jobs_updated += 1,
