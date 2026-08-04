@@ -3,7 +3,6 @@ use crate::dao::{analysis_dao, chat_message_dao, job_detail_dao, model::*};
 use anyhow::{Context, Result};
 use chrono::Local;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -196,7 +195,7 @@ fn import_data_bundle_inner(
         config_imported: false,
     };
 
-    // 1. 导入/合并 JobDetails
+    // 1. 导入/合并 JobDetails — 批量操作，只读写各一次
     if let Ok(mut file) = zip.by_name("data/job_details.json") {
         let mut content = String::new();
         file.read_to_string(&mut content)?;
@@ -204,92 +203,57 @@ fn import_data_bundle_inner(
             match strategy {
                 ImportStrategy::Overwrite => {
                     let count = incoming_jobs.len();
-                    for job in incoming_jobs {
-                        let id = job.id.clone();
-                        if let Ok(Some(_)) = job_detail_dao::get_by_id(&id) {
-                            let _ = job_detail_dao::update(&id, job);
-                        } else {
-                            let _ = job_detail_dao::create(job);
-                        }
-                    }
+                    job_detail_dao::replace_all(incoming_jobs)?;
                     result_stats.job_details_added = count;
                 }
                 ImportStrategy::Merge => {
-                    let local_jobs = job_detail_dao::list().unwrap_or_default();
-                    let mut local_map: HashMap<String, JobDetail> =
-                        local_jobs.into_iter().map(|j| (j.id.clone(), j)).collect();
-
-                    for incoming in incoming_jobs {
-                        if let Some(existing) = local_map.get_mut(&incoming.id) {
-                            if incoming.updated_at >= existing.updated_at {
-                                *existing = incoming.clone();
-                                let id = incoming.id.clone();
-                                let _ = job_detail_dao::update(&id, incoming);
-                                result_stats.job_details_updated += 1;
-                            }
-                        } else {
-                            local_map.insert(incoming.id.clone(), incoming.clone());
-                            let _ = job_detail_dao::create(incoming);
-                            result_stats.job_details_added += 1;
-                        }
-                    }
+                    let batch = job_detail_dao::batch_upsert(incoming_jobs, |existing, incoming| {
+                        incoming.updated_at >= existing.updated_at
+                    })?;
+                    result_stats.job_details_added = batch.added;
+                    result_stats.job_details_updated = batch.updated;
                 }
             }
         }
     }
 
-    // 2. 导入/合并 ChatMessages
+    // 2. 导入/合并 ChatMessages — 批量插入不存在的记录
     if let Ok(mut file) = zip.by_name("data/chat_messages.json") {
         let mut content = String::new();
         file.read_to_string(&mut content)?;
         if let Ok(incoming_chats) = serde_json::from_str::<Vec<ChatMessageRecord>>(&content) {
-            let local_chats = chat_message_dao::list().unwrap_or_default();
-            let mut local_set: std::collections::HashSet<String> =
-                local_chats.into_iter().map(|c| c.id).collect();
-
-            for chat in incoming_chats {
-                if !local_set.contains(&chat.id) {
-                    local_set.insert(chat.id.clone());
-                    let _ = chat_message_dao::create(chat);
-                    result_stats.chat_messages_added += 1;
+            match strategy {
+                ImportStrategy::Overwrite => {
+                    let count = incoming_chats.len();
+                    chat_message_dao::replace_all(incoming_chats)?;
+                    result_stats.chat_messages_added = count;
+                }
+                ImportStrategy::Merge => {
+                    let added = chat_message_dao::batch_insert_new(incoming_chats)?;
+                    result_stats.chat_messages_added = added;
                 }
             }
         }
     }
 
-    // 3. 导入/合并 InterviewAnalyses
+    // 3. 导入/合并 InterviewAnalyses — 批量操作
     if let Ok(mut file) = zip.by_name("data/interview_analyses.json") {
         let mut content = String::new();
         file.read_to_string(&mut content)?;
         if let Ok(incoming_analyses) = serde_json::from_str::<Vec<InterviewJobAnalysis>>(&content) {
             match strategy {
                 ImportStrategy::Overwrite => {
-                    for analysis in incoming_analyses {
-                        let _ = analysis_dao::create(analysis);
-                        result_stats.interview_analyses_added += 1;
-                    }
+                    let count = incoming_analyses.len();
+                    analysis_dao::replace_all(incoming_analyses)?;
+                    result_stats.interview_analyses_added = count;
                 }
                 ImportStrategy::Merge => {
-                    let local_analyses = analysis_dao::list().unwrap_or_default();
-                    let mut local_map: HashMap<String, InterviewJobAnalysis> = local_analyses
-                        .into_iter()
-                        .map(|a| (a.job_id.clone(), a))
-                        .collect();
-
-                    for incoming in incoming_analyses {
-                        if let Some(existing) = local_map.get_mut(&incoming.job_id) {
-                            if incoming.analyzed_at >= existing.analyzed_at {
-                                *existing = incoming.clone();
-                                let job_id = incoming.job_id.clone();
-                                let _ = analysis_dao::update(&job_id, incoming);
-                                result_stats.interview_analyses_updated += 1;
-                            }
-                        } else {
-                            local_map.insert(incoming.job_id.clone(), incoming.clone());
-                            let _ = analysis_dao::create(incoming);
-                            result_stats.interview_analyses_added += 1;
-                        }
-                    }
+                    let batch =
+                        analysis_dao::batch_upsert(incoming_analyses, |existing, incoming| {
+                            incoming.analyzed_at >= existing.analyzed_at
+                        })?;
+                    result_stats.interview_analyses_added = batch.added;
+                    result_stats.interview_analyses_updated = batch.updated;
                 }
             }
         }

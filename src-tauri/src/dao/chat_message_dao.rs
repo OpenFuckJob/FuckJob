@@ -101,3 +101,11 @@ pub fn delete_by_job_id(job_id: &str) -> Result<bool> {
     store().replace_all(remaining)?;
     Ok(true)
 }
+
+pub fn batch_insert_new(items: Vec<ChatMessageRecord>) -> Result<usize> {
+    store().batch_insert_new(items)
+}
+
+pub fn replace_all(items: Vec<ChatMessageRecord>) -> Result<()> {
+    store().replace_all(items)
+}

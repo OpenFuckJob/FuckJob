@@ -1,5 +1,5 @@
 use crate::dao::model::InterviewJobAnalysis;
-use crate::dao::store::JsonStore;
+use crate::dao::store::{BatchResult, JsonStore};
 use anyhow::Result;
 use std::path::Path;
 use std::sync::OnceLock;
@@ -36,4 +36,15 @@ pub fn update(job_id: &str, analysis: InterviewJobAnalysis) -> Result<bool> {
 
 pub fn delete(job_id: &str) -> Result<bool> {
     store().delete_by_id(job_id)
+}
+
+pub fn batch_upsert<F>(items: Vec<InterviewJobAnalysis>, should_update: F) -> Result<BatchResult>
+where
+    F: Fn(&InterviewJobAnalysis, &InterviewJobAnalysis) -> bool,
+{
+    store().batch_upsert(items, should_update)
+}
+
+pub fn replace_all(items: Vec<InterviewJobAnalysis>) -> Result<()> {
+    store().replace_all(items)
 }

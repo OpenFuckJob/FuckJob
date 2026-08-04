@@ -1,5 +1,5 @@
 use crate::dao::model::JobDetail;
-use crate::dao::store::JsonStore;
+use crate::dao::store::{BatchResult, JsonStore};
 use anyhow::Result;
 use std::path::Path;
 use std::sync::OnceLock;
@@ -49,4 +49,15 @@ pub fn find_replied() -> Result<Vec<JobDetail>> {
 
 pub fn find_resume_sent() -> Result<Vec<JobDetail>> {
     store().query(|j| j.is_send_resume)
+}
+
+pub fn batch_upsert<F>(items: Vec<JobDetail>, should_update: F) -> Result<BatchResult>
+where
+    F: Fn(&JobDetail, &JobDetail) -> bool,
+{
+    store().batch_upsert(items, should_update)
+}
+
+pub fn replace_all(items: Vec<JobDetail>) -> Result<()> {
+    store().replace_all(items)
 }

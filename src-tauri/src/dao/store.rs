@@ -2,9 +2,17 @@ use crate::dao::model::{ChatMessageRecord, InterviewJobAnalysis, JobDetail};
 use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fs;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+
+/// 批量操作结果
+#[derive(Debug, Default, Clone, Copy)]
+pub struct BatchResult {
+    pub added: usize,
+    pub updated: usize,
+}
 
 /// 可标识 trait，统一主键访问
 pub trait Identifiable {
@@ -115,6 +123,61 @@ impl<T: Serialize + DeserializeOwned + Identifiable> JsonStore<T> {
     {
         let items = self.load_all()?;
         Ok(items.into_iter().filter(predicate).collect())
+    }
+
+    /// 批量 upsert：一次读、内存合并、一次写
+    /// `should_update` 决定当 incoming 与 existing 的 id 相同时，是否用 incoming 替换 existing
+    pub fn batch_upsert<F>(&self, incoming: Vec<T>, should_update: F) -> Result<BatchResult>
+    where
+        F: Fn(&T, &T) -> bool,
+    {
+        let mut items = self.load_all()?;
+        let mut index_map: HashMap<String, usize> = items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| (item.id().to_string(), i))
+            .collect();
+
+        let mut result = BatchResult::default();
+
+        for incoming_item in incoming {
+            let id = incoming_item.id().to_string();
+            if let Some(&idx) = index_map.get(&id) {
+                if should_update(&items[idx], &incoming_item) {
+                    items[idx] = incoming_item;
+                    result.updated += 1;
+                }
+            } else {
+                index_map.insert(id, items.len());
+                items.push(incoming_item);
+                result.added += 1;
+            }
+        }
+
+        if result.added > 0 || result.updated > 0 {
+            self.save_all(&items)?;
+        }
+        Ok(result)
+    }
+
+    /// 批量插入不存在的记录（跳过已存在的 ID）
+    pub fn batch_insert_new(&self, incoming: Vec<T>) -> Result<usize> {
+        let mut items = self.load_all()?;
+        let existing_ids: std::collections::HashSet<String> =
+            items.iter().map(|item| item.id().to_string()).collect();
+
+        let mut added = 0usize;
+        for item in incoming {
+            if !existing_ids.contains(item.id()) {
+                items.push(item);
+                added += 1;
+            }
+        }
+
+        if added > 0 {
+            self.save_all(&items)?;
+        }
+        Ok(added)
     }
 
     /// 批量写入（覆盖）
