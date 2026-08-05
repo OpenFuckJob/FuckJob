@@ -283,3 +283,49 @@ input {
     padding: 16px;
   }
 }
+
+/* Updater release-notes markdown */
+.updater-release-notes {
+  font-size: 14px;
+  line-height: 1.6;
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.updater-release-notes h1,
+.updater-release-notes h2,
+.updater-release-notes h3 {
+  margin: 12px 0 6px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.updater-release-notes h1 { font-size: 18px; }
+.updater-release-notes h2 { font-size: 16px; }
+.updater-release-notes h3 { font-size: 15px; }
+
+.updater-release-notes ul,
+.updater-release-notes ol {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+
+.updater-release-notes li {
+  margin: 2px 0;
+}
+
+.updater-release-notes p {
+  margin: 6px 0;
+}
+
+.updater-release-notes code {
+  background: rgba(0, 0, 0, 0.06);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+.updater-release-notes a {
+  color: #1677ff;
+}

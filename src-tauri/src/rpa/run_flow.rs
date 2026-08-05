@@ -16,6 +16,7 @@ static JOB_TASK_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 pub struct JobTaskStatus {
     pub running: bool,
+    pub stopping: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -333,7 +334,12 @@ impl Drop for JobTaskRunningGuard {
 pub fn get_job_task_status() -> JobTaskStatus {
     JobTaskStatus {
         running: JOB_TASK_RUNNING.load(Ordering::SeqCst),
+        stopping: JOB_TASK_STOP_REQUESTED.load(Ordering::SeqCst),
     }
+}
+
+pub fn is_job_task_running() -> bool {
+    JOB_TASK_RUNNING.load(Ordering::SeqCst)
 }
 
 pub fn stop_job_task() -> Result<(), String> {
@@ -573,6 +579,7 @@ mod tests {
         assert!(result.is_ok());
         assert!(is_job_task_stop_requested());
         assert!(JOB_TASK_RUNNING.load(Ordering::SeqCst));
+        assert!(get_job_task_status().stopping);
 
         JOB_TASK_RUNNING.store(false, Ordering::SeqCst);
         JOB_TASK_STOP_REQUESTED.store(false, Ordering::SeqCst);

@@ -162,9 +162,10 @@ pub async fn position_say_hello(
                             }
                         }
                     }
+                    let list_url = page.url()?;
                     match handle_greet(
                         page,
-                        &job_detail_url,
+                        &list_url,
                         greet_job.clone(),
                         app_runtime_config.clone(),
                     )
@@ -177,6 +178,9 @@ pub async fn position_say_hello(
                                 &greet_job.company_name,
                                 &error,
                             ))?;
+                            if should_continue_after_greet_failure() {
+                                continue;
+                            }
                             return Ok(());
                         }
                     }
@@ -394,22 +398,29 @@ fn save_job_detail(job_id: &str, greet_job: &GreetJob) {
 
 fn greet_failure_message(title: &str, company_name: &str, error: &anyhow::Error) -> String {
     format!(
-        "岗位打招呼失败：{} - {}，错误：{}。停止投递",
+        "岗位打招呼失败：{} - {}，错误：{}。跳过当前岗位，继续处理",
         title, company_name, error
     )
 }
 
 const GREET_BUTTON_SELECTOR: &str =
-    "a.op-btn.op-btn-chat, a.btn.btn-startchat[data-url][redirect-url]";
+    "a.op-btn.op-btn-chat, a.btn.btn-startchat";
 const GREET_CONFIRM_SELECTOR: &str = "span.btn.btn-sure[ka=\"dialog_confirm\"], \
     .chat-block-container .sure-btn, .greet-boss-container .sure-btn";
 
+fn clean_html_url(url: &str) -> String {
+    url.replace("&amp;", "&")
+}
+
 fn greet_button_matches_job(data_url: &str, redirect_url: &str, ka: &str, job_id: &str) -> bool {
+    let data_url = clean_html_url(data_url);
+    let redirect_url = clean_html_url(redirect_url);
     data_url.contains(job_id) || redirect_url.contains(job_id) || ka.contains(job_id)
 }
 
 fn absolute_boss_url(url: &str) -> Option<String> {
-    let url = url.trim();
+    let cleaned = clean_html_url(url);
+    let url = cleaned.trim();
     if url.is_empty() || url.starts_with("javascript:") {
         None
     } else if url.starts_with("https://") || url.starts_with("http://") {
@@ -421,6 +432,43 @@ fn absolute_boss_url(url: &str) -> Option<String> {
     } else {
         Some(format!("https://www.zhipin.com/{url}"))
     }
+}
+
+fn is_chat_page_url(url: &str) -> bool {
+    url.contains("/web/geek/chat")
+}
+
+fn valid_chat_redirect_url(url: &str) -> Option<String> {
+    let url = absolute_boss_url(url)?;
+
+    is_chat_page_url(&url).then_some(url)
+}
+
+fn is_greet_success_dialog_text(text: &str) -> bool {
+    text.contains("已向BOSS发送消息")
+}
+
+fn work_tab_card_selector(job_id: &str) -> String {
+    format!(".job-name[href*=\"{job_id}\"]")
+}
+
+fn select_job_in_work_tab(work_page: &Page, job_id: &str) -> Result<(), anyhow::Error> {
+    let selector = work_tab_card_selector(job_id);
+    for _ in 0..30 {
+        if let Some(job_name) = work_page.ele(&selector)? {
+            let job_card = job_name
+                .parent(3)?
+                .ok_or_else(|| anyhow::anyhow!("工作标签未找到岗位卡片: {job_id}"))?;
+            job_card.click()?;
+            return Ok(());
+        }
+        sleep_random_ms(300, 500);
+    }
+    Err(anyhow::anyhow!("工作标签未加载当前岗位卡片: {job_id}"))
+}
+
+fn should_continue_after_greet_failure() -> bool {
+    true
 }
 
 fn chat_wait_error(page: &Page, source: impl std::fmt::Display) -> anyhow::Error {
@@ -439,14 +487,23 @@ fn chat_wait_error(page: &Page, source: impl std::fmt::Display) -> anyhow::Error
 }
 
 async fn handle_greet(
-    browser_page: &ChromiumPage,
-    job_detail_url: &str,
+    list_page: &ChromiumPage,
+    list_url: &str,
     greet_job: GreetJob,
     config: AppRuntimeConfig,
 ) -> Result<(), anyhow::Error> {
-    let page = browser_page.new_tab(Some(job_detail_url))?;
-    let result = handle_greet_on_page(&page, greet_job, config).await;
-    let close_result = page.close();
+    // 岗位列表标签只用于维护循环进度。BOSS 的站内路由会把点击沟通的页面
+    // 导航至聊天区，因此每个岗位都在可关闭的工作标签中完成整套建联流程。
+    let work_page = browser::new_stealth_tab(list_page)?;
+    let result = async {
+        work_page.goto(list_url)?;
+        work_page.wait(".rec-job-list", Duration::from_secs(10))?;
+        select_job_in_work_tab(&work_page, &greet_job.platform_job_id)?;
+        sleep_random_ms(500, 800);
+        handle_greet_on_work_tab(list_page, &work_page, greet_job, config).await
+    }
+    .await;
+    let close_result = work_page.close();
 
     match (result, close_result) {
         (Ok(()), Ok(())) => Ok(()),
@@ -455,21 +512,18 @@ async fn handle_greet(
     }
 }
 
-async fn handle_greet_on_page(
-    page: &Page,
+async fn handle_greet_on_work_tab(
+    browser_page: &ChromiumPage,
+    work_page: &Page,
     greet_job: GreetJob,
     config: AppRuntimeConfig,
 ) -> Result<(), anyhow::Error> {
-    if is_job_task_stop_requested() {
-        logger::info("求职任务已结束")?;
-        return Ok(());
-    }
-
-    // 左侧岗位卡片点击后，右侧详情区域会异步切换。等待沟通按钮确实属于
-    // 当前岗位，避免详情尚未刷新时误点到上一个岗位的按钮。
+    // 1. 在工作标签的右侧详情面板中等待并匹配沟通按钮
     let mut current_job_ready = false;
-    for _ in 0..60 {
-        if let Some(btn) = page.ele(GREET_BUTTON_SELECTOR)? {
+    let mut target_btn = None;
+
+    for _ in 0..30 {
+        if let Some(btn) = work_page.ele(GREET_BUTTON_SELECTOR)? {
             let data_url = btn.attr("data-url").unwrap_or_default();
             let redirect_url = btn.attr("redirect-url").unwrap_or_default();
             let ka = btn.attr("ka").unwrap_or_default();
@@ -480,11 +534,13 @@ async fn handle_greet_on_page(
                 &greet_job.platform_job_id,
             ) {
                 current_job_ready = true;
+                target_btn = Some(btn);
                 break;
             }
         }
         sleep_random_ms(400, 600);
     }
+
     if !current_job_ready {
         return Err(anyhow::anyhow!(
             "右侧岗位详情未切换到当前岗位，未找到匹配的立即沟通按钮: {}",
@@ -492,15 +548,12 @@ async fn handle_greet_on_page(
         ));
     }
 
-    if is_job_task_stop_requested() {
-        logger::info("求职任务已结束")?;
-        return Ok(());
-    }
+    let btn = target_btn.unwrap();
+    let chat_redirect_url = btn
+        .attr("redirect-url")
+        .unwrap_or_default();
+    let mut chat_redirect_url = valid_chat_redirect_url(&chat_redirect_url);
 
-    let btn = page
-        .ele(GREET_BUTTON_SELECTOR)?
-        .ok_or_else(|| anyhow::anyhow!("未找到当前岗位的立即沟通按钮"))?;
-    let chat_redirect_url = absolute_boss_url(&btn.attr("redirect-url")?);
     let data_isfriend = btn
         .attr("data-isfriend")
         .map(|v| v == "true")
@@ -510,35 +563,100 @@ async fn handle_greet_on_page(
         return Ok(());
     }
 
-    // 真实点击“立即沟通”，确保触发站点的建联逻辑和沟通次数提示。
+    // 2. BOSS 的建联按钮使用站内 JavaScript 路由，会将当前工作标签切换到聊天页。
     btn.click()?;
     if is_job_task_stop_requested() {
         logger::info("求职任务已结束")?;
         return Ok(());
     }
-    // 达到站点提示阈值时会先弹出“温馨提示”，确认后才继续进入聊天。
-    // 提示框是异步渲染的，并且可能依次出现“好”和“继续沟通”两个确认按钮。
+
+    // 3. 在列表页点击确认弹窗（例如“继续沟通”、“确定”、“好”）
     let mut last_confirm_text = String::new();
-    let mut chat_ready = false;
+    let mut confirm_dialog_handled = false;
+    let mut greet_success_seen = false;
     for _ in 0..15 {
-        let confirm_btn = page.ele(GREET_CONFIRM_SELECTOR)?;
-        if let Some(confirm_btn) = confirm_btn {
-            let confirm_text = confirm_btn.text_content()?.trim().to_string();
-            if confirm_text == last_confirm_text {
-                sleep_random_ms(250, 400);
-                continue;
+        if is_job_task_stop_requested() {
+            logger::info("求职任务已结束")?;
+            return Ok(());
+        }
+
+        // BOSS 可能直接将当前工作标签导航到聊天页，并不会给出二次确认
+        // 弹窗或带岗位 ID 的 URL。这是可用的建联成功信号。
+        if is_chat_page_url(&work_page.url()?) {
+            logger::info("工作标签已进入聊天页，正在发送招呼")?;
+            return handle_send_message_on_chat_page(work_page, greet_job, config).await;
+        }
+
+        if let Ok(Some(dialog_title)) = work_page.ele(".greet-boss-dialog h3") {
+            if is_greet_success_dialog_text(&dialog_title.text_content()?) {
+                greet_success_seen = true;
             }
-            logger::info(format!("检测到沟通确认提示，正在点击“{confirm_text}”"))?;
-            confirm_btn.click()?;
-            last_confirm_text = confirm_text;
-            sleep_random_ms(500, 1000);
-            continue;
         }
-        if page.ele(".chat-op .btn-send")?.is_some() {
-            chat_ready = true;
-            break;
+
+        // 尝试通用 JavaScript 寻找点击确认按钮
+        let click_script = r#"
+            (() => {
+                const candidates = Array.from(document.querySelectorAll("a, button, span, div, p"));
+                for (const el of candidates) {
+                    const text = (el.innerText || el.textContent || "").trim();
+                    if ((text === "继续沟通" || text === "确定" || text === "好") && el.offsetHeight > 0 && el.offsetWidth > 0) {
+                        el.click();
+                        return text;
+                    }
+                }
+                return null;
+            })()
+        "#;
+
+        if let Ok(val) = work_page.run_js_await(click_script) {
+            if let Some(clicked_text) = val.as_str().filter(|s| !s.is_empty()) {
+                if clicked_text != last_confirm_text {
+                    logger::info(format!("检测到沟通确认提示，已自动点击“{clicked_text}”"))?;
+                    last_confirm_text = clicked_text.to_string();
+                    confirm_dialog_handled = true;
+                    sleep_random_ms(600, 1000);
+                }
+            }
         }
-        sleep_random_ms(250, 400);
+
+        if let Ok(Some(confirm_btn)) = work_page.ele(GREET_CONFIRM_SELECTOR) {
+            if let Ok(text) = confirm_btn.text_content() {
+                let text = text.trim();
+                if !text.is_empty() && text != last_confirm_text {
+                    logger::info(format!("检测到沟通确认提示，正在点击“{text}”"))?;
+                    let _ = confirm_btn.click();
+                    last_confirm_text = text.to_string();
+                    confirm_dialog_handled = true;
+                    sleep_random_ms(600, 1000);
+                }
+            }
+        }
+
+        // 站点可能在点击后才异步写入 redirect-url；没有弹窗时也必须等待，
+        // 避免在请求尚未完成时就把 15 次轮询耗尽。
+        if let Some(current_btn) = work_page.ele(GREET_BUTTON_SELECTOR)? {
+            let data_url = current_btn.attr("data-url").unwrap_or_default();
+            let redirect_url = current_btn.attr("redirect-url").unwrap_or_default();
+            let ka = current_btn.attr("ka").unwrap_or_default();
+            if greet_button_matches_job(
+                &data_url,
+                &redirect_url,
+                &ka,
+                &greet_job.platform_job_id,
+            ) {
+                chat_redirect_url = valid_chat_redirect_url(&redirect_url).or(chat_redirect_url);
+                if current_btn
+                    .attr("data-isfriend")
+                    .map(|value| value == "true")
+                    .unwrap_or(false)
+                {
+                    logger::info("岗位建联状态已确认")?;
+                    break;
+                }
+            }
+        }
+
+        sleep_random_ms(300, 500);
     }
 
     if is_job_task_stop_requested() {
@@ -546,28 +664,63 @@ async fn handle_greet_on_page(
         return Ok(());
     }
 
-    // 部分岗位点击建联后不会稳定地自动跳转，使用按钮自带的 redirect-url
-    // 在当前工作标签中进入对应聊天，主搜索标签始终保持不动。
-    if !chat_ready {
-        if let Some(redirect_url) = chat_redirect_url {
-            logger::info(format!(
-                "沟通确认后聊天区尚未出现，正在打开岗位聊天页: {redirect_url}"
-            ))?;
-            page.get(&redirect_url)?;
-        }
+    // 已显示成功提示但站点没有跳转聊天页时，默认招呼已经真实发出；不能误判为失败。
+    if greet_success_seen {
+        logger::info("站点已确认向 BOSS 发送消息，未跳转聊天页，当前岗位视为建联成功")?;
+        save_job_detail(&greet_job.platform_job_id, &greet_job);
+        return Ok(());
     }
 
-    // 由站点自身或 redirect-url 兜底进入聊天页；确认输入区和发送按钮均已加载。
+    // 4. 当前页未自动进入聊天时，使用按钮真实提供的聊天地址打开新 Tab。
+    // 不生成任何通用聊天页兜底地址，以免无目标会话被误当作成功。
+    let chat_url = match chat_redirect_url {
+        Some(url) => url,
+        None => {
+            let confirm_status = if confirm_dialog_handled {
+                "已处理确认弹窗"
+            } else {
+                "未检测到确认弹窗"
+            };
+            return Err(anyhow::anyhow!(
+                "点击后页面未进入聊天区且未获得可用聊天地址（{confirm_status}，岗位 ID: {}）",
+                greet_job.platform_job_id
+            ));
+        }
+    };
+
+    let page = browser::new_stealth_tab(browser_page)?;
+    page.goto(&chat_url)?;
+    let result = handle_send_message_on_chat_page(&page, greet_job, config).await;
+    let close_result = page.close();
+
+    match (result, close_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), _) => Err(error),
+        (Ok(()), Err(error)) => Err(error.into()),
+    }
+}
+
+async fn handle_send_message_on_chat_page(
+    page: &Page,
+    greet_job: GreetJob,
+    config: AppRuntimeConfig,
+) -> Result<(), anyhow::Error> {
+    if is_job_task_stop_requested() {
+        logger::info("求职任务已结束")?;
+        return Ok(());
+    }
+
+    // 等待聊天输入区与发送按钮加载完成
     page.wait("#chat-input", Duration::from_secs(30))
         .map_err(|error| chat_wait_error(page, error))?;
     page.wait(".chat-op .btn-send", Duration::from_secs(15))
         .map_err(|error| chat_wait_error(page, error))?;
 
-    // 构建回复资源：优先 LLM 生成，否则使用默认模板
+    // 构建招呼资源：优先 LLM 生成，否则使用默认模板
     let resources = build_greet_resources(&config, &greet_job).await?;
     send_if_any(resources, |resources| send_messages(page, resources))?;
 
-    // 插入一条 job_detail 的记录
+    // 保存该岗位至本地数据库
     save_job_detail(&greet_job.platform_job_id, &greet_job);
 
     sleep_random_ms(1200, 2000);
@@ -667,7 +820,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn formats_greet_failure_message_with_job_context_and_stop_hint() {
+    fn chat_redirect_does_not_require_the_current_job_id() {
+        assert_eq!(valid_chat_redirect_url(""), None);
+        assert_eq!(
+            valid_chat_redirect_url("/web/geek/chat"),
+            Some("https://www.zhipin.com/web/geek/chat".to_string())
+        );
+        assert_eq!(
+            valid_chat_redirect_url("/web/geek/chat?id=conversation-123"),
+            Some("https://www.zhipin.com/web/geek/chat?id=conversation-123".to_string())
+        );
+        assert_eq!(
+            valid_chat_redirect_url("/web/geek/jobs"),
+            None
+        );
+    }
+
+    #[test]
+    fn current_page_navigation_to_chat_is_a_success_signal() {
+        assert!(is_chat_page_url("https://www.zhipin.com/web/geek/chat"));
+        assert!(is_chat_page_url("https://www.zhipin.com/web/geek/chat?id=conversation-123"));
+        assert!(!is_chat_page_url("https://www.zhipin.com/web/geek/jobs"));
+    }
+
+    #[test]
+    fn a_single_greet_failure_does_not_stop_the_job_loop() {
+        assert!(should_continue_after_greet_failure());
+    }
+
+    #[test]
+    fn greeting_success_dialog_is_not_treated_as_a_failure() {
+        assert!(is_greet_success_dialog_text("已向BOSS发送消息"));
+        assert!(is_greet_success_dialog_text("提示：已向BOSS发送消息，请等待回复"));
+        assert!(!is_greet_success_dialog_text("今日沟通次数已达上限"));
+    }
+
+    #[test]
+    fn work_tab_card_selector_targets_the_platform_job_id() {
+        assert_eq!(
+            work_tab_card_selector("01a48a86c87405070nJ72dy0FVpW"),
+            ".job-name[href*=\"01a48a86c87405070nJ72dy0FVpW\"]"
+        );
+    }
+
+    #[test]
+    fn formats_greet_failure_message_with_job_context_and_continue_hint() {
         let error = anyhow::anyhow!("发送按钮不可用");
 
         let message = greet_failure_message("后端工程师", "示例科技", &error);
@@ -675,7 +872,7 @@ mod tests {
         assert!(message.contains("后端工程师"));
         assert!(message.contains("示例科技"));
         assert!(message.contains("发送按钮不可用"));
-        assert!(message.contains("停止投递"));
+        assert!(message.contains("跳过当前岗位，继续处理"));
     }
 
     #[test]

@@ -180,6 +180,7 @@ const WorkspacePage = ({
   const [checkPhase, setCheckPhase] = useState<CheckPhase>("idle");
   const [envResult, setEnvResult] = useState<EnvCheckResult | null>(null);
   const [taskRunning, setTaskRunning] = useState(false);
+  const [taskStopping, setTaskStopping] = useState(false);
   const [runningPlatform, setRunningPlatform] = useState<PlatformKind | null>(null);
   const [logContent, setLogContent] = useState("");
   const [checkMsg, setCheckMsg] = useState("");
@@ -213,11 +214,13 @@ const WorkspacePage = ({
       );
       if (result.success && result.data) {
         const running = result.data.running;
+        const stopping = result.data.stopping;
         setTaskRunning((wasRunning) => {
           // Reload jobs whenever task state flips (stat stale remediation).
           if (wasRunning !== running) void loadJobs();
           return running;
         });
+        setTaskStopping(running && stopping);
         setRunningPlatform((current) => running ? current ?? platform : null);
       }
     } catch {
@@ -292,6 +295,7 @@ const WorkspacePage = ({
     async (mode: FlowMode, intervalMinutes?: number) => {
       const startedPlatform = platform;
       setTaskRunning(true);
+      setTaskStopping(false);
       setRunningPlatform(startedPlatform);
       try {
         const result = await invoke<CommandResult<void>>("rpa_flow", {
@@ -302,10 +306,12 @@ const WorkspacePage = ({
         if (!result.success) {
           messageApi.error(commandErrorMessage(result.error, "启动失败"));
           setTaskRunning(false);
+          setTaskStopping(false);
           setRunningPlatform(null);
           return;
         }
         setTaskRunning(false);
+        setTaskStopping(false);
         setRunningPlatform(null);
         void loadJobs();
         messageApi.success(`${PLATFORM_META[startedPlatform].label} ${getFlowModeLabel(mode)}已完成`);
@@ -355,8 +361,7 @@ const WorkspacePage = ({
         messageApi.error(commandErrorMessage(result.error, "停止失败"));
         return;
       }
-      setTaskRunning(false);
-      setRunningPlatform(null);
+      setTaskStopping(true);
       messageApi.success("已发送停止请求");
     } catch (error: unknown) {
       messageApi.error(
@@ -392,14 +397,14 @@ const WorkspacePage = ({
   const repliedCount = jobs.filter((j) => j.is_reply).length;
   const replyRate = totalJobs > 0 ? `${((repliedCount / totalJobs) * 100).toFixed(0)}%` : "—";
   const runningModeLabel = taskRunning && runningPlatform
-    ? `${PLATFORM_META[runningPlatform].shortLabel} 运行中`
+    ? `${PLATFORM_META[runningPlatform].shortLabel} ${taskStopping ? "停止中" : "运行中"}`
     : "空闲";
 
   const statTiles: StatTile[] = [
     {
       label: "运行状态",
       value: runningModeLabel,
-      subtitle: taskRunning ? "任务进行中" : "等待启动",
+      subtitle: taskRunning ? (taskStopping ? "正在安全结束当前步骤" : "任务进行中") : "等待启动",
       icon: <RocketOutlined style={{ fontSize: 18 }} />,
       color: taskRunning ? "#1677ff" : "#64748b",
       bg: taskRunning ? "rgba(22,119,255,0.1)" : "rgba(148,163,184,0.1)",
@@ -472,7 +477,7 @@ const WorkspacePage = ({
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <Typography.Text strong style={{ fontSize: 15 }}>平台选择</Typography.Text>
               {taskRunning ? (
-                <Tag color="processing">{runningPlatformLabel} 运行中</Tag>
+                <Tag color={taskStopping ? "warning" : "processing"}>{runningPlatformLabel} {taskStopping ? "停止中" : "运行中"}</Tag>
               ) : (
                 <Tag color="success">就绪</Tag>
               )}
@@ -638,16 +643,18 @@ const WorkspacePage = ({
           <Space wrap>
             <Button
               type="primary"
-              danger={taskRunning}
+              danger={taskRunning && !taskStopping}
               size="large"
-              icon={taskRunning ? <StopOutlined /> : <PlayCircleOutlined />}
+              icon={taskStopping ? <LoadingOutlined /> : taskRunning ? <StopOutlined /> : <PlayCircleOutlined />}
+              loading={taskStopping}
+              disabled={taskStopping}
               onClick={taskRunning ? () => void handleStopTask() : () => setStartModalOpen(true)}
             >
-              {taskRunning ? `停止 ${runningPlatformLabel} 任务` : `启动 ${currentPlatform.shortLabel} 任务`}
+              {taskStopping ? `${runningPlatformLabel} 任务停止中...` : taskRunning ? `停止 ${runningPlatformLabel} 任务` : `启动 ${currentPlatform.shortLabel} 任务`}
             </Button>
             {taskRunning && (
               <Typography.Text type="warning" style={{ alignSelf: "center", fontWeight: 500 }}>
-                {runningPlatformLabel} 任务运行中...
+                {taskStopping ? `${runningPlatformLabel} 任务正在安全停止...` : `${runningPlatformLabel} 任务运行中...`}
               </Typography.Text>
             )}
           </Space>

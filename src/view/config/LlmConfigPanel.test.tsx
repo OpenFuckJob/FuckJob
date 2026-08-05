@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LLM_PRESETS, isValidLlmConfig } from "./LlmConfigPanel";
+import { LLM_PRESETS, isValidLlmConfig, shouldFetchLlmModels } from "./LlmConfigPanel";
 
 describe("LLM presets", () => {
   it("keeps all six provider endpoints and key expectations deterministic", () => {
@@ -29,5 +29,19 @@ describe("LLM config validation", () => {
     expect(isValidLlmConfig({ ...customConfig, base_url: "  " })).toBe(false);
     expect(isValidLlmConfig({ ...customConfig, model: "  " })).toBe(false);
     expect(isValidLlmConfig(null)).toBe(false);
+  });
+});
+
+describe("LLM model list loading", () => {
+  it("requires an explicit user action and saved key for key-based providers", () => {
+    const config = {
+      provider: "deepseek" as const,
+      base_url: "https://api.deepseek.com",
+      model: "",
+    };
+
+    expect(shouldFetchLlmModels(config, false, false)).toBe(false);
+    expect(shouldFetchLlmModels(config, true, false)).toBe(false);
+    expect(shouldFetchLlmModels(config, true, true)).toBe(true);
   });
 });

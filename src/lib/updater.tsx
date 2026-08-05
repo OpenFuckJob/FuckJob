@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { Alert, Modal, Progress, Typography } from "antd";
+import MarkdownIt from "markdown-it";
 
 let automaticCheckStarted = false;
 
@@ -16,6 +17,12 @@ export function AutoUpdater() {
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState<DownloadState>({ downloaded: 0 });
   const [error, setError] = useState("");
+
+  const renderedBody = useMemo(() => {
+    if (!update?.body) return "";
+    const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
+    return md.render(update.body);
+  }, [update?.body]);
 
   useEffect(() => {
     if (!isTauri() || automaticCheckStarted) return;
@@ -79,7 +86,12 @@ export function AutoUpdater() {
             当前版本将更新至 <Typography.Text strong>v{update?.version}</Typography.Text>。
             安装完成后应用会自动重启。
           </Typography.Paragraph>
-          {update?.body && <Typography.Paragraph style={{ whiteSpace: "pre-wrap" }}>{update.body}</Typography.Paragraph>}
+          {renderedBody && (
+            <div
+              className="updater-release-notes"
+              dangerouslySetInnerHTML={{ __html: renderedBody }}
+            />
+          )}
         </>
       )}
       {error && <Alert type="error" showIcon message="更新失败" description={error} />}

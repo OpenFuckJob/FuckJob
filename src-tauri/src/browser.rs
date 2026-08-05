@@ -1,9 +1,20 @@
-use std::{future::Future, net::TcpListener, path::PathBuf, pin::Pin, sync::RwLock};
+use std::{
+    fs,
+    future::Future,
+    path::PathBuf,
+    pin::Pin,
+    process::{Command, Stdio},
+    sync::RwLock,
+    time::Duration,
+};
+#[cfg(test)]
+use std::net::TcpListener;
 
 use anyhow::{anyhow, Result};
 use once_cell::sync::Lazy;
-use rust_drission::{ChromiumPage, Page};
-use serde::Serialize;
+use rust_drission::{stealth_inject, ChromiumPage, Page};
+use serde::{Deserialize, Serialize};
+use tauri::Manager;
 
 use crate::config::{self, BrowserConfig};
 
@@ -124,8 +135,17 @@ pub fn check_browser_env_status(config: &BrowserConfig) -> BrowserEnvStatus {
 static BROWSER_SESSION: Lazy<RwLock<BrowserSession>> =
     Lazy::new(|| RwLock::new(BrowserSession::Empty));
 static APP_HANDLE: Lazy<RwLock<Option<tauri::AppHandle>>> = Lazy::new(|| RwLock::new(None));
+static ACTIVE_DEBUG_PORT: Lazy<RwLock<Option<u16>>> = Lazy::new(|| RwLock::new(None));
 
+const DEFAULT_RPA_DEBUG_PORT: u16 = 9876;
 const BROWSER_START_ATTEMPTS: usize = 3;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ManagedBrowserRecord {
+    pid: u32,
+    port: u16,
+    user_data_dir: String,
+}
 
 enum BrowserSession {
     Empty,
@@ -163,9 +183,23 @@ pub fn init_browser_session(config: &BrowserConfig) -> Result<()> {
         .map_err(|e| anyhow!("获取浏览器会话写锁失败: {}", e))?;
 
     match &*session {
-        BrowserSession::Ready(browser) if is_browser_session_usable(browser) => return Ok(()),
-        BrowserSession::InUse { .. } => return Ok(()),
-        _ => {}
+        BrowserSession::Ready(browser) => {
+            if is_browser_session_usable(browser) {
+                return Ok(());
+            } else {
+                *session = BrowserSession::Empty;
+            }
+        }
+        BrowserSession::InUse { .. } => {
+            // 如果任务已经不在运行了，说明 InUse 是残留的卡死状态，
+            // 强制清理为 Empty 以便重新初始化浏览器。
+            if !crate::rpa::run_flow::is_job_task_running() {
+                *session = BrowserSession::Empty;
+            } else {
+                return Ok(());
+            }
+        }
+        BrowserSession::Empty => {}
     }
 
     let previous_session = std::mem::replace(
@@ -176,7 +210,10 @@ pub fn init_browser_session(config: &BrowserConfig) -> Result<()> {
     );
     let previous_session = match previous_session {
         BrowserSession::Ready(mut browser) => {
-            browser.close_browser();
+            if !is_browser_session_usable(&browser) {
+                browser.close_browser();
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
             BrowserSession::Empty
         }
         previous => previous,
@@ -195,34 +232,177 @@ pub fn init_browser_session(config: &BrowserConfig) -> Result<()> {
     Ok(())
 }
 
-fn create_browser(config: &BrowserConfig) -> Result<ChromiumPage> {
-    let mut last_error = None;
+fn is_cdp_port_active(port: u16) -> bool {
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        std::time::Duration::from_millis(300),
+    )
+    .is_ok()
+}
 
-    for attempt in 1..=BROWSER_START_ATTEMPTS {
-        let port = allocate_browser_debug_port()?;
-        let mut browser_config = rust_drission::BrowserConfig::new()
-            .headless(false)
-            .set_local_port(port)
-            .user_data_dir(config.user_data_dir.clone());
+fn should_connect_to_existing_browser(cdp_port_active: bool) -> bool {
+    cdp_port_active
+}
 
-        if let Some(chrome_exe_path) = config.chrome_exe_path.as_ref() {
-            browser_config = browser_config.chrome_path(chrome_exe_path.clone());
-        }
+fn cdp_connection_requires_stealth_injection() -> bool {
+    true
+}
 
-        match ChromiumPage::new(browser_config) {
-            Ok(browser) => return Ok(browser),
-            Err(error) if is_browser_start_retryable(&error.to_string()) => {
-                last_error = Some(anyhow!(
-                    "第 {attempt}/{BROWSER_START_ATTEMPTS} 次启动使用调试端口 {port} 失败：{error}"
-                ));
+fn managed_browser_can_be_reused(
+    record: &ManagedBrowserRecord,
+    config: &BrowserConfig,
+    cdp_port_active: bool,
+) -> bool {
+    cdp_port_active && record.user_data_dir == config.user_data_dir
+}
+
+fn managed_browser_record_path() -> Result<PathBuf> {
+    let app_handle = app_handle().ok_or_else(|| anyhow!("应用句柄尚未初始化"))?;
+    Ok(app_handle.path().app_data_dir()?.join("rpa-browser.json"))
+}
+
+fn load_managed_browser_record() -> Option<ManagedBrowserRecord> {
+    let path = managed_browser_record_path().ok()?;
+    let content = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn save_managed_browser_record(record: &ManagedBrowserRecord) -> Result<()> {
+    let path = managed_browser_record_path()?;
+    let content = serde_json::to_vec(record)?;
+    fs::write(path, content)?;
+    Ok(())
+}
+
+fn browser_executable(config: &BrowserConfig) -> Result<PathBuf> {
+    if let Some(path) = config
+        .chrome_exe_path
+        .as_ref()
+        .filter(|path| !path.trim().is_empty())
+    {
+        return Ok(PathBuf::from(path));
+    }
+    detect_browser_path()
+        .map(|(_, path)| path)
+        .ok_or_else(|| anyhow!("未找到可用的 Chrome 或 Edge"))
+}
+
+fn connect_to_browser(port: u16) -> Result<ChromiumPage> {
+    let endpoint = format!("127.0.0.1:{port}");
+    let browser = ChromiumPage::connect(&endpoint)?;
+    // ChromiumPage::connect() 不会像 ChromiumPage::new() 一样自动注入。
+    // 必须在任何 BOSS 页面导航前注册新文档脚本，避免首个页面加载暴露自动化特征。
+    if cdp_connection_requires_stealth_injection() {
+        stealth_inject(browser.tab())?;
+    }
+    if is_browser_session_usable(&browser) {
+        Ok(browser)
+    } else {
+        Err(anyhow!("浏览器调试端口 {port} 的会话不可用"))
+    }
+}
+
+fn launch_managed_browser(config: &BrowserConfig, port: u16) -> Result<ChromiumPage> {
+    fs::create_dir_all(&config.user_data_dir)?;
+    let executable = browser_executable(config)?;
+    let mut child = Command::new(executable)
+        .args([
+            format!("--remote-debugging-port={port}"),
+            format!("--user-data-dir={}", config.user_data_dir),
+            "--window-size=1920,1080".to_string(),
+            "--no-default-browser-check".to_string(),
+            "--disable-suggestions-ui".to_string(),
+            "--no-first-run".to_string(),
+            "--disable-infobars".to_string(),
+            "--disable-popup-blocking".to_string(),
+            "--hide-crash-restore-bubble".to_string(),
+            "--disable-features=PrivacySandboxSettings4".to_string(),
+            "--disable-blink-features=AutomationControlled".to_string(),
+            "--no-sandbox".to_string(),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    for _ in 0..BROWSER_START_ATTEMPTS * 20 {
+        if should_connect_to_existing_browser(is_cdp_port_active(port)) {
+            if let Ok(browser) = connect_to_browser(port) {
+                save_managed_browser_record(&ManagedBrowserRecord {
+                    pid: child.id(),
+                    port,
+                    user_data_dir: config.user_data_dir.clone(),
+                })?;
+                return Ok(browser);
             }
-            Err(error) => return Err(error.into()),
+        }
+        if child.try_wait()?.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let _ = child.kill();
+    Err(anyhow!("Chrome 启动后未能建立 CDP 连接"))
+}
+
+fn create_browser(config: &BrowserConfig) -> Result<ChromiumPage> {
+    // 候选端口列表：优先检查已记录的活跃端口、默认固定端口(9876)及附近备用端口
+    let mut candidate_ports = Vec::new();
+    if let Ok(guard) = ACTIVE_DEBUG_PORT.read() {
+        if let Some(port) = *guard {
+            candidate_ports.push(port);
+        }
+    }
+    if !candidate_ports.contains(&DEFAULT_RPA_DEBUG_PORT) {
+        candidate_ports.push(DEFAULT_RPA_DEBUG_PORT);
+    }
+
+    let managed_record = load_managed_browser_record();
+
+    // 1. 端口已被占用时必须只连接已有 Chrome，不能用 ChromiumPage::new()
+    // 再次 launch 会删除同一 user-data-dir 的 Singleton 锁并启动第二个 Chrome，
+    // 导致 macOS 上出现“打开您的个人资料时出了点问题”。即使窗口被用户关闭，
+    // 只要 CDP 进程仍在，ChromiumPage::connect 会复用它并按需新建标签页。
+    for &port in &candidate_ports {
+        if should_connect_to_existing_browser(is_cdp_port_active(port)) {
+            let record_matches = managed_record
+                .as_ref()
+                .map(|record| managed_browser_can_be_reused(record, config, true))
+                .unwrap_or(port == DEFAULT_RPA_DEBUG_PORT);
+            if !record_matches {
+                return Err(anyhow!("检测到非当前 profile 的浏览器调试端口 {port}，已拒绝启动或接管浏览器"));
+            }
+            match connect_to_browser(port) {
+                Ok(browser) => {
+                    if let Ok(mut guard) = ACTIVE_DEBUG_PORT.write() {
+                        *guard = Some(port);
+                    }
+                    if managed_record.is_none() {
+                        let _ = save_managed_browser_record(&ManagedBrowserRecord {
+                            pid: 0,
+                            port,
+                            user_data_dir: config.user_data_dir.clone(),
+                        });
+                    }
+                    return Ok(browser);
+                }
+                Err(error) => return Err(anyhow!("检测到浏览器调试端口 {port}，但无法连接：{error}。已拒绝启动第二个浏览器以保护个人资料")),
+            }
         }
     }
 
-    Err(last_error.unwrap_or_else(|| anyhow!("浏览器启动失败")))
+    // 2. 没有活动 CDP 实例时，由应用直接启动并记录 PID。不能交给
+    // rust_drission::ChromiumPage::new()，它会删除 profile 锁文件。
+    let target_port = DEFAULT_RPA_DEBUG_PORT;
+    let browser = launch_managed_browser(config, target_port)?;
+    if let Ok(mut guard) = ACTIVE_DEBUG_PORT.write() {
+        *guard = Some(target_port);
+    }
+    Ok(browser)
 }
 
+#[cfg(test)]
 fn allocate_browser_debug_port() -> Result<u16> {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .map_err(|error| anyhow!("无法分配浏览器调试端口：{error}"))?;
@@ -234,6 +414,7 @@ fn allocate_browser_debug_port() -> Result<u16> {
     Ok(port)
 }
 
+#[cfg(test)]
 fn is_browser_start_retryable(error: &str) -> bool {
     error.contains("Chrome did not become ready within 5 seconds after launch")
 }
@@ -322,6 +503,16 @@ pub fn close_browser_session() -> Result<()> {
     Ok(())
 }
 
+/// 创建一个尚未导航的标签，并在首个文档加载前注册反检测脚本。
+///
+/// 不使用 `ChromiumPage::new_tab()` 的隐式行为，避免调用方在“网页点击后才
+/// 创建的标签”上错过首个页面加载时机。
+pub fn new_stealth_tab(browser: &ChromiumPage) -> Result<Page> {
+    let tab = browser.new_tab_without_stealth(None)?;
+    stealth_inject(&tab)?;
+    Ok(tab)
+}
+
 // 开启一个tab 执行op后 关闭tab
 pub async fn with_new_tab<T, F>(op: F) -> Result<T>
 where
@@ -336,7 +527,7 @@ where
         let BrowserSession::Ready(browser) = &*session else {
             return Err(anyhow!("浏览器尚未初始化"));
         };
-        browser.new_tab(None)?
+        new_stealth_tab(browser)?
     };
 
     let result = op(&tab).await;
@@ -412,5 +603,32 @@ mod tests {
         assert!(!is_browser_start_retryable(
             "Failed to launch Chrome: No such file or directory"
         ));
+    }
+
+    #[test]
+    fn active_cdp_port_uses_connection_instead_of_launching_a_second_browser() {
+        assert!(should_connect_to_existing_browser(true));
+        assert!(!should_connect_to_existing_browser(false));
+    }
+
+    #[test]
+    fn live_managed_browser_is_reused_even_when_no_page_is_open() {
+        let config = BrowserConfig {
+            user_data_dir: "/tmp/offer-flow-profile".to_string(),
+            chrome_exe_path: None,
+        };
+        let record = ManagedBrowserRecord {
+            pid: 123,
+            port: DEFAULT_RPA_DEBUG_PORT,
+            user_data_dir: config.user_data_dir.clone(),
+        };
+
+        assert!(managed_browser_can_be_reused(&record, &config, true));
+        assert!(!managed_browser_can_be_reused(&record, &config, false));
+    }
+
+    #[test]
+    fn cdp_connections_install_stealth_before_the_next_navigation() {
+        assert!(cdp_connection_requires_stealth_injection());
     }
 }

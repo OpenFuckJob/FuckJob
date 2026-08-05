@@ -19,6 +19,7 @@ export type FlowMode =
 
 export interface JobTaskStatus {
   running: boolean;
+  stopping: boolean;
 }
 
 export interface BrowserEnvStatus {

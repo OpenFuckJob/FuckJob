@@ -16,6 +16,15 @@ export const LLM_PRESETS: Record<LlmProviderPreset, { label: string; baseUrl: st
 
 const resultError = (error: CommandError | null, fallback: string) => error ? `[${error.code}] ${error.message}` : fallback;
 export const isValidLlmConfig = (value: LlmConfig | null) => Boolean(value?.base_url.trim() && value.model.trim());
+export const shouldFetchLlmModels = (
+  config: LlmConfig | null,
+  credentialConfigured: boolean,
+  userRequested: boolean,
+) => Boolean(
+  userRequested &&
+    config?.base_url.trim() &&
+    (!LLM_PRESETS[config.provider].requiresKey || credentialConfigured),
+);
 
 export interface LlmConfigPanelProps {
   config: LlmConfig | null;
@@ -49,8 +58,8 @@ export function LlmConfigPanel({ config, onChange, onPersist, onPendingApiKeyCha
       setFeedback({ type: "error", text: "请先填写服务地址" });
       return;
     }
-    if (preset?.requiresKey && !credential?.configured) {
-      setFeedback({ type: "info", text: "保存 API Key 后将自动获取模型列表" });
+    if (!shouldFetchLlmModels(config, Boolean(credential?.configured), true)) {
+      setFeedback({ type: "info", text: "请先保存 API Key，再展开模型列表获取模型" });
       return;
     }
     setModelsLoading(true);
@@ -74,17 +83,12 @@ export function LlmConfigPanel({ config, onChange, onPersist, onPendingApiKeyCha
 
   useEffect(() => {
     setModels([]);
-    if (!config?.base_url.trim() || (preset?.requiresKey && !credential?.configured)) return;
-    const timer = window.setTimeout(() => { void fetchModels(); }, 500);
-    return () => window.clearTimeout(timer);
-    // Fetching is intentionally tied to endpoint/provider/credential changes only.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config?.base_url, config?.provider, credential?.configured]);
+  }, [config?.base_url, config?.provider]);
 
   const storeKey = async () => {
     if (!apiKey.trim()) return setFeedback({ type: "error", text: "请输入 API Key" });
     const result = await setLlmApiKey(apiKey.trim());
-    if (result.success && result.data) { setCredential(result.data); changeApiKey(""); setFeedback({ type: "success", text: "凭据已安全保存，正在获取模型列表" }); }
+    if (result.success && result.data) { setCredential(result.data); changeApiKey(""); setFeedback({ type: "success", text: "凭据已安全保存，可展开模型列表获取模型" }); }
     else setFeedback({ type: "error", text: resultError(result.error, "保存凭据失败") });
   };
   const clearKey = async () => {
@@ -124,6 +128,9 @@ export function LlmConfigPanel({ config, onChange, onPersist, onPendingApiKeyCha
             options={models.map((model) => ({ value: model, label: model }))}
             placeholder="自动获取或手动输入模型名称"
             onChange={(model) => patch({ model })}
+            onOpenChange={(open) => {
+              if (open && !modelsLoading && models.length === 0) void fetchModels();
+            }}
             filterOption={(input, option) => String(option?.value ?? "").toLowerCase().includes(input.toLowerCase())}
             style={{ width: "100%" }}
           />
