@@ -162,10 +162,8 @@ pub async fn position_say_hello(
                             }
                         }
                     }
-                    let list_url = page.url()?;
                     match handle_greet(
                         page,
-                        &list_url,
                         greet_job.clone(),
                         app_runtime_config.clone(),
                     )
@@ -407,6 +405,14 @@ const GREET_BUTTON_SELECTOR: &str =
     "a.op-btn.op-btn-chat, a.btn.btn-startchat";
 const GREET_CONFIRM_SELECTOR: &str = "span.btn.btn-sure[ka=\"dialog_confirm\"], \
     .chat-block-container .sure-btn, .greet-boss-container .sure-btn";
+const SCROLL_BOTTOM_SCRIPT: &str = r#"
+(() => {
+    const html = document.documentElement;
+    const body = document.body;
+    const scrollContainer = html.scrollHeight > html.clientHeight ? html : body;
+    scrollContainer.scrollTop = scrollContainer.scrollHeight;
+})();
+"#;
 
 fn clean_html_url(url: &str) -> String {
     url.replace("&amp;", "&")
@@ -448,25 +454,6 @@ fn is_greet_success_dialog_text(text: &str) -> bool {
     text.contains("已向BOSS发送消息")
 }
 
-fn work_tab_card_selector(job_id: &str) -> String {
-    format!(".job-name[href*=\"{job_id}\"]")
-}
-
-fn select_job_in_work_tab(work_page: &Page, job_id: &str) -> Result<(), anyhow::Error> {
-    let selector = work_tab_card_selector(job_id);
-    for _ in 0..30 {
-        if let Some(job_name) = work_page.ele(&selector)? {
-            let job_card = job_name
-                .parent(3)?
-                .ok_or_else(|| anyhow::anyhow!("工作标签未找到岗位卡片: {job_id}"))?;
-            job_card.click()?;
-            return Ok(());
-        }
-        sleep_random_ms(300, 500);
-    }
-    Err(anyhow::anyhow!("工作标签未加载当前岗位卡片: {job_id}"))
-}
-
 fn should_continue_after_greet_failure() -> bool {
     true
 }
@@ -487,20 +474,17 @@ fn chat_wait_error(page: &Page, source: impl std::fmt::Display) -> anyhow::Error
 }
 
 async fn handle_greet(
-    list_page: &ChromiumPage,
-    list_url: &str,
+    browser_page: &ChromiumPage,
     greet_job: GreetJob,
     config: AppRuntimeConfig,
 ) -> Result<(), anyhow::Error> {
-    // 岗位列表标签只用于维护循环进度。BOSS 的站内路由会把点击沟通的页面
-    // 导航至聊天区，因此每个岗位都在可关闭的工作标签中完成整套建联流程。
-    let work_page = browser::new_stealth_tab(list_page)?;
+    // 工作标签直接打开已知岗位详情，避免重新定位列表中的分页卡片。
+    let work_page = browser::new_stealth_tab(browser_page)?;
     let result = async {
-        work_page.goto(list_url)?;
-        work_page.wait(".rec-job-list", Duration::from_secs(10))?;
-        select_job_in_work_tab(&work_page, &greet_job.platform_job_id)?;
+        work_page.goto(work_tab_navigation_url(&greet_job))?;
+        work_page.wait(GREET_BUTTON_SELECTOR, Duration::from_secs(30))?;
         sleep_random_ms(500, 800);
-        handle_greet_on_work_tab(list_page, &work_page, greet_job, config).await
+        handle_greet_on_work_tab(browser_page, &work_page, greet_job, config).await
     }
     .await;
     let close_result = work_page.close();
@@ -512,13 +496,17 @@ async fn handle_greet(
     }
 }
 
+fn work_tab_navigation_url(greet_job: &GreetJob) -> &str {
+    &greet_job.detail_url
+}
+
 async fn handle_greet_on_work_tab(
     browser_page: &ChromiumPage,
     work_page: &Page,
     greet_job: GreetJob,
     config: AppRuntimeConfig,
 ) -> Result<(), anyhow::Error> {
-    // 1. 在工作标签的右侧详情面板中等待并匹配沟通按钮
+    // 1. 在工作标签的岗位详情页中等待并匹配沟通按钮
     let mut current_job_ready = false;
     let mut target_btn = None;
 
@@ -543,7 +531,7 @@ async fn handle_greet_on_work_tab(
 
     if !current_job_ready {
         return Err(anyhow::anyhow!(
-            "右侧岗位详情未切换到当前岗位，未找到匹配的立即沟通按钮: {}",
+            "工作标签岗位详情页未找到当前岗位的立即沟通按钮: {}",
             greet_job.platform_job_id
         ));
     }
@@ -570,7 +558,7 @@ async fn handle_greet_on_work_tab(
         return Ok(());
     }
 
-    // 3. 在列表页点击确认弹窗（例如“继续沟通”、“确定”、“好”）
+    // 3. 在岗位详情页处理确认弹窗（例如“继续沟通”、“确定”、“好”）
     let mut last_confirm_text = String::new();
     let mut confirm_dialog_handled = false;
     let mut greet_success_seen = false;
@@ -774,16 +762,7 @@ async fn build_greet_resources(
 
 // 滚动到底部
 pub fn scroll_bottom(page: &ChromiumPage) -> Result<(), anyhow::Error> {
-    let script: &str = r#"
-    (() => {
-    const html = document.documentElement;
-    const body = document.body;
-    const scrollContainer = html.scrollHeight > html.clientHeight ? html : body;
-    scrollContainer.scrollTop = scrollContainer.scrollHeight;
-})();
-    "#;
-
-    page.run_js_await(script)?;
+    page.run_js_await(SCROLL_BOTTOM_SCRIPT)?;
 
     Ok(())
 }
@@ -856,10 +835,22 @@ mod tests {
     }
 
     #[test]
-    fn work_tab_card_selector_targets_the_platform_job_id() {
+    fn work_tab_navigates_to_job_detail_page_directly() {
+        let job = GreetJob {
+            platform: PlatformKind::Boss,
+            platform_job_id: "a5de0e2bc67cb6a90nFz3925FlpZ".to_string(),
+            title: "AI应用开发工程师".to_string(),
+            company_name: "示例科技".to_string(),
+            detail: "岗位描述".to_string(),
+            salary: "30-60K".to_string(),
+            location: Some("深圳".to_string()),
+            detail_url: "https://www.zhipin.com/job_detail/a5de0e2bc67cb6a90nFz3925FlpZ.html"
+                .to_string(),
+        };
+
         assert_eq!(
-            work_tab_card_selector("01a48a86c87405070nJ72dy0FVpW"),
-            ".job-name[href*=\"01a48a86c87405070nJ72dy0FVpW\"]"
+            work_tab_navigation_url(&job),
+            "https://www.zhipin.com/job_detail/a5de0e2bc67cb6a90nFz3925FlpZ.html"
         );
     }
 
