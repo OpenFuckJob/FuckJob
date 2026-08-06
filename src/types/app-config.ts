@@ -14,7 +14,8 @@ export type ConfigGroup =
   | "browser"
   | "resume"
   | "rules"
-  | "data";
+  | "data"
+  | "about";
 
 export interface RegexRule {
   name: string;

@@ -60,6 +60,19 @@ export function rewriteUpdaterUrls(updater, release) {
     }
   }
 
+  // 兼容 macOS 架构别名 (darwin-aarch64 <-> darwin-aarch64-app, darwin-x86_64 <-> darwin-x86_64-app)
+  const platformAliases = [
+    ["darwin-aarch64", "darwin-aarch64-app"],
+    ["darwin-x86_64", "darwin-x86_64-app"],
+  ];
+  for (const [p1, p2] of platformAliases) {
+    if (rewritten.platforms[p1] && !rewritten.platforms[p2]) {
+      rewritten.platforms[p2] = rewritten.platforms[p1];
+    } else if (rewritten.platforms[p2] && !rewritten.platforms[p1]) {
+      rewritten.platforms[p1] = rewritten.platforms[p2];
+    }
+  }
+
   return rewritten;
 }
 

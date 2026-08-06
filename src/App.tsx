@@ -11,7 +11,7 @@ import JobDataPage from "@/view/job-data";
 import JobOverviewPage from "@/view/job-overview";
 import ResumeOptimizerPage from "@/view/resume-optimizer";
 import WorkspacePage from "@/view/workspace";
-import { AutoUpdater } from "@/lib/updater";
+import { AutoUpdaterModal, UpdaterProvider } from "@/lib/updater";
 
 type AppTabKey = "workspace" | "job-overview" | "job-data" | "conversation-debug" | "resume-optimizer" | "config";
 const tabs: Array<{ key: AppTabKey; label: string }> = [
@@ -89,36 +89,38 @@ export default function App() {
   if (!app.config) return <main className="app-loading"><Alert type="error" showIcon message="无法加载本地配置" description={app.message} action={<Button onClick={() => void app.load()}>重试</Button>} /></main>;
 
   return (
-    <ConfigProvider
-      theme={{
-        token: {
-          colorPrimary: "#1677ff",
-          borderRadius: 10,
-          fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif",
-          colorBgContainer: "#ffffff",
-          colorTextBase: "#0f172a",
-          colorTextSecondary: "#64748b",
-        },
-        components: {
-          Card: {
-            paddingLG: 20,
+    <UpdaterProvider>
+      <ConfigProvider
+        theme={{
+          token: {
+            colorPrimary: "#1677ff",
+            borderRadius: 10,
+            fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif",
+            colorBgContainer: "#ffffff",
+            colorTextBase: "#0f172a",
+            colorTextSecondary: "#64748b",
           },
-          Button: {
-            borderRadius: 8,
-            fontWeight: 500,
+          components: {
+            Card: {
+              paddingLG: 20,
+            },
+            Button: {
+              borderRadius: 8,
+              fontWeight: 500,
+            },
+            Tabs: {
+              cardBg: "#f8fafc",
+            },
           },
-          Tabs: {
-            cardBg: "#f8fafc",
-          },
-        },
-      }}
-    >
-      <AutoUpdater />
-      {!app.config.onboarding_completed ? (
-        <Onboarding config={app.config} onFinish={app.save} />
-      ) : (
-        <MainShell config={app.config} update={app.updateConfig} save={app.save} status={app.status} message={app.message} dirty={app.dirty} importConfig={app.importConfig} exportConfig={app.exportConfig} />
-      )}
-    </ConfigProvider>
+        }}
+      >
+        <AutoUpdaterModal />
+        {!app.config.onboarding_completed ? (
+          <Onboarding config={app.config} onFinish={app.save} />
+        ) : (
+          <MainShell config={app.config} update={app.updateConfig} save={app.save} status={app.status} message={app.message} dirty={app.dirty} importConfig={app.importConfig} exportConfig={app.exportConfig} />
+        )}
+      </ConfigProvider>
+    </UpdaterProvider>
   );
 }

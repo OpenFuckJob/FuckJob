@@ -46,6 +46,39 @@ test("rewrites GitHub API asset URLs to public browser downloads", () => {
   assert.equal(result.notes, release.body);
 });
 
+test("aliases darwin platform keys for compatibility with both tauri updater formats", () => {
+  const macRelease = {
+    ...release,
+    assets: [
+      {
+        id: 456,
+        name: "OfferFlow_0.1.6_aarch64.app.tar.gz",
+        url: "https://api.github.com/repos/OpenFuckJob/FuckJob/releases/assets/456",
+        browser_download_url:
+          "https://github.com/OpenFuckJob/FuckJob/releases/download/v0.1.6/OfferFlow_0.1.6_aarch64.app.tar.gz",
+      },
+    ],
+  };
+  const updater = {
+    version: "0.1.6",
+    platforms: {
+      "darwin-aarch64": {
+        signature: "sig",
+        url: "https://api.github.com/repos/OpenFuckJob/FuckJob/releases/assets/456",
+      },
+    },
+  };
+  const result = rewriteUpdaterUrls(updater, macRelease);
+  assert.equal(
+    result.platforms["darwin-aarch64"].url,
+    macRelease.assets[0].browser_download_url,
+  );
+  assert.equal(
+    result.platforms["darwin-aarch64-app"].url,
+    macRelease.assets[0].browser_download_url,
+  );
+});
+
 test("keeps updater notes when the release has no description", () => {
   const publicUrl = release.assets[0].browser_download_url;
   const result = rewriteUpdaterUrls(

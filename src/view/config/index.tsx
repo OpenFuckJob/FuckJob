@@ -65,6 +65,7 @@ import { commandErrorMessage, type CommandResult } from "@/types/command";
 import type { BrowserEnvStatus } from "@/types/rpa";
 import { LlmConfigPanel } from "./LlmConfigPanel";
 import { DataManagementPanel } from "./DataManagementPanel";
+import { AboutPanel } from "./AboutPanel";
 import { AiFeatureGate } from "@/components/AiFeatureGate";
 
 const { Title, Text } = Typography;
@@ -173,6 +174,7 @@ const configGroupKeys = [
   "greet",
   "reply",
   "data",
+  "about",
 ] as const;
 type VisibleConfigGroup = (typeof configGroupKeys)[number];
 
@@ -196,6 +198,9 @@ const menuItems = [
   ] },
   { type: "group" as const, label: "数据管理", children: [
     { key: "data", icon: <DatabaseOutlined />, label: "备份与设备共享" },
+  ] },
+  { type: "group" as const, label: "系统信息", children: [
+    { key: "about", icon: <InfoCircleOutlined />, label: "软件与更新" },
   ] },
 ];
 
@@ -1489,6 +1494,8 @@ export function ConfigPage(props: ConfigPageProps) {
             </Form.Item>
           </Space>
         );
+      case "about":
+        return <AboutPanel />;
     }
   };
 
