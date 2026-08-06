@@ -8,7 +8,7 @@ import { useUpdater } from "@/lib/updater";
 const { Title, Text, Paragraph } = Typography;
 
 export function AboutPanel() {
-  const [version, setVersion] = useState("0.1.13");
+  const [version, setVersion] = useState("0.1.14");
   const { checking, checkForUpdates } = useUpdater();
 
   useEffect(() => {
