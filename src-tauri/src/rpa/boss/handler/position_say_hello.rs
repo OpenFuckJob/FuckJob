@@ -16,7 +16,7 @@ use crate::{
     verify,
 };
 use chrono::Local;
-use rust_drission::{utils::sleep_random_ms, ChromiumPage, DataPacket, Page};
+use rust_drission::{utils::sleep_random_ms, ChromiumPage, DataPacket, Element, Page};
 use serde_json::Value;
 use urlencoding::encode;
 
@@ -72,62 +72,17 @@ pub async fn position_say_hello(
                         logger::info("求职任务已结束")?;
                         return Ok(());
                     }
-                    if job_card_area_ele.attr("class")?.contains("is-seen") {
-                        continue;
-                    }
-
-                    let job_card_ele = job_card_area_ele.element(".job-card-box")?.unwrap();
-
-                    let job_href = job_card_ele
-                        .element(".job-name")?
-                        .unwrap()
-                        .attr("href")
-                        .unwrap_or_default();
-
-                    // 基于本地存储去重
-                    let job_id = extract_job_id(&format!("https://www.zhipin.com{}", job_href))
-                        .map(|s| s.to_string());
-                    if let Some(ref id) = job_id {
-                        if processed_job_ids.contains(id.as_str()) {
+                    let greet_job = match read_job_card(
+                        page,
+                        &job_card_area_ele,
+                        &processed_job_ids,
+                    ) {
+                        Ok(Some(greet_job)) => greet_job,
+                        Ok(None) => continue,
+                        Err(error) => {
+                            logger::warning(card_failure_message(&error))?;
                             continue;
                         }
-                    }
-
-                    job_card_ele.click()?;
-                    sleep_random_ms(800, 1200);
-                    // 岗位详情
-                    let job_detail_text = page.ele(".job-detail-body")?.unwrap().text_content()?;
-                    // 标题
-                    let job_name = job_card_ele.element(".job-name")?.unwrap().text_content()?;
-                    // 薪资水平
-                    let salary_text = job_card_ele
-                        .element(".job-salary")?
-                        .unwrap()
-                        .text_content()?;
-                    // 公司名称
-                    let company_text = job_card_ele
-                        .element(".boss-name")?
-                        .unwrap()
-                        .text_content()?;
-
-                    let company_location = job_card_ele
-                        .element(".company-location")?
-                        .unwrap()
-                        .text_content()?;
-
-                    let job_detail_url = format!("https://www.zhipin.com{}", job_href);
-                    let platform_job_id = extract_job_id(&job_detail_url)
-                        .unwrap_or(&job_detail_url)
-                        .to_string();
-                    let greet_job = GreetJob {
-                        platform: PlatformKind::Boss,
-                        platform_job_id,
-                        title: job_name.clone(),
-                        company_name: company_text,
-                        detail: job_detail_text,
-                        salary: decode_salary(&salary_text),
-                        location: Some(company_location),
-                        detail_url: job_detail_url.clone(),
                     };
 
                     logger::info(format!(
@@ -187,7 +142,7 @@ pub async fn position_say_hello(
                         return Ok(());
                     }
 
-                    logger::info(format!("{} 初次沟通成功", job_name))?;
+                    logger::info(format!("{} 初次沟通成功", greet_job.title))?;
                     processed_job_ids.insert(greet_job.platform_job_id.clone());
                     sleep_random_ms(3000, 5000);
                 }
@@ -249,6 +204,78 @@ pub async fn position_say_hello(
     .await?;
 
     Ok(())
+}
+
+fn card_failure_message(error: &anyhow::Error) -> String {
+    format!("处理岗位卡片失败，跳过当前岗位，继续处理：{error}")
+}
+
+fn read_job_card(
+    page: &ChromiumPage,
+    job_card_area_ele: &Element,
+    processed_job_ids: &HashSet<String>,
+) -> Result<Option<GreetJob>, anyhow::Error> {
+    if job_card_area_ele.attr("class")?.contains("is-seen") {
+        return Ok(None);
+    }
+
+    let job_card_ele = job_card_area_ele
+        .element(".job-card-box")?
+        .ok_or_else(|| anyhow::anyhow!("未找到岗位卡片主体"))?;
+
+    let job_href = job_card_ele
+        .element(".job-name")?
+        .ok_or_else(|| anyhow::anyhow!("未找到岗位名称链接"))?
+        .attr("href")
+        .unwrap_or_default();
+
+    let job_id = extract_job_id(&format!("https://www.zhipin.com{}", job_href))
+        .map(|s| s.to_string());
+    if let Some(ref id) = job_id {
+        if processed_job_ids.contains(id.as_str()) {
+            return Ok(None);
+        }
+    }
+
+    job_card_ele.click()?;
+    sleep_random_ms(800, 1200);
+
+    let job_detail_text = page
+        .ele(".job-detail-body")?
+        .ok_or_else(|| anyhow::anyhow!("未加载岗位详情"))?
+        .text_content()?;
+    let job_name = job_card_ele
+        .element(".job-name")?
+        .ok_or_else(|| anyhow::anyhow!("未找到岗位标题"))?
+        .text_content()?;
+    let salary_text = job_card_ele
+        .element(".job-salary")?
+        .ok_or_else(|| anyhow::anyhow!("未找到岗位薪资"))?
+        .text_content()?;
+    let company_text = job_card_ele
+        .element(".boss-name")?
+        .ok_or_else(|| anyhow::anyhow!("未找到公司名称"))?
+        .text_content()?;
+    let company_location = job_card_ele
+        .element(".company-location")?
+        .ok_or_else(|| anyhow::anyhow!("未找到公司地址"))?
+        .text_content()?;
+
+    let job_detail_url = format!("https://www.zhipin.com{}", job_href);
+    let platform_job_id = extract_job_id(&job_detail_url)
+        .unwrap_or(&job_detail_url)
+        .to_string();
+
+    Ok(Some(GreetJob {
+        platform: PlatformKind::Boss,
+        platform_job_id,
+        title: job_name,
+        company_name: company_text,
+        detail: job_detail_text,
+        salary: decode_salary(&salary_text),
+        location: Some(company_location),
+        detail_url: job_detail_url,
+    }))
 }
 
 /// 从 joblist API 响应中提取所有 encryptJobId 和 hasMore 标志
@@ -536,7 +563,8 @@ async fn handle_greet_on_work_tab(
         ));
     }
 
-    let btn = target_btn.unwrap();
+    let btn = target_btn
+        .ok_or_else(|| anyhow::anyhow!("未找到当前岗位的立即沟通按钮"))?;
     let chat_redirect_url = btn
         .attr("redirect-url")
         .unwrap_or_default();
@@ -864,6 +892,17 @@ mod tests {
         assert!(message.contains("示例科技"));
         assert!(message.contains("发送按钮不可用"));
         assert!(message.contains("跳过当前岗位，继续处理"));
+    }
+
+    #[test]
+    fn card_failure_message_includes_error_and_continue_hint() {
+        let error = anyhow::anyhow!("未加载岗位详情");
+
+        let message = card_failure_message(&error);
+
+        assert!(message.contains("未加载岗位详情"));
+        assert!(message.contains("跳过当前岗位"));
+        assert!(message.contains("继续处理"));
     }
 
     #[test]

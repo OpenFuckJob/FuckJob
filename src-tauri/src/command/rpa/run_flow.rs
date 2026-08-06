@@ -167,9 +167,24 @@ pub async fn rpa_flow(
 
     let result = rx.await;
     let stopped = run_flow::is_job_task_stop_requested();
+    if !stopped {
+        if let Some(message) = flow_error_message(&result) {
+            let _ = logger::warning(message);
+        }
+    }
     let command_result = command_result_for_flow(stopped, result);
     let _ = logger::set_platform(None);
     command_result
+}
+
+fn flow_error_message(
+    result: &Result<Result<(), anyhow::Error>, tokio::sync::oneshot::error::RecvError>,
+) -> Option<String> {
+    match result {
+        Ok(Ok(())) => None,
+        Ok(Err(error)) => Some(format!("求职任务执行失败：{error}")),
+        Err(_) => Some("求职任务后台线程异常退出，未返回错误详情".to_string()),
+    }
 }
 
 fn command_result_for_flow(
@@ -209,12 +224,24 @@ pub fn read_log_file(lines: Option<usize>) -> CommandResult<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::command_result_for_flow;
+    use super::{command_result_for_flow, flow_error_message};
     use crate::error::AppErrorCode;
+    use tokio::sync::oneshot::error::RecvError;
 
     #[test]
     fn user_requested_stop_maps_to_cancelled() {
         let result = command_result_for_flow(true, Ok(Ok(())));
         assert_eq!(result.error.unwrap().code, AppErrorCode::Cancelled);
+    }
+
+    #[test]
+    fn flow_error_message_exposes_internal_detail_for_logging() {
+        let result: Result<Result<(), anyhow::Error>, RecvError> =
+            Ok(Err(anyhow::anyhow!("岗位详情面板加载失败")));
+
+        assert_eq!(
+            flow_error_message(&result),
+            Some("求职任务执行失败：岗位详情面板加载失败".to_string())
+        );
     }
 }
