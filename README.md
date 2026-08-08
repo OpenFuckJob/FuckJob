@@ -39,6 +39,43 @@
 </p>
 
 
+### 岗位分析
+
+<p align="center">
+  <img
+    src="docs/images/377a1769475fa26c0eb89b3845f36edc.png"
+    alt=""
+    width="92%"
+  />
+</p>
+
+<p align="center">
+  <img
+    src="docs/images/cbf16153e26e5a2fb7f0dac4df76370c.png"
+    alt=""
+    width="92%"
+  />
+</p>
+
+<p align="center">
+  <img
+    src="docs/images/87d6175ea89c104d451bde6ed0ec06bc.png"
+    alt=""
+    width="92%"
+  />
+</p>
+
+### AI模拟面试
+
+
+<p align="center">
+  <img
+    src="docs/images/b7345c3578d6f2fcf5570da40916d5dc.png"
+    alt=""
+    width="92%"
+  />
+</p>
+
 ### 其它
 
 <p align="center">
