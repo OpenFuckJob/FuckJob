@@ -18,6 +18,9 @@ const LLM_REQUEST_TIMEOUT_SECONDS: u64 = 120;
 pub struct LlmService {
     client: rig::providers::openai::CompletionsClient,
     model: String,
+    base_url: String,
+    api_key: String,
+    http_client: reqwest::Client,
 }
 
 impl LlmService {
@@ -29,7 +32,7 @@ impl LlmService {
             .llm_config
             .as_ref()
             .ok_or_else(|| AppError::configuration("请先配置大模型服务"))?;
-        let base_url = llm.base_url.trim().trim_end_matches('/').to_string();
+        let base_url = normalize_base_url(llm.base_url.trim());
         let model = llm.model.trim().to_string();
         if base_url.is_empty() || model.is_empty() {
             return Err(AppError::configuration("大模型地址和模型名称不能为空"));
@@ -37,11 +40,9 @@ impl LlmService {
 
         let api_key = credential.secret().unwrap_or("noop");
 
-        let mut http_builder = reqwest::Client::builder()
-            .timeout(Duration::from_secs(LLM_REQUEST_TIMEOUT_SECONDS));
-        if base_url.starts_with("http://127.0.0.1")
-            || base_url.starts_with("http://localhost")
-        {
+        let mut http_builder =
+            reqwest::Client::builder().timeout(Duration::from_secs(LLM_REQUEST_TIMEOUT_SECONDS));
+        if base_url.starts_with("http://127.0.0.1") || base_url.starts_with("http://localhost") {
             http_builder = http_builder.no_proxy();
         }
         let http_client = http_builder.build().map_err(|e| {
@@ -53,22 +54,30 @@ impl LlmService {
         let client = rig::providers::openai::CompletionsClient::builder()
             .api_key(api_key)
             .base_url(&base_url)
-            .http_client(http_client)
+            .http_client(http_client.clone())
             .build()
             .map_err(|e| {
                 AppError::configuration("无法创建大模型客户端").with_detail(e.to_string())
             })?;
 
-        Ok(Self { client, model })
+        Ok(Self {
+            client,
+            model,
+            base_url,
+            api_key: api_key.to_string(),
+            http_client,
+        })
     }
 
     pub async fn generate(&self, prompt: String) -> Result<LlmResponse, AppError> {
         let model = self.client.completion_model(&self.model);
-        let response = model
-            .completion_request(&prompt)
-            .send()
-            .await
-            .map_err(map_completion_error)?;
+        let response = match model.completion_request(&prompt).send().await {
+            Ok(response) => response,
+            Err(error) if should_fallback_to_responses(&error) => {
+                return self.generate_via_responses(&prompt).await;
+            }
+            Err(error) => return Err(map_completion_error(error)),
+        };
 
         let mut content = String::new();
         for item in response.choice {
@@ -100,10 +109,15 @@ impl LlmService {
     {
         let model = self.client.completion_model(&self.model);
         let request = model.completion_request(&prompt).build();
-        let mut stream = model
-            .stream(request)
-            .await
-            .map_err(map_stream_completion_error)?;
+        let mut stream = match model.stream(request).await {
+            Ok(stream) => stream,
+            Err(error) if should_fallback_to_responses(&error) => {
+                let response = self.generate_via_responses(&prompt).await?;
+                on_delta(response.content.clone())?;
+                return Ok(response);
+            }
+            Err(error) => return Err(map_stream_completion_error(error)),
+        };
 
         let mut content = String::new();
         while let Some(chunk) = stream.next().await {
@@ -132,6 +146,110 @@ impl LlmService {
             response: response.content,
         })
     }
+
+    async fn generate_via_responses(&self, prompt: &str) -> Result<LlmResponse, AppError> {
+        let response = self
+            .http_client
+            .post(format!("{}/responses", self.base_url.trim_end_matches('/')))
+            .bearer_auth(&self.api_key)
+            .json(&serde_json::json!({
+                "model": self.model,
+                "input": prompt,
+                "stream": false,
+            }))
+            .send()
+            .await
+            .map_err(|error| {
+                AppError::network("无法连接大模型服务").with_detail(error.to_string())
+            })?;
+
+        let status = response.status();
+        let body = response.text().await.map_err(|error| {
+            AppError::network("读取大模型响应失败").with_detail(error.to_string())
+        })?;
+        if !status.is_success() {
+            return Err(
+                AppError::provider(format!("大模型服务请求失败（HTTP {status}）")).with_detail(
+                    format!(
+                        "POST {}/responses returned {status}: {}",
+                        self.base_url,
+                        truncate_detail(&body)
+                    ),
+                ),
+            );
+        }
+
+        let payload: Value = serde_json::from_str(&body).map_err(|error| {
+            AppError::provider("Responses 响应不是有效 JSON").with_detail(error.to_string())
+        })?;
+        let content = extract_response_text(&payload)
+            .ok_or_else(|| AppError::provider("Responses 响应中没有文本内容"))?;
+        Ok(LlmResponse {
+            content,
+            model: Some(self.model.clone()),
+            finish_reason: None,
+            usage: None,
+        })
+    }
+}
+
+fn should_fallback_to_responses(error: &CompletionError) -> bool {
+    if matches!(
+        error.provider_response_status(),
+        Some(reqwest::StatusCode::NOT_FOUND)
+            | Some(reqwest::StatusCode::METHOD_NOT_ALLOWED)
+            | Some(reqwest::StatusCode::BAD_GATEWAY)
+            | Some(reqwest::StatusCode::SERVICE_UNAVAILABLE)
+            | Some(reqwest::StatusCode::GATEWAY_TIMEOUT)
+    ) {
+        return true;
+    }
+
+    // Some OpenAI-compatible gateways wrap a 503 in a provider error and Rig
+    // does not expose the HTTP status. The stable error code is still enough
+    // to identify the Chat Completions incompatibility.
+    let body = error
+        .provider_response_json()
+        .ok()
+        .flatten()
+        .map(|value| value.to_string())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    body.contains("no_available_providers")
+        || body.contains("service unavailable")
+        || body.contains("http 503")
+}
+
+fn normalize_base_url(value: &str) -> String {
+    let mut base = value.trim().trim_end_matches('/').to_string();
+    for suffix in ["/chat/completions", "/responses"] {
+        if base.ends_with(suffix) {
+            base.truncate(base.len() - suffix.len());
+            break;
+        }
+    }
+    base.trim_end_matches('/').to_string()
+}
+
+fn extract_response_text(value: &Value) -> Option<String> {
+    if let Some(text) = value.get("output_text").and_then(Value::as_str) {
+        return Some(text.to_string());
+    }
+    if value.get("type").and_then(Value::as_str) == Some("output_text") {
+        if let Some(text) = value.get("text").and_then(Value::as_str) {
+            return Some(text.to_string());
+        }
+    }
+    match value {
+        Value::Object(map) => map.values().find_map(extract_response_text),
+        Value::Array(items) => items.iter().find_map(extract_response_text),
+        _ => None,
+    }
+}
+
+fn truncate_detail(value: &str) -> String {
+    const LIMIT: usize = 500;
+    value.chars().take(LIMIT).collect()
 }
 
 fn map_completion_error(error: CompletionError) -> AppError {
@@ -236,7 +354,9 @@ fn safe_completion_detail(error: &CompletionError) -> Option<String> {
         )),
         CompletionError::UrlError(_) => Some("invalid provider URL".to_string()),
         CompletionError::ResponseError(_) => Some("provider response parse failed".to_string()),
-        CompletionError::ProviderResponse(_) => Some("provider returned an error response".to_string()),
+        CompletionError::ProviderResponse(_) => {
+            Some("provider returned an error response".to_string())
+        }
         CompletionError::ProviderError(_) => Some("provider request failed".to_string()),
         CompletionError::RequestError(_) => Some("completion request build failed".to_string()),
         _ => None,
@@ -278,8 +398,7 @@ mod tests {
             base_url,
             model: "local-model".to_string(),
         });
-        let credential =
-            resolve_with_environment(&EmptyCredentialBackend, Some("secret")).unwrap();
+        let credential = resolve_with_environment(&EmptyCredentialBackend, Some("secret")).unwrap();
         LlmService::from_runtime(&config, &credential).unwrap()
     }
 
@@ -297,8 +416,7 @@ mod tests {
                     break;
                 }
                 bytes.extend_from_slice(&buffer[..count]);
-                if let Some(header_end) = bytes.windows(4).position(|value| value == b"\r\n\r\n")
-                {
+                if let Some(header_end) = bytes.windows(4).position(|value| value == b"\r\n\r\n") {
                     let headers = String::from_utf8_lossy(&bytes[..header_end]);
                     let length = headers
                         .lines()
@@ -391,7 +509,9 @@ mod tests {
 
         let error = tauri::async_runtime::block_on(service(url).test_connection()).unwrap_err();
         assert!(
-            error.message.contains("大模型服务返回 HTTP 429：请求受限或账户额度不足"),
+            error
+                .message
+                .contains("大模型服务返回 HTTP 429：请求受限或账户额度不足"),
             "message should include the base error: {}",
             error.message
         );
@@ -400,7 +520,10 @@ mod tests {
             "message should include safe provider diagnostics: {}",
             error.message
         );
-        assert!(!error.message.contains(secret), "message must not echo the provider body");
+        assert!(
+            !error.message.contains(secret),
+            "message must not echo the provider body"
+        );
         let detail = error.detail.unwrap_or_default();
         assert!(detail.contains("HTTP 429"));
         assert!(detail.contains("code=rate_limit"));
