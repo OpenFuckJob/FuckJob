@@ -32,7 +32,7 @@ impl LlmService {
             .llm_config
             .as_ref()
             .ok_or_else(|| AppError::configuration("请先配置大模型服务"))?;
-        let base_url = llm.base_url.trim().trim_end_matches('/').to_string();
+        let base_url = normalize_base_url(llm.base_url.trim());
         let model = llm.model.trim().to_string();
         if base_url.is_empty() || model.is_empty() {
             return Err(AppError::configuration("大模型地址和模型名称不能为空"));
@@ -194,14 +194,41 @@ impl LlmService {
 }
 
 fn should_fallback_to_responses(error: &CompletionError) -> bool {
-    matches!(
+    if matches!(
         error.provider_response_status(),
         Some(reqwest::StatusCode::NOT_FOUND)
             | Some(reqwest::StatusCode::METHOD_NOT_ALLOWED)
             | Some(reqwest::StatusCode::BAD_GATEWAY)
             | Some(reqwest::StatusCode::SERVICE_UNAVAILABLE)
             | Some(reqwest::StatusCode::GATEWAY_TIMEOUT)
-    )
+    ) {
+        return true;
+    }
+
+    // Some OpenAI-compatible gateways wrap a 503 in a provider error and Rig
+    // does not expose the HTTP status. The stable error code is still enough
+    // to identify the Chat Completions incompatibility.
+    let body = error
+        .provider_response_json()
+        .ok()
+        .flatten()
+        .map(|value| value.to_string())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    body.contains("no_available_providers")
+        || body.contains("service unavailable")
+        || body.contains("http 503")
+}
+
+fn normalize_base_url(value: &str) -> String {
+    let mut base = value.trim().trim_end_matches('/').to_string();
+    for suffix in ["/chat/completions", "/responses"] {
+        if base.ends_with(suffix) {
+            base.truncate(base.len() - suffix.len());
+            break;
+        }
+    }
+    base.trim_end_matches('/').to_string()
 }
 
 fn extract_response_text(value: &Value) -> Option<String> {
