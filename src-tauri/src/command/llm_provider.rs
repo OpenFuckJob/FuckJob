@@ -3,20 +3,10 @@ use crate::credential::{self, CredentialStatus};
 use crate::error::AppError;
 use crate::llm::service::LlmService;
 use crate::llm::types::ConnectionReport;
-use serde::Deserialize;
+use rig::client::ModelListingClient;
+use rig::model::ModelListingError;
 use std::time::Duration;
-
-const MODEL_LIST_TIMEOUT_SECONDS: u64 = 15;
-
-#[derive(Debug, Deserialize)]
-struct ModelListResponse {
-    data: Vec<ModelListItem>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ModelListItem {
-    id: String,
-}
+use tokio::time::timeout;
 
 #[tauri::command]
 pub fn get_llm_credential_status() -> CommandResult<CredentialStatus> {
@@ -42,61 +32,89 @@ pub fn clear_llm_api_key() -> CommandResult<CredentialStatus> {
     }
 }
 
-async fn fetch_model_list(base_url: &str) -> Result<Vec<String>, AppError> {
-    let base_url = base_url.trim().trim_end_matches('/');
-    let parsed = reqwest::Url::parse(base_url).map_err(|error| {
-        AppError::validation("大模型服务地址无效").with_detail(error.to_string())
-    })?;
-    if !matches!(parsed.scheme(), "http" | "https") {
+fn validate_llm_base_url(base_url: &str) -> Result<(), AppError> {
+    let base_url = base_url.trim();
+    if base_url.is_empty() {
+        return Err(AppError::validation("大模型服务地址不能为空"));
+    }
+    let scheme_end = base_url
+        .find("://")
+        .ok_or_else(|| AppError::validation("大模型服务地址无效"))?;
+    let scheme = &base_url[..scheme_end];
+    if !matches!(scheme, "http" | "https") {
         return Err(AppError::validation("大模型服务地址仅支持 HTTP 或 HTTPS"));
     }
+    Ok(())
+}
 
-    let mut client_builder =
-        reqwest::Client::builder().timeout(Duration::from_secs(MODEL_LIST_TIMEOUT_SECONDS));
-    if parsed
-        .host_str()
-        .is_some_and(|host| host == "127.0.0.1" || host == "localhost")
-    {
-        client_builder = client_builder.no_proxy();
-    }
-    let client = client_builder.build().map_err(|error| {
-        AppError::configuration("无法创建大模型客户端").with_detail(error.to_string())
-    })?;
+const MODEL_LIST_TIMEOUT_SECONDS: u64 = 30;
 
+async fn fetch_model_list(base_url: &str) -> Result<Vec<String>, AppError> {
+    validate_llm_base_url(base_url)?;
     let credential = credential::resolve()?;
-    let mut request = client.get(format!("{base_url}/models"));
-    if let Some(api_key) = credential.secret() {
-        request = request.bearer_auth(api_key);
-    }
-    let response = request.send().await.map_err(|error| {
-        AppError::network("获取模型列表失败，请检查服务地址和网络").with_detail(error.to_string())
-    })?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(
-            AppError::provider(format!("获取模型列表失败（HTTP {status}）"))
-                .with_detail(format!("GET {base_url}/models returned {status}")),
-        );
-    }
+    let api_key = credential.secret().unwrap_or("noop");
+    let base_url = base_url.trim().trim_end_matches('/').to_string();
 
-    let payload = response
-        .json::<ModelListResponse>()
-        .await
+    // Rig exposes model discovery through ModelListingClient. Use a provider
+    // client whose capability set implements model listing, while keeping chat
+    // traffic in LlmService on the Chat Completions client.
+    let client = rig::providers::openai::Client::builder()
+        .api_key(api_key)
+        .base_url(&base_url)
+        .build()
         .map_err(|error| {
-            AppError::provider("模型列表响应格式不受支持").with_detail(error.to_string())
+            AppError::configuration("无法创建大模型客户端").with_detail(error.to_string())
         })?;
-    let mut models: Vec<String> = payload
-        .data
+
+    let models = timeout(
+        Duration::from_secs(MODEL_LIST_TIMEOUT_SECONDS),
+        client.list_models(),
+    )
+    .await
+    .map_err(|_| AppError::network("获取模型列表超时"))?
+    .map_err(map_model_listing_error)?;
+
+    let mut names = models
         .into_iter()
-        .map(|item| item.id.trim().to_string())
+        .map(|model| model.id.trim().to_string())
         .filter(|id| !id.is_empty())
-        .collect();
-    models.sort();
-    models.dedup();
-    if models.is_empty() {
-        return Err(AppError::provider("服务未返回可用模型"));
+        .collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
+fn map_model_listing_error(error: ModelListingError) -> AppError {
+    match error {
+        ModelListingError::ApiError { status_code, message } => {
+            let mut mapped = match status_code {
+                401 | 403 => AppError::credential("大模型密钥无效或无权获取模型列表"),
+                404 => AppError::provider("大模型服务未提供模型列表接口，请手动填写模型名称"),
+                429 => AppError::provider("获取模型列表受限或账户额度不足"),
+                _ => AppError::provider(format!("获取模型列表失败（HTTP {status_code}）")),
+            };
+            mapped = mapped.with_detail(format!("HTTP {status_code}; {message}"));
+            mapped
+        }
+        ModelListingError::RequestError { message } => {
+            AppError::network("无法连接大模型服务获取模型列表").with_detail(message)
+        }
+        ModelListingError::ParseError { message } => {
+            AppError::provider("模型列表响应解析失败，请手动填写模型名称").with_detail(message)
+        }
+        ModelListingError::AuthError { message } => {
+            AppError::credential("大模型密钥无效或无权获取模型列表").with_detail(message)
+        }
+        ModelListingError::RateLimitError { message } => {
+            AppError::provider("获取模型列表受限或账户额度不足").with_detail(message)
+        }
+        ModelListingError::ServiceUnavailable { message } => {
+            AppError::network("大模型服务暂不可用，无法获取模型列表").with_detail(message)
+        }
+        ModelListingError::UnknownError { message } => {
+            AppError::provider("获取模型列表失败").with_detail(message)
+        }
     }
-    Ok(models)
 }
 
 #[tauri::command]

@@ -168,7 +168,7 @@ AI 功能包括：
 | 前端 | React 19 + TypeScript |
 | UI 组件 | Ant Design 6 + Tailwind CSS 4 |
 | 构建工具 | Vite 7 |
-| 后端 | Rust (reqwest, rig-core, rust_drission 等) |
+| 后端 | Rust (rig、rust_drission 等) |
 | 测试 | Vitest + Testing Library |
 | 包管理 | pnpm |
 
