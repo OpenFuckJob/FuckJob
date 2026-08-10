@@ -1,16 +1,15 @@
 use crate::config::AppRuntimeConfig;
 use crate::credential::ResolvedCredential;
 use crate::error::AppError;
-use crate::llm::openai_compatible::provider_error_metadata;
 use crate::llm::template;
 use crate::llm::types::{ConnectionReport, LlmResponse};
 use futures::StreamExt;
 use rig::client::CompletionClient;
 use rig::completion::{CompletionError, CompletionModel};
 use rig::streaming::StreamedAssistantContent;
-use rig_core as rig;
 use serde_json::Value;
 use std::time::Duration;
+use tokio::time::timeout;
 
 const LLM_REQUEST_TIMEOUT_SECONDS: u64 = 120;
 
@@ -37,23 +36,11 @@ impl LlmService {
 
         let api_key = credential.secret().unwrap_or("noop");
 
-        let mut http_builder = reqwest::Client::builder()
-            .timeout(Duration::from_secs(LLM_REQUEST_TIMEOUT_SECONDS));
-        if base_url.starts_with("http://127.0.0.1")
-            || base_url.starts_with("http://localhost")
-        {
-            http_builder = http_builder.no_proxy();
-        }
-        let http_client = http_builder.build().map_err(|e| {
-            AppError::configuration("无法创建大模型客户端").with_detail(e.to_string())
-        })?;
-
         // OpenAI-compatible providers broadly implement Chat Completions, while
         // Rig's default OpenAI client targets the newer Responses API.
         let client = rig::providers::openai::CompletionsClient::builder()
             .api_key(api_key)
             .base_url(&base_url)
-            .http_client(http_client)
             .build()
             .map_err(|e| {
                 AppError::configuration("无法创建大模型客户端").with_detail(e.to_string())
@@ -64,11 +51,12 @@ impl LlmService {
 
     pub async fn generate(&self, prompt: String) -> Result<LlmResponse, AppError> {
         let model = self.client.completion_model(&self.model);
-        let response = model
-            .completion_request(&prompt)
-            .send()
-            .await
-            .map_err(map_completion_error)?;
+        let response = timeout(Duration::from_secs(LLM_REQUEST_TIMEOUT_SECONDS), async {
+            model.completion_request(&prompt).send().await
+        })
+        .await
+        .map_err(|_| AppError::network("大模型请求超时"))?
+        .map_err(map_completion_error)?;
 
         let mut content = String::new();
         for item in response.choice {
@@ -98,31 +86,35 @@ impl LlmService {
     where
         F: FnMut(String) -> Result<(), AppError>,
     {
-        let model = self.client.completion_model(&self.model);
-        let request = model.completion_request(&prompt).build();
-        let mut stream = model
-            .stream(request)
-            .await
-            .map_err(map_stream_completion_error)?;
+        timeout(Duration::from_secs(LLM_REQUEST_TIMEOUT_SECONDS), async {
+            let model = self.client.completion_model(&self.model);
+            let request = model.completion_request(&prompt).build();
+            let mut stream = model
+                .stream(request)
+                .await
+                .map_err(map_stream_completion_error)?;
 
-        let mut content = String::new();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(map_stream_completion_error)?;
-            match chunk {
-                StreamedAssistantContent::Text(text) => {
-                    content.push_str(&text.text);
-                    on_delta(text.text)?;
+            let mut content = String::new();
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(map_stream_completion_error)?;
+                match chunk {
+                    StreamedAssistantContent::Text(text) => {
+                        content.push_str(&text.text);
+                        on_delta(text.text)?;
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
-        }
 
-        Ok(LlmResponse {
-            content,
-            model: Some(self.model.clone()),
-            finish_reason: None,
-            usage: None,
+            Ok(LlmResponse {
+                content,
+                model: Some(self.model.clone()),
+                finish_reason: None,
+                usage: None,
+            })
         })
+        .await
+        .map_err(|_| AppError::network("大模型流式请求超时"))?
     }
 
     pub async fn test_connection(&self) -> Result<ConnectionReport, AppError> {
@@ -143,7 +135,7 @@ fn map_stream_completion_error(error: CompletionError) -> AppError {
 }
 
 fn map_rig_error(error: CompletionError, streaming: bool) -> AppError {
-    let status = error.provider_response_status();
+    let status_code = error.provider_response_status().map(|status| status.as_u16());
     let metadata = error
         .provider_response_json()
         .ok()
@@ -154,20 +146,16 @@ fn map_rig_error(error: CompletionError, streaming: bool) -> AppError {
     // Build a safe user-facing diagnostic (HTTP status + provider error code/type).
     // The `provider_error_metadata` output only includes alphanumeric-safe fields
     // (code, type), never raw message bodies, so it is safe to surface to users.
-    let diagnostic = match (&status, &metadata) {
+    let diagnostic = match (status_code, metadata.as_ref()) {
         (Some(s), Some(m)) => Some(format!("（HTTP {s}，{m}）")),
         (Some(s), None) => Some(format!("（HTTP {s}）")),
         (None, _) => None,
     };
 
-    let base = match status {
-        Some(reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN) => {
-            "大模型密钥无效或无权访问"
-        }
-        Some(reqwest::StatusCode::NOT_FOUND) => "大模型地址或模型不存在",
-        Some(reqwest::StatusCode::TOO_MANY_REQUESTS) => {
-            "大模型服务返回 HTTP 429：请求受限或账户额度不足"
-        }
+    let base = match status_code {
+        Some(401 | 403) => "大模型密钥无效或无权访问",
+        Some(404) => "大模型地址或模型不存在",
+        Some(429) => "大模型服务返回 HTTP 429：请求受限或账户额度不足",
         Some(_) => "大模型服务请求失败",
         None => match &error {
             CompletionError::HttpError(_) => {
@@ -192,12 +180,9 @@ fn map_rig_error(error: CompletionError, streaming: bool) -> AppError {
         None => base.to_string(),
     };
 
-    let mut mapped = match status {
-        Some(reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN) => {
-            AppError::credential(message)
-        }
-        Some(reqwest::StatusCode::NOT_FOUND) => AppError::provider(message),
-        Some(reqwest::StatusCode::TOO_MANY_REQUESTS) => AppError::provider(message),
+    let mut mapped = match status_code {
+        Some(401 | 403) => AppError::credential(message),
+        Some(404 | 429) => AppError::provider(message),
         Some(_) => AppError::provider(message),
         None => match &error {
             CompletionError::HttpError(_) => AppError::network(message),
@@ -206,7 +191,7 @@ fn map_rig_error(error: CompletionError, streaming: bool) -> AppError {
     };
 
     // Attach full diagnostics as internal detail for logging (never serialized).
-    let detail = match (status, metadata) {
+    let detail = match (status_code, metadata) {
         (Some(s), Some(m)) => Some(format!("HTTP {s}; {m}")),
         (Some(s), None) => Some(format!("HTTP {s}")),
         (None, _) => safe_completion_detail(&error),
@@ -241,6 +226,29 @@ fn safe_completion_detail(error: &CompletionError) -> Option<String> {
         CompletionError::RequestError(_) => Some("completion request build failed".to_string()),
         _ => None,
     }
+}
+
+fn safe_provider_identifier(value: &str) -> Option<&str> {
+    (!value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')))
+    .then_some(value)
+}
+
+fn provider_error_metadata(error: &Value) -> Option<String> {
+    let mut fields = Vec::new();
+    for name in ["code", "type"] {
+        if let Some(value) = error
+            .get(name)
+            .and_then(Value::as_str)
+            .and_then(safe_provider_identifier)
+        {
+            fields.push(format!("{name}={value}"));
+        }
+    }
+    (!fields.is_empty()).then(|| fields.join(", "))
 }
 
 #[cfg(test)]

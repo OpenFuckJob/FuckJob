@@ -6,9 +6,7 @@ use crate::rpa::common::{ChatMessage, RpaJob};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-pub mod openai_compatible;
 pub mod service;
-pub mod sse;
 pub mod template;
 pub mod types;
 
