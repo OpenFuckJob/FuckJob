@@ -3,6 +3,10 @@ use crate::credential::{self, CredentialStatus};
 use crate::error::AppError;
 use crate::llm::service::LlmService;
 use crate::llm::types::ConnectionReport;
+use rig::client::ModelListingClient;
+use rig::model::ModelListingError;
+use std::time::Duration;
+use tokio::time::timeout;
 
 #[tauri::command]
 pub fn get_llm_credential_status() -> CommandResult<CredentialStatus> {
@@ -43,11 +47,74 @@ fn validate_llm_base_url(base_url: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+const MODEL_LIST_TIMEOUT_SECONDS: u64 = 30;
+
 async fn fetch_model_list(base_url: &str) -> Result<Vec<String>, AppError> {
     validate_llm_base_url(base_url)?;
-    Err(AppError::provider(
-        "当前 Rig 调用方式不支持自动获取模型列表，请手动填写模型名称后使用连接测试验证",
-    ))
+    let credential = credential::resolve()?;
+    let api_key = credential.secret().unwrap_or("noop");
+    let base_url = base_url.trim().trim_end_matches('/').to_string();
+
+    // Rig exposes model discovery through ModelListingClient. Use a provider
+    // client whose capability set implements model listing, while keeping chat
+    // traffic in LlmService on the Chat Completions client.
+    let client = rig::providers::openai::Client::builder()
+        .api_key(api_key)
+        .base_url(&base_url)
+        .build()
+        .map_err(|error| {
+            AppError::configuration("无法创建大模型客户端").with_detail(error.to_string())
+        })?;
+
+    let models = timeout(
+        Duration::from_secs(MODEL_LIST_TIMEOUT_SECONDS),
+        client.list_models(),
+    )
+    .await
+    .map_err(|_| AppError::network("获取模型列表超时"))?
+    .map_err(map_model_listing_error)?;
+
+    let mut names = models
+        .into_iter()
+        .map(|model| model.id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
+fn map_model_listing_error(error: ModelListingError) -> AppError {
+    match error {
+        ModelListingError::ApiError { status_code, message } => {
+            let mut mapped = match status_code {
+                401 | 403 => AppError::credential("大模型密钥无效或无权获取模型列表"),
+                404 => AppError::provider("大模型服务未提供模型列表接口，请手动填写模型名称"),
+                429 => AppError::provider("获取模型列表受限或账户额度不足"),
+                _ => AppError::provider(format!("获取模型列表失败（HTTP {status_code}）")),
+            };
+            mapped = mapped.with_detail(format!("HTTP {status_code}; {message}"));
+            mapped
+        }
+        ModelListingError::RequestError { message } => {
+            AppError::network("无法连接大模型服务获取模型列表").with_detail(message)
+        }
+        ModelListingError::ParseError { message } => {
+            AppError::provider("模型列表响应解析失败，请手动填写模型名称").with_detail(message)
+        }
+        ModelListingError::AuthError { message } => {
+            AppError::credential("大模型密钥无效或无权获取模型列表").with_detail(message)
+        }
+        ModelListingError::RateLimitError { message } => {
+            AppError::provider("获取模型列表受限或账户额度不足").with_detail(message)
+        }
+        ModelListingError::ServiceUnavailable { message } => {
+            AppError::network("大模型服务暂不可用，无法获取模型列表").with_detail(message)
+        }
+        ModelListingError::UnknownError { message } => {
+            AppError::provider("获取模型列表失败").with_detail(message)
+        }
+    }
 }
 
 #[tauri::command]
