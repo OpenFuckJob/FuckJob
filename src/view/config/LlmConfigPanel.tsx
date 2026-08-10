@@ -6,12 +6,16 @@ import type { CommandError, CommandResult } from "@/types/command";
 import type { LlmConnectionReport, LlmCredentialStatus } from "@/types/llm";
 
 export const LLM_PRESETS: Record<LlmProviderPreset, { label: string; baseUrl: string; requiresKey: boolean }> = {
-  ollama: { label: "Ollama", baseUrl: "http://127.0.0.1:11434/v1", requiresKey: false },
-  lm_studio: { label: "LM Studio", baseUrl: "http://127.0.0.1:1234/v1", requiresKey: false },
-  openai: { label: "OpenAI", baseUrl: "https://api.openai.com/v1", requiresKey: true },
+  anthropic: { label: "Anthropic", baseUrl: "https://api.anthropic.com", requiresKey: true },
   deepseek: { label: "DeepSeek", baseUrl: "https://api.deepseek.com", requiresKey: true },
-  dashscope: { label: "DashScope", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", requiresKey: true },
-  custom: { label: "自定义", baseUrl: "", requiresKey: false },
+  openai: { label: "OpenAI (Completions)", baseUrl: "https://api.openai.com/v1", requiresKey: true },
+  openai_responses: { label: "OpenAI (Responses)", baseUrl: "https://api.openai.com/v1", requiresKey: true },
+  minimax: { label: "MiniMax", baseUrl: "https://api.minimax.io/v1", requiresKey: true },
+  moonshot: { label: "Moonshot", baseUrl: "https://api.moonshot.ai/v1", requiresKey: true },
+  ollama: { label: "Ollama", baseUrl: "http://127.0.0.1:11434", requiresKey: false },
+  openrouter: { label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", requiresKey: true },
+  xiaomi_mimo: { label: "Xiaomi MiMo", baseUrl: "https://api.xiaomimimo.com/v1", requiresKey: true },
+  zai: { label: "Z.ai", baseUrl: "https://api.z.ai/api/paas/v4", requiresKey: true },
 };
 
 const resultError = (error: CommandError | null, fallback: string) => error ? `[${error.code}] ${error.message}` : fallback;
@@ -64,7 +68,10 @@ export function LlmConfigPanel({ config, onChange, onPersist, onPendingApiKeyCha
     }
     setModelsLoading(true);
     try {
-      const result = await listLlmModels(config.base_url.trim());
+      const result = await listLlmModels({
+        provider: config.provider,
+        base_url: config.base_url.trim(),
+      });
       if (result.success && result.data) {
         setModels(result.data);
         if (!config.model.trim() && result.data[0]) patch({ model: result.data[0] });
@@ -120,7 +127,7 @@ export function LlmConfigPanel({ config, onChange, onPersist, onPendingApiKeyCha
       </Form.Item>
       {config && <>
         <Form.Item label="服务地址" validateStatus={config.base_url.trim() ? undefined : "error"}>
-          <Input value={config.base_url} placeholder="OpenAI 兼容 API 地址" onChange={(e) => patch({ base_url: e.target.value })} />
+          <Input value={config.base_url} placeholder="服务 API 地址，可按需自定义 BaseURL" onChange={(e) => patch({ base_url: e.target.value })} />
         </Form.Item>
         <Form.Item label="模型">
           <AutoComplete
@@ -137,9 +144,6 @@ export function LlmConfigPanel({ config, onChange, onPersist, onPendingApiKeyCha
           <Button style={{ marginTop: 8 }} loading={modelsLoading} onClick={() => void fetchModels(true)}>刷新模型列表</Button>
         </Form.Item>
         <Typography.Text type="secondary">凭据状态：{credential?.configured ? `已配置（${credential.source}）` : "未配置"}。应用不会读取或显示明文。</Typography.Text>
-        {config.provider === "custom" && !credential?.configured && (
-          <Alert type="info" showIcon style={{ marginTop: 8 }} message="自定义 API 端点通常需要 API Key。如果连接测试返回 401 或鉴权失败，请先在下方设置凭据。" />
-        )}
         <Space.Compact block style={{ marginTop: 12 }}>
           <Input.Password value={apiKey} placeholder="设置或替换 API Key" onChange={(e) => changeApiKey(e.target.value)} />
           <Button onClick={() => void storeKey()}>保存凭据</Button>

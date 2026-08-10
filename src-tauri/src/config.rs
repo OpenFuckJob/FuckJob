@@ -282,20 +282,28 @@ fn parse_llm_config(
     Ok(config.llm_config)
 }
 
-/// Known legacy URLs map to their matching preset. Unknown OpenAI-compatible
-/// endpoints remain usable through the custom preset.
+/// Known legacy URLs map to their matching preset. Unknown legacy endpoints
+/// fall back to OpenAI-compatible routing through the OpenAI preset.
 fn infer_legacy_provider(base_url: &str) -> LlmProviderPreset {
     let normalized = base_url.to_ascii_lowercase();
-    if normalized.contains("11434") || normalized.contains("ollama") {
-        LlmProviderPreset::Ollama
-    } else if normalized.contains("1234") || normalized.contains("lmstudio") {
-        LlmProviderPreset::LmStudio
+    if normalized.contains("anthropic") {
+        LlmProviderPreset::Anthropic
     } else if normalized.contains("deepseek") {
         LlmProviderPreset::DeepSeek
-    } else if normalized.contains("dashscope") {
-        LlmProviderPreset::Dashscope
+    } else if normalized.contains("minimax") {
+        LlmProviderPreset::MiniMax
+    } else if normalized.contains("moonshot") {
+        LlmProviderPreset::Moonshot
+    } else if normalized.contains("11434") || normalized.contains("ollama") {
+        LlmProviderPreset::Ollama
+    } else if normalized.contains("openrouter") {
+        LlmProviderPreset::OpenRouter
+    } else if normalized.contains("xiaomimimo") {
+        LlmProviderPreset::XiaomiMimo
+    } else if normalized.contains("z.ai") {
+        LlmProviderPreset::ZAi
     } else {
-        LlmProviderPreset::Custom
+        LlmProviderPreset::OpenAi
     }
 }
 
@@ -397,14 +405,22 @@ pub struct AppRuntimeConfig {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LlmProviderPreset {
-    Ollama,
-    LmStudio,
-    #[serde(rename = "openai")]
-    OpenAi,
+    Anthropic,
     #[serde(rename = "deepseek")]
     DeepSeek,
-    Dashscope,
-    Custom,
+    #[serde(rename = "openai")]
+    OpenAi,
+    #[serde(rename = "openai_responses")]
+    OpenAiResponses,
+    #[serde(rename = "minimax")]
+    MiniMax,
+    Moonshot,
+    Ollama,
+    #[serde(rename = "openrouter")]
+    OpenRouter,
+    XiaomiMimo,
+    #[serde(rename = "zai")]
+    ZAi,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -714,7 +730,7 @@ mod tests {
         ] {
             let mut config = default_app_config();
             config.llm_config = Some(LlmConfig {
-                provider: LlmProviderPreset::Custom,
+                provider: LlmProviderPreset::OpenAi,
                 base_url: base_url.to_string(),
                 model: model.to_string(),
             });
@@ -734,12 +750,16 @@ mod tests {
     #[test]
     fn provider_presets_have_stable_serialized_names() {
         let cases = [
-            (LlmProviderPreset::Ollama, "ollama"),
-            (LlmProviderPreset::LmStudio, "lm_studio"),
-            (LlmProviderPreset::OpenAi, "openai"),
+            (LlmProviderPreset::Anthropic, "anthropic"),
             (LlmProviderPreset::DeepSeek, "deepseek"),
-            (LlmProviderPreset::Dashscope, "dashscope"),
-            (LlmProviderPreset::Custom, "custom"),
+            (LlmProviderPreset::OpenAi, "openai"),
+            (LlmProviderPreset::OpenAiResponses, "openai_responses"),
+            (LlmProviderPreset::MiniMax, "minimax"),
+            (LlmProviderPreset::Moonshot, "moonshot"),
+            (LlmProviderPreset::Ollama, "ollama"),
+            (LlmProviderPreset::OpenRouter, "openrouter"),
+            (LlmProviderPreset::XiaomiMimo, "xiaomi_mimo"),
+            (LlmProviderPreset::ZAi, "zai"),
         ];
 
         for (preset, expected) in cases {
@@ -784,7 +804,7 @@ llm_config:
     }
 
     #[test]
-    fn complete_custom_legacy_llm_config_maps_to_custom_provider() {
+    fn complete_unknown_legacy_llm_config_maps_to_openai_provider() {
         let config = parse_config_content(
             r#"
 llm_config:
@@ -797,7 +817,7 @@ llm_config:
 
         assert_eq!(
             config.llm_config.unwrap().provider,
-            LlmProviderPreset::Custom
+            LlmProviderPreset::OpenAi
         );
     }
 
@@ -807,7 +827,7 @@ llm_config:
             r#"
 schema_version: 1
 llm_config:
-  provider: custom
+  provider: openai
   base_url: https://llm.example.test/v1
   model: private-model
   timeout_seconds: 30
@@ -818,7 +838,7 @@ llm_config:
         .unwrap();
 
         let llm = config.llm_config.unwrap();
-        assert_eq!(llm.provider, LlmProviderPreset::Custom);
+        assert_eq!(llm.provider, LlmProviderPreset::OpenAi);
         assert_eq!(llm.base_url, "https://llm.example.test/v1");
         assert_eq!(llm.model, "private-model");
         let serialized = serde_yaml::to_string(&llm).unwrap();

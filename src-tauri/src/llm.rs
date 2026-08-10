@@ -219,10 +219,9 @@ mod tests {
 
     #[test]
     fn enforces_score_threshold_locally() {
-        let result = parse_job_semantic_match(
-            "{\"matched\":true,\"score\":60,\"reason\":\"匹配度不足\"}",
-        )
-        .unwrap();
+        let result =
+            parse_job_semantic_match("{\"matched\":true,\"score\":60,\"reason\":\"匹配度不足\"}")
+                .unwrap();
         assert!(!result.matched);
     }
 }

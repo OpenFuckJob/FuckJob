@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::net::TcpListener;
 use std::{
     fs,
     future::Future,
@@ -7,8 +9,6 @@ use std::{
     sync::RwLock,
     time::Duration,
 };
-#[cfg(test)]
-use std::net::TcpListener;
 
 use anyhow::{anyhow, Result};
 use once_cell::sync::Lazy;
@@ -371,7 +371,9 @@ fn create_browser(config: &BrowserConfig) -> Result<ChromiumPage> {
                 .map(|record| managed_browser_can_be_reused(record, config, true))
                 .unwrap_or(port == DEFAULT_RPA_DEBUG_PORT);
             if !record_matches {
-                return Err(anyhow!("检测到非当前 profile 的浏览器调试端口 {port}，已拒绝启动或接管浏览器"));
+                return Err(anyhow!(
+                    "检测到非当前 profile 的浏览器调试端口 {port}，已拒绝启动或接管浏览器"
+                ));
             }
             match connect_to_browser(port) {
                 Ok(browser) => {

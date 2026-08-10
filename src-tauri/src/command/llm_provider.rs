@@ -1,7 +1,8 @@
 use crate::command::base::CommandResult;
+use crate::config::LlmProviderPreset;
 use crate::credential::{self, CredentialStatus};
 use crate::error::AppError;
-use crate::llm::service::LlmService;
+use crate::llm::service::{normalize_provider_base_url, provider_requires_key, LlmService};
 use crate::llm::types::ConnectionReport;
 use rig::client::ModelListingClient;
 use rig::model::ModelListingError;
@@ -49,30 +50,127 @@ fn validate_llm_base_url(base_url: &str) -> Result<(), AppError> {
 
 const MODEL_LIST_TIMEOUT_SECONDS: u64 = 30;
 
-async fn fetch_model_list(base_url: &str) -> Result<Vec<String>, AppError> {
+async fn fetch_model_list(
+    provider: LlmProviderPreset,
+    base_url: &str,
+) -> Result<Vec<String>, AppError> {
     validate_llm_base_url(base_url)?;
     let credential = credential::resolve()?;
-    let api_key = credential.secret().unwrap_or("noop");
-    let base_url = base_url.trim().trim_end_matches('/').to_string();
+    if provider_requires_key(&provider) && credential.secret().is_none() {
+        return Err(AppError::credential("请先配置该大模型服务的 API Key"));
+    }
+    let api_key = credential
+        .secret()
+        .unwrap_or(if matches!(provider, LlmProviderPreset::Ollama) {
+            ""
+        } else {
+            "noop"
+        });
+    let base_url = normalize_provider_base_url(&provider, base_url);
 
-    // Rig exposes model discovery through ModelListingClient. Use a provider
-    // client whose capability set implements model listing, while keeping chat
-    // traffic in LlmService on the Chat Completions client.
-    let client = rig::providers::openai::Client::builder()
-        .api_key(api_key)
-        .base_url(&base_url)
-        .build()
-        .map_err(|error| {
-            AppError::configuration("无法创建大模型客户端").with_detail(error.to_string())
-        })?;
-
-    let models = timeout(
-        Duration::from_secs(MODEL_LIST_TIMEOUT_SECONDS),
-        client.list_models(),
-    )
-    .await
-    .map_err(|_| AppError::network("获取模型列表超时"))?
-    .map_err(map_model_listing_error)?;
+    let models = match provider {
+        LlmProviderPreset::Anthropic => {
+            let client = rig::providers::anthropic::Client::builder()
+                .api_key(api_key)
+                .base_url(&base_url)
+                .build()
+                .map_err(|error| {
+                    AppError::configuration("无法创建大模型客户端").with_detail(error.to_string())
+                })?;
+            timeout(
+                Duration::from_secs(MODEL_LIST_TIMEOUT_SECONDS),
+                client.list_models(),
+            )
+            .await
+            .map_err(|_| AppError::network("获取模型列表超时"))?
+            .map_err(map_model_listing_error)?
+        }
+        LlmProviderPreset::DeepSeek => {
+            let client = rig::providers::deepseek::Client::builder()
+                .api_key(api_key)
+                .base_url(&base_url)
+                .build()
+                .map_err(|error| {
+                    AppError::configuration("无法创建大模型客户端").with_detail(error.to_string())
+                })?;
+            timeout(
+                Duration::from_secs(MODEL_LIST_TIMEOUT_SECONDS),
+                client.list_models(),
+            )
+            .await
+            .map_err(|_| AppError::network("获取模型列表超时"))?
+            .map_err(map_model_listing_error)?
+        }
+        LlmProviderPreset::OpenAi | LlmProviderPreset::OpenAiResponses => {
+            let client = rig::providers::openai::Client::builder()
+                .api_key(api_key)
+                .base_url(&base_url)
+                .build()
+                .map_err(|error| {
+                    AppError::configuration("无法创建大模型客户端").with_detail(error.to_string())
+                })?;
+            timeout(
+                Duration::from_secs(MODEL_LIST_TIMEOUT_SECONDS),
+                client.list_models(),
+            )
+            .await
+            .map_err(|_| AppError::network("获取模型列表超时"))?
+            .map_err(map_model_listing_error)?
+        }
+        LlmProviderPreset::MiniMax | LlmProviderPreset::Moonshot | LlmProviderPreset::ZAi => {
+            return Err(AppError::provider(
+                "该 provider 暂未提供模型列表接口，请手动填写模型名称",
+            ));
+        }
+        LlmProviderPreset::Ollama => {
+            let client = rig::providers::ollama::Client::builder()
+                .api_key(api_key)
+                .base_url(&base_url)
+                .build()
+                .map_err(|error| {
+                    AppError::configuration("无法创建大模型客户端").with_detail(error.to_string())
+                })?;
+            timeout(
+                Duration::from_secs(MODEL_LIST_TIMEOUT_SECONDS),
+                client.list_models(),
+            )
+            .await
+            .map_err(|_| AppError::network("获取模型列表超时"))?
+            .map_err(map_model_listing_error)?
+        }
+        LlmProviderPreset::OpenRouter => {
+            let client = rig::providers::openrouter::Client::builder()
+                .api_key(api_key)
+                .base_url(&base_url)
+                .build()
+                .map_err(|error| {
+                    AppError::configuration("无法创建大模型客户端").with_detail(error.to_string())
+                })?;
+            timeout(
+                Duration::from_secs(MODEL_LIST_TIMEOUT_SECONDS),
+                client.list_models(),
+            )
+            .await
+            .map_err(|_| AppError::network("获取模型列表超时"))?
+            .map_err(map_model_listing_error)?
+        }
+        LlmProviderPreset::XiaomiMimo => {
+            let client = rig::providers::xiaomimimo::Client::builder()
+                .api_key(api_key)
+                .base_url(&base_url)
+                .build()
+                .map_err(|error| {
+                    AppError::configuration("无法创建大模型客户端").with_detail(error.to_string())
+                })?;
+            timeout(
+                Duration::from_secs(MODEL_LIST_TIMEOUT_SECONDS),
+                client.list_models(),
+            )
+            .await
+            .map_err(|_| AppError::network("获取模型列表超时"))?
+            .map_err(map_model_listing_error)?
+        }
+    };
 
     let mut names = models
         .into_iter()
@@ -86,7 +184,10 @@ async fn fetch_model_list(base_url: &str) -> Result<Vec<String>, AppError> {
 
 fn map_model_listing_error(error: ModelListingError) -> AppError {
     match error {
-        ModelListingError::ApiError { status_code, message } => {
+        ModelListingError::ApiError {
+            status_code,
+            message,
+        } => {
             let mut mapped = match status_code {
                 401 | 403 => AppError::credential("大模型密钥无效或无权获取模型列表"),
                 404 => AppError::provider("大模型服务未提供模型列表接口，请手动填写模型名称"),
@@ -118,8 +219,11 @@ fn map_model_listing_error(error: ModelListingError) -> AppError {
 }
 
 #[tauri::command]
-pub async fn list_llm_models(base_url: String) -> CommandResult<Vec<String>> {
-    match fetch_model_list(&base_url).await {
+pub async fn list_llm_models(
+    provider: LlmProviderPreset,
+    base_url: String,
+) -> CommandResult<Vec<String>> {
+    match fetch_model_list(provider, &base_url).await {
         Ok(models) => CommandResult::ok(models),
         Err(error) => CommandResult::err(error),
     }

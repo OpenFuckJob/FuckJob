@@ -148,10 +148,7 @@ mod tests {
             &job("AI Agent 开发工程师", "示例公司", ""),
             &config
         ));
-        assert!(!filter_verify(
-            &job("AI 产品经理", "示例公司", ""),
-            &config
-        ));
+        assert!(!filter_verify(&job("AI 产品经理", "示例公司", ""), &config));
     }
 
     #[test]
@@ -159,14 +156,8 @@ mod tests {
         let mut config = default_app_config();
         config.job_filter_config.company_keywords = vec!["科技".to_string()];
 
-        assert!(filter_verify(
-            &job("Agent 开发", "示例科技", ""),
-            &config
-        ));
-        assert!(!filter_verify(
-            &job("Agent 开发", "示例咨询", ""),
-            &config
-        ));
+        assert!(filter_verify(&job("Agent 开发", "示例科技", ""), &config));
+        assert!(!filter_verify(&job("Agent 开发", "示例咨询", ""), &config));
     }
 
     #[test]

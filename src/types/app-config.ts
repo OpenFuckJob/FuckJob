@@ -56,12 +56,16 @@ export interface PlatformFilterConfig {
 }
 
 export type LlmProviderPreset =
-  | "ollama"
-  | "lm_studio"
-  | "openai"
+  | "anthropic"
   | "deepseek"
-  | "dashscope"
-  | "custom";
+  | "openai"
+  | "openai_responses"
+  | "minimax"
+  | "moonshot"
+  | "ollama"
+  | "openrouter"
+  | "xiaomi_mimo"
+  | "zai";
 
 export interface LlmConfig {
   provider: LlmProviderPreset;

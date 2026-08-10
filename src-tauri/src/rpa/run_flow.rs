@@ -243,10 +243,9 @@ pub fn inspect_readiness(
         config_group: Some("reply".to_string()),
     });
 
-    let semantic_filter_needed = matches!(
-        mode,
-        FlowMode::JobHunting | FlowMode::PeriodicJobHunting
-    ) && config.job_filter_config.enable_semantic_filter;
+    let semantic_filter_needed =
+        matches!(mode, FlowMode::JobHunting | FlowMode::PeriodicJobHunting)
+            && config.job_filter_config.enable_semantic_filter;
     let semantic_intent_ready = !semantic_filter_needed
         || config
             .job_filter_config
@@ -274,16 +273,12 @@ pub fn inspect_readiness(
     let llm_needed = !matches!(mode, FlowMode::SyncChatHistory)
         && (config.replay_config.enable_llm
             || config.job_filter_config.enable_semantic_filter
-            || config
-                .greet_config
-                .default_template
-                .iter()
-                .any(|resource| {
-                    matches!(
-                        resource.resource_type,
-                        crate::config::ReplayResourceType::LLM
-                    )
-                }));
+            || config.greet_config.default_template.iter().any(|resource| {
+                matches!(
+                    resource.resource_type,
+                    crate::config::ReplayResourceType::LLM
+                )
+            }));
     items.push(ReadinessItem {
         key: "llm".to_string(),
         label: "大模型".to_string(),
@@ -306,9 +301,27 @@ pub fn inspect_readiness(
         .iter()
         .any(|item| item.level == ReadinessLevel::Blocked);
     let summary = vec![
-        format!("平台：{}", match platform { PlatformKind::Boss => "BOSS 直聘", PlatformKind::Liepin => "猎聘" }),
-        format!("模式：{}", match mode { FlowMode::JobHunting => "单轮自动求职", FlowMode::ReplyUnread => "回复未读", FlowMode::SyncChatHistory => "读取聊天消息", FlowMode::PeriodicJobHunting => "周期投递" }),
-        if query.is_empty() { "岗位关键词：未设置".to_string() } else { format!("岗位关键词：{query}") },
+        format!(
+            "平台：{}",
+            match platform {
+                PlatformKind::Boss => "BOSS 直聘",
+                PlatformKind::Liepin => "猎聘",
+            }
+        ),
+        format!(
+            "模式：{}",
+            match mode {
+                FlowMode::JobHunting => "单轮自动求职",
+                FlowMode::ReplyUnread => "回复未读",
+                FlowMode::SyncChatHistory => "读取聊天消息",
+                FlowMode::PeriodicJobHunting => "周期投递",
+            }
+        ),
+        if query.is_empty() {
+            "岗位关键词：未设置".to_string()
+        } else {
+            format!("岗位关键词：{query}")
+        },
     ];
 
     ReadinessReport {

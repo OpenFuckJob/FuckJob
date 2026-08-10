@@ -235,9 +235,7 @@ pub(crate) fn parse_chat_messages(body: &str) -> Result<Vec<ChatMessage>, anyhow
                 }
                 map.values().find_map(first_attachment_name)
             }
-            serde_json::Value::Array(items) => {
-                items.iter().find_map(first_attachment_name)
-            }
+            serde_json::Value::Array(items) => items.iter().find_map(first_attachment_name),
             _ => None,
         }
     }

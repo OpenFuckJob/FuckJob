@@ -34,10 +34,7 @@ pub async fn position_say_hello(
                 .into_iter()
                 .map(|j| j.id)
                 .collect();
-            logger::info(format!(
-                "本地已存储 {} 条岗位记录",
-                processed_job_ids.len()
-            ))?;
+            logger::info(format!("本地已存储 {} 条岗位记录", processed_job_ids.len()))?;
 
             // 在 page.get 之前开始监听，捕获首次加载触发的 joblist 请求
             let joblist_listener = page.listen_url("wapi/zpgeek/search/joblist.json")?;
@@ -72,18 +69,15 @@ pub async fn position_say_hello(
                         logger::info("求职任务已结束")?;
                         return Ok(());
                     }
-                    let greet_job = match read_job_card(
-                        page,
-                        &job_card_area_ele,
-                        &processed_job_ids,
-                    ) {
-                        Ok(Some(greet_job)) => greet_job,
-                        Ok(None) => continue,
-                        Err(error) => {
-                            logger::warning(card_failure_message(&error))?;
-                            continue;
-                        }
-                    };
+                    let greet_job =
+                        match read_job_card(page, &job_card_area_ele, &processed_job_ids) {
+                            Ok(Some(greet_job)) => greet_job,
+                            Ok(None) => continue,
+                            Err(error) => {
+                                logger::warning(card_failure_message(&error))?;
+                                continue;
+                            }
+                        };
 
                     logger::info(format!(
                         "当前处理岗位:{} 公司:{}",
@@ -96,7 +90,8 @@ pub async fn position_say_hello(
                         continue;
                     }
                     if app_runtime_config.job_filter_config.enable_semantic_filter {
-                        match crate::llm::evaluate_job_match(&app_runtime_config, &greet_job).await {
+                        match crate::llm::evaluate_job_match(&app_runtime_config, &greet_job).await
+                        {
                             Ok(decision) if decision.matched => logger::info(format!(
                                 "AI 岗位复核通过（{}分）：{}",
                                 decision.score, decision.reason
@@ -117,13 +112,7 @@ pub async fn position_say_hello(
                             }
                         }
                     }
-                    match handle_greet(
-                        page,
-                        greet_job.clone(),
-                        app_runtime_config.clone(),
-                    )
-                    .await
-                    {
+                    match handle_greet(page, greet_job.clone(), app_runtime_config.clone()).await {
                         Ok(()) => {}
                         Err(error) => {
                             logger::warning(greet_failure_message(
@@ -229,8 +218,8 @@ fn read_job_card(
         .attr("href")
         .unwrap_or_default();
 
-    let job_id = extract_job_id(&format!("https://www.zhipin.com{}", job_href))
-        .map(|s| s.to_string());
+    let job_id =
+        extract_job_id(&format!("https://www.zhipin.com{}", job_href)).map(|s| s.to_string());
     if let Some(ref id) = job_id {
         if processed_job_ids.contains(id.as_str()) {
             return Ok(None);
@@ -428,8 +417,7 @@ fn greet_failure_message(title: &str, company_name: &str, error: &anyhow::Error)
     )
 }
 
-const GREET_BUTTON_SELECTOR: &str =
-    "a.op-btn.op-btn-chat, a.btn.btn-startchat";
+const GREET_BUTTON_SELECTOR: &str = "a.op-btn.op-btn-chat, a.btn.btn-startchat";
 const GREET_CONFIRM_SELECTOR: &str = "span.btn.btn-sure[ka=\"dialog_confirm\"], \
     .chat-block-container .sure-btn, .greet-boss-container .sure-btn";
 const SCROLL_BOTTOM_SCRIPT: &str = r#"
@@ -542,12 +530,7 @@ async fn handle_greet_on_work_tab(
             let data_url = btn.attr("data-url").unwrap_or_default();
             let redirect_url = btn.attr("redirect-url").unwrap_or_default();
             let ka = btn.attr("ka").unwrap_or_default();
-            if greet_button_matches_job(
-                &data_url,
-                &redirect_url,
-                &ka,
-                &greet_job.platform_job_id,
-            ) {
+            if greet_button_matches_job(&data_url, &redirect_url, &ka, &greet_job.platform_job_id) {
                 current_job_ready = true;
                 target_btn = Some(btn);
                 break;
@@ -563,11 +546,8 @@ async fn handle_greet_on_work_tab(
         ));
     }
 
-    let btn = target_btn
-        .ok_or_else(|| anyhow::anyhow!("未找到当前岗位的立即沟通按钮"))?;
-    let chat_redirect_url = btn
-        .attr("redirect-url")
-        .unwrap_or_default();
+    let btn = target_btn.ok_or_else(|| anyhow::anyhow!("未找到当前岗位的立即沟通按钮"))?;
+    let chat_redirect_url = btn.attr("redirect-url").unwrap_or_default();
     let mut chat_redirect_url = valid_chat_redirect_url(&chat_redirect_url);
 
     let data_isfriend = btn
@@ -654,12 +634,7 @@ async fn handle_greet_on_work_tab(
             let data_url = current_btn.attr("data-url").unwrap_or_default();
             let redirect_url = current_btn.attr("redirect-url").unwrap_or_default();
             let ka = current_btn.attr("ka").unwrap_or_default();
-            if greet_button_matches_job(
-                &data_url,
-                &redirect_url,
-                &ka,
-                &greet_job.platform_job_id,
-            ) {
+            if greet_button_matches_job(&data_url, &redirect_url, &ka, &greet_job.platform_job_id) {
                 chat_redirect_url = valid_chat_redirect_url(&redirect_url).or(chat_redirect_url);
                 if current_btn
                     .attr("data-isfriend")
@@ -837,16 +812,15 @@ mod tests {
             valid_chat_redirect_url("/web/geek/chat?id=conversation-123"),
             Some("https://www.zhipin.com/web/geek/chat?id=conversation-123".to_string())
         );
-        assert_eq!(
-            valid_chat_redirect_url("/web/geek/jobs"),
-            None
-        );
+        assert_eq!(valid_chat_redirect_url("/web/geek/jobs"), None);
     }
 
     #[test]
     fn current_page_navigation_to_chat_is_a_success_signal() {
         assert!(is_chat_page_url("https://www.zhipin.com/web/geek/chat"));
-        assert!(is_chat_page_url("https://www.zhipin.com/web/geek/chat?id=conversation-123"));
+        assert!(is_chat_page_url(
+            "https://www.zhipin.com/web/geek/chat?id=conversation-123"
+        ));
         assert!(!is_chat_page_url("https://www.zhipin.com/web/geek/jobs"));
     }
 
@@ -858,7 +832,9 @@ mod tests {
     #[test]
     fn greeting_success_dialog_is_not_treated_as_a_failure() {
         assert!(is_greet_success_dialog_text("已向BOSS发送消息"));
-        assert!(is_greet_success_dialog_text("提示：已向BOSS发送消息，请等待回复"));
+        assert!(is_greet_success_dialog_text(
+            "提示：已向BOSS发送消息，请等待回复"
+        ));
         assert!(!is_greet_success_dialog_text("今日沟通次数已达上限"));
     }
 
