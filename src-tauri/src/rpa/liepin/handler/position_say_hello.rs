@@ -79,10 +79,7 @@ pub async fn position_say_hello(config: &AppRuntimeConfig) -> Result<(), anyhow:
 
                     let filter_decision = verify::filter_decision(&job, &config);
                     if !filter_decision.matched {
-                        logger::info(format!(
-                            "猎聘岗位不匹配，跳过：{}",
-                            filter_decision.reason
-                        ))?;
+                        logger::info(format!("猎聘岗位不匹配，跳过：{}", filter_decision.reason))?;
                         continue;
                     }
                     if config.job_filter_config.enable_semantic_filter {

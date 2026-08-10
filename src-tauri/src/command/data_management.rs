@@ -153,8 +153,7 @@ fn inspect_data_bundle_inner(archive_path: &str) -> Result<ExportManifest> {
     let mut content = String::new();
     manifest_file.read_to_string(&mut content)?;
 
-    let manifest: ExportManifest =
-        serde_json::from_str(&content).context("解析备份元数据失败")?;
+    let manifest: ExportManifest = serde_json::from_str(&content).context("解析备份元数据失败")?;
     Ok(manifest)
 }
 
@@ -207,9 +206,10 @@ fn import_data_bundle_inner(
                     result_stats.job_details_added = count;
                 }
                 ImportStrategy::Merge => {
-                    let batch = job_detail_dao::batch_upsert(incoming_jobs, |existing, incoming| {
-                        incoming.updated_at >= existing.updated_at
-                    })?;
+                    let batch =
+                        job_detail_dao::batch_upsert(incoming_jobs, |existing, incoming| {
+                            incoming.updated_at >= existing.updated_at
+                        })?;
                     result_stats.job_details_added = batch.added;
                     result_stats.job_details_updated = batch.updated;
                 }
@@ -263,9 +263,13 @@ fn import_data_bundle_inner(
     if let Ok(mut file) = zip.by_name("data/user_resumes.json") {
         let mut content = String::new();
         file.read_to_string(&mut content)?;
-        if let Ok(incoming_resumes) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&content) {
+        if let Ok(incoming_resumes) =
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&content)
+        {
             let target_file = user_resumes_path(&data_dir);
-            let mut local_resumes: serde_json::Map<String, serde_json::Value> = if target_file.exists() {
+            let mut local_resumes: serde_json::Map<String, serde_json::Value> = if target_file
+                .exists()
+            {
                 let text = fs::read_to_string(&target_file).unwrap_or_else(|_| "{}".to_string());
                 serde_json::from_str(&text).unwrap_or_default()
             } else {
@@ -273,7 +277,9 @@ fn import_data_bundle_inner(
             };
 
             for (key, val) in incoming_resumes {
-                if !local_resumes.contains_key(&key) || matches!(strategy, ImportStrategy::Overwrite) {
+                if !local_resumes.contains_key(&key)
+                    || matches!(strategy, ImportStrategy::Overwrite)
+                {
                     local_resumes.insert(key, val);
                     result_stats.user_resumes_added += 1;
                 }
