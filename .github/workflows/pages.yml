@@ -11,10 +11,12 @@ on:
 
   workflow_dispatch:
 
+
 permissions:
   contents: read
   pages: write
   id-token: write
+
 
 concurrency:
   group: github-pages
@@ -23,11 +25,13 @@ concurrency:
 
 jobs:
   deploy:
+
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
 
     runs-on: ubuntu-latest
+
 
     steps:
 
@@ -36,29 +40,33 @@ jobs:
         uses: actions/checkout@v4
 
 
-      # 构建静态站点
+      # 构建 GitHub Pages 静态目录
       - name: Prepare static site
         run: |
           rm -rf dist
-          mkdir -p dist/docs
 
+          mkdir -p dist/docs/images
+
+          # 首页
           cp site/index.html dist/index.html
-          cp -r docs/images dist/docs/images
+
+          # 图片资源
+          cp -r docs/images/* dist/docs/images/
 
 
-      # 初始化 Pages
+      # 配置 GitHub Pages
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
 
-      # 上传静态文件
+      # 上传 Pages 文件
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist
 
 
-      # 发布
+      # 部署
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
