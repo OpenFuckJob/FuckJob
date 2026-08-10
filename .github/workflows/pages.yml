@@ -5,48 +5,68 @@ on:
     branches:
       - master
     paths:
-      - site/**
-      - docs/images/**
-      - .github/workflows/pages.yml
+      - "site/**"
+      - "docs/images/**"
+      - ".github/workflows/pages.yml"
+
   workflow_dispatch:
+
 
 permissions:
   contents: read
   pages: write
   id-token: write
 
+
 concurrency:
   group: github-pages
   cancel-in-progress: false
 
+
 jobs:
   deploy:
+
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+
     runs-on: ubuntu-latest
 
+
     steps:
+
+      # 拉取代码
       - name: Checkout
         uses: actions/checkout@v4
 
+
+      # 构建 GitHub Pages 静态目录
       - name: Prepare static site
         run: |
           rm -rf dist
-          mkdir -p dist/docs
-          cp site/index.html dist/index.html
-          cp -r docs/images dist/docs/images
 
+          mkdir -p dist/docs/images
+
+          # 首页
+          cp site/index.html dist/index.html
+
+          # 图片资源
+          cp -r docs/images/* dist/docs/images/
+
+
+      # 配置 GitHub Pages
       - name: Setup Pages
         uses: actions/configure-pages@v5
-        with:
-          enablement: true
 
+
+      # 上传 Pages 文件
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist
 
+
+      # 部署
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
