@@ -137,6 +137,9 @@ export interface ConfigPageProps {
   onOpenLlmConfig: () => void;
   updateLlm: (next: AppRuntimeConfig["llm_config"]) => void;
   persistLlm: (next: AppRuntimeConfig["llm_config"]) => Promise<boolean>;
+  updateLlmFallbacks: (next: AppRuntimeConfig["llm_fallbacks"]) => void;
+  updateLlmRetryConfig: (next: AppRuntimeConfig["llm_retry_config"]) => void;
+  persistConfig: () => Promise<boolean>;
   updateJobFilter: (next: Partial<JobFilterConfig>) => void;
   updateGreet: (next: Partial<GreetConfig>) => void;
   updateGreetDefaultResource: (
@@ -474,7 +477,19 @@ export function ConfigPage(props: ConfigPageProps) {
   const renderContent = () => {
     switch (activeGroup) {
       case "llm":
-        return <LlmConfigPanel config={props.config.llm_config} onChange={props.updateLlm} onPersist={props.persistLlm} />;
+        return (
+          <LlmConfigPanel
+            config={props.config.llm_config}
+            onChange={props.updateLlm}
+            onPersist={props.persistLlm}
+            onPersistAll={props.persistConfig}
+            fallbacks={props.config.llm_fallbacks}
+            onFallbacksChange={props.updateLlmFallbacks}
+            retryConfig={props.config.llm_retry_config}
+            onRetryConfigChange={props.updateLlmRetryConfig}
+            dirty={props.dirty}
+          />
+        );
       case "data":
         return <DataManagementPanel />;
       case "job":
