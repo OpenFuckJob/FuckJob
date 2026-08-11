@@ -15,5 +15,7 @@ export const getLlmCredentialStatusFor = (entryId: string) => invoke<LlmCommandR
 export const setLlmApiKeyFor = (entryId: string, apiKey: string) => invoke<LlmCommandResult<LlmCredentialStatus>>('set_llm_api_key_for', { entryId, apiKey })
 export const clearLlmApiKeyFor = (entryId: string) => invoke<LlmCommandResult<LlmCredentialStatus>>('clear_llm_api_key_for', { entryId })
 export const listLlmCredentialStatus = (entryIds: string[]) => invoke<LlmCommandResult<LlmEntryCredentialStatus[]>>('list_llm_credential_status', { entryIds })
+// 密钥明文不允许离开 Rust，调整主用/备用顺序时的密钥对调只能整体交给后端完成
+export const swapLlmCredentials = (entryA: string, entryB: string) => invoke<LlmCommandResult<LlmEntryCredentialStatus[]>>('swap_llm_credentials', { entryA, entryB })
 export const testLlmEntryConnection = (entryId: string) => invoke<LlmCommandResult<LlmConnectionReport>>('test_llm_entry_connection', { entryId })
 export const listLlmModelsFor = (entryId: string) => invoke<LlmCommandResult<string[]>>('list_llm_models_for', { entryId })

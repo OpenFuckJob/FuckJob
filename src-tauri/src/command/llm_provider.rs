@@ -78,6 +78,24 @@ pub fn clear_llm_api_key_for(entry_id: String) -> CommandResult<CredentialStatus
     to_command_result(clear_entry_api_key(&entry_id))
 }
 
+/// 互换两个服务已保存的密钥，用于降级链上调整主用/备用顺序。
+///
+/// 密钥明文不允许离开 Rust，因此搬运必须在后端整体完成，
+/// 前端只负责发起并接收交换后的状态。
+#[tauri::command]
+pub fn swap_llm_credentials(
+    entry_a: String,
+    entry_b: String,
+) -> CommandResult<Vec<LlmEntryCredentialStatus>> {
+    let result = credential::swap_entries(&entry_a, &entry_b).and_then(|()| {
+        collect_entry_credential_status(
+            &[entry_a.clone(), entry_b.clone()],
+            credential::status_for_entry,
+        )
+    });
+    to_command_result(result)
+}
+
 /// 批量查询多个服务的密钥状态，供配置页列表一次性渲染。
 /// 返回结果与入参等长且顺序一致，前端可以直接按下标对齐。
 #[tauri::command]

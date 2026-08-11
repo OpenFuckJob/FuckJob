@@ -144,25 +144,34 @@ describe("设为主用", () => {
     { id: "backup-b", label: null, provider: "moonshot", base_url: "https://b.test", model: "model-b", enabled: false },
   ];
 
-  it("交换配置内容，并给被降级的主用服务分配全新标识", () => {
-    const result = promoteFallbackToPrimary(primary, fallbacks, 0, "fresh-id");
+  it("主用槽位与被提升的备用槽位对调内容，标识随槽位保持不变", () => {
+    const result = promoteFallbackToPrimary(primary, fallbacks, 0);
 
     expect(result?.primary).toEqual({ provider: "deepseek", base_url: "https://a.test", model: "model-a" });
     expect(result?.fallbacks[0]).toEqual({
-      id: "fresh-id",
+      id: "backup-a",
       label: null,
       provider: "openai",
       base_url: "https://primary.test/v1",
       model: "primary-model",
       enabled: true,
     });
-    // 被降级的服务绝不能沿用被提升条目的标识，否则会直接读到别人的 API Key
-    expect(result?.fallbacks[0].id).not.toBe("backup-a");
+    // 密钥由后端按这两个标识一并对调，因此被降级的服务沿用原标识即可，
+    // 既不会读到别人的密钥，也不需要用户重新填写
+    expect(result?.swappedId).toBe("backup-a");
     expect(result?.fallbacks[1]).toBe(fallbacks[1]);
   });
 
+  it("未被选中的备用服务不受影响", () => {
+    const result = promoteFallbackToPrimary(primary, fallbacks, 1);
+
+    expect(result?.swappedId).toBe("backup-b");
+    expect(result?.fallbacks[0]).toBe(fallbacks[0]);
+    expect(result?.fallbacks[1].model).toBe("primary-model");
+  });
+
   it("索引越界时不做任何交换", () => {
-    expect(promoteFallbackToPrimary(primary, fallbacks, 5, "fresh-id")).toBeNull();
+    expect(promoteFallbackToPrimary(primary, fallbacks, 5)).toBeNull();
   });
 });
 

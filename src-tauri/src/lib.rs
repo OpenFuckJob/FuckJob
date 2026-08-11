@@ -79,6 +79,7 @@ pub fn run() {
             command::llm_provider::set_llm_api_key_for,
             command::llm_provider::clear_llm_api_key_for,
             command::llm_provider::list_llm_credential_status,
+            command::llm_provider::swap_llm_credentials,
             command::llm_provider::test_llm_entry_connection,
             command::llm_provider::list_llm_models_for,
             command::mock_interview::stream_mock_interview_question,

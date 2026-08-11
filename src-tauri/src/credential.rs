@@ -150,6 +150,56 @@ pub fn delete_for_entry(entry_id: &str) -> Result<(), AppError> {
     delete_with_backend(&KeyringCredentialBackend::for_entry(entry_id))
 }
 
+/// 互换两个服务已保存的密钥。
+///
+/// 降级链上调整主用/备用顺序时，密钥必须跟着各自的服务一起走。
+/// 由于密钥明文不允许离开 Rust（`ResolvedCredential` 刻意不实现 `Serialize`），
+/// 这件事只能在这里整体完成，不能拆成前端读取再写回。
+pub fn swap_entries(entry_a: &str, entry_b: &str) -> Result<(), AppError> {
+    if entry_a == entry_b {
+        return Ok(());
+    }
+    swap_with_backends(
+        &KeyringCredentialBackend::for_entry(entry_a),
+        &KeyringCredentialBackend::for_entry(entry_b),
+    )
+}
+
+pub fn swap_with_backends<A: CredentialBackend + ?Sized, B: CredentialBackend + ?Sized>(
+    backend_a: &A,
+    backend_b: &B,
+) -> Result<(), AppError> {
+    // 只搬运存放在系统凭证里的密钥。环境变量兜底得到的值不属于任何一个条目，
+    // 把它写进 keyring 会凭空生成一份用户从未保存过的副本。
+    let secret_a = backend_a.get()?;
+    let secret_b = backend_b.get()?;
+
+    if secret_a.is_none() && secret_b.is_none() {
+        return Ok(());
+    }
+
+    apply_secret(backend_a, secret_b.as_deref())?;
+
+    // 第二步失败时把第一步改回去，避免出现「A 拿到了 B 的密钥，B 的还在原地」
+    // 这种两个服务共用同一把密钥的中间态。
+    if let Err(error) = apply_secret(backend_b, secret_a.as_deref()) {
+        let _ = apply_secret(backend_a, secret_a.as_deref());
+        return Err(error);
+    }
+
+    Ok(())
+}
+
+fn apply_secret<B: CredentialBackend + ?Sized>(
+    backend: &B,
+    secret: Option<&str>,
+) -> Result<(), AppError> {
+    match secret {
+        Some(secret) => backend.set(secret),
+        None => backend.delete(),
+    }
+}
+
 pub fn resolve_with_environment<B: CredentialBackend + ?Sized>(
     backend: &B,
     environment: Option<&str>,
@@ -298,6 +348,82 @@ mod tests {
             *self.value.borrow_mut() = None;
             Ok(())
         }
+    }
+
+    struct FailingSetBackend {
+        value: RefCell<Option<String>>,
+    }
+
+    impl CredentialBackend for FailingSetBackend {
+        fn get(&self) -> Result<Option<String>, AppError> {
+            Ok(self.value.borrow().clone())
+        }
+
+        fn set(&self, _secret: &str) -> Result<(), AppError> {
+            Err(AppError::credential("写入凭证失败"))
+        }
+
+        fn delete(&self) -> Result<(), AppError> {
+            Err(AppError::credential("删除凭证失败"))
+        }
+    }
+
+    #[test]
+    fn swapping_moves_each_secret_to_the_other_entry() {
+        let a = FakeBackend::with_value(Some("secret-a"));
+        let b = FakeBackend::with_value(Some("secret-b"));
+
+        swap_with_backends(&a, &b).unwrap();
+
+        assert_eq!(a.value.borrow().as_deref(), Some("secret-b"));
+        assert_eq!(b.value.borrow().as_deref(), Some("secret-a"));
+    }
+
+    #[test]
+    fn swapping_with_one_side_unset_moves_the_absence_too() {
+        let a = FakeBackend::with_value(Some("secret-a"));
+        let b = FakeBackend::with_value(None);
+
+        swap_with_backends(&a, &b).unwrap();
+
+        // 未配置密钥的一侧不能凭空得到一份，否则两个服务会共用同一把密钥
+        assert_eq!(a.value.borrow().as_deref(), None);
+        assert_eq!(b.value.borrow().as_deref(), Some("secret-a"));
+    }
+
+    #[test]
+    fn swapping_two_empty_entries_is_a_noop() {
+        let a = FakeBackend::with_value(None);
+        let b = FakeBackend::with_value(None);
+
+        swap_with_backends(&a, &b).unwrap();
+
+        assert_eq!(a.value.borrow().as_deref(), None);
+        assert_eq!(b.value.borrow().as_deref(), None);
+    }
+
+    #[test]
+    fn swapping_rolls_back_when_the_second_write_fails() {
+        let a = FakeBackend::with_value(Some("secret-a"));
+        let b = FailingSetBackend {
+            value: RefCell::new(Some("secret-b".to_string())),
+        };
+
+        let error = swap_with_backends(&a, &b).unwrap_err();
+
+        assert!(error.message.contains("凭证"));
+        // A 必须被还原成自己的密钥，不能停在「持有 B 的密钥」这种中间态
+        assert_eq!(a.value.borrow().as_deref(), Some("secret-a"));
+        assert_eq!(b.value.borrow().as_deref(), Some("secret-b"));
+    }
+
+    #[test]
+    fn read_failure_aborts_before_touching_anything() {
+        let a = FakeBackend::with_get_error("读取失败");
+        let b = FakeBackend::with_value(Some("secret-b"));
+
+        assert!(swap_with_backends(&a, &b).is_err());
+        assert_eq!(b.value.borrow().as_deref(), Some("secret-b"));
     }
 
     #[test]

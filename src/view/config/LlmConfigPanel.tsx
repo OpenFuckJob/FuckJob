@@ -20,6 +20,7 @@ import {
   listLlmModelsFor,
   setLlmApiKey,
   setLlmApiKeyFor,
+  swapLlmCredentials,
   testLlmConnection,
   testLlmEntryConnection,
 } from "@/lib/llmConfig";
@@ -85,19 +86,20 @@ export const moveFallback = <T,>(items: T[], from: number, to: number): T[] => {
 
 /**
  * 把某个备用服务提升为主用服务。
- * 被降级的原主用服务必须拿到一个全新的标识：如果让它沿用被提升条目的标识，
- * 就会直接读到别人的 API Key。调用方需要同时清除这两处已保存的密钥。
+ *
+ * 被降级的原主用服务沿用被提升条目的标识，两个服务恰好构成一次位置对调：
+ * 主用槽位与该备用槽位互换内容。密钥同样按这两个标识对调（由后端的
+ * swap_llm_credentials 完成），因此不存在密钥错配，也不需要用户重填。
  */
 export const promoteFallbackToPrimary = (
   primary: LlmConfig,
   fallbacks: LlmProviderEntry[],
   index: number,
-  demotedId: string,
-): { primary: LlmConfig; fallbacks: LlmProviderEntry[] } | null => {
+): { primary: LlmConfig; fallbacks: LlmProviderEntry[]; swappedId: string } | null => {
   const target = fallbacks[index];
   if (!target) return null;
   const demoted: LlmProviderEntry = {
-    id: demotedId,
+    id: target.id,
     label: null,
     provider: primary.provider,
     base_url: primary.base_url,
@@ -107,6 +109,7 @@ export const promoteFallbackToPrimary = (
   return {
     primary: { provider: target.provider, base_url: target.base_url, model: target.model },
     fallbacks: fallbacks.map((item, i) => (i === index ? demoted : item)),
+    swappedId: target.id,
   };
 };
 
@@ -156,7 +159,6 @@ export function LlmConfigPanel({
 }: LlmConfigPanelProps) {
   const [credentials, setCredentials] = useState<Record<string, LlmCredentialStatus>>({});
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
-  const [pendingKeyIds, setPendingKeyIds] = useState<string[]>([]);
   const [models, setModels] = useState<Record<string, string[]>>({});
   const [modelsLoadingId, setModelsLoadingId] = useState<string | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
@@ -224,7 +226,6 @@ export function LlmConfigPanel({
     if (result.success && status) {
       setCredentials((current) => ({ ...current, [entryId]: status }));
       changeApiKey(entryId, "");
-      setPendingKeyIds((ids) => ids.filter((id) => id !== entryId));
       setFeedback({ type: "success", text: "凭据已安全保存，可展开模型列表获取模型" });
     } else setFeedback({ type: "error", text: resultError(result.error, "保存凭据失败") });
   };
@@ -319,7 +320,6 @@ export function LlmConfigPanel({
       onOk: async () => {
         await clearLlmApiKeyFor(entry.id).catch(() => undefined);
         onFallbacksChange?.(chain.filter((_, i) => i !== index));
-        setPendingKeyIds((ids) => ids.filter((id) => id !== entry.id));
         setFeedback({ type: "success", text: `已删除「${fallbackTitle(entry, index)}」及其 API Key` });
       },
     });
@@ -340,36 +340,41 @@ export function LlmConfigPanel({
         <Space direction="vertical" size="small">
           <Typography.Text>它会移到第 1 位成为主用服务，当前的主用服务降级为备用 {index + 1}。</Typography.Text>
           <Typography.Text>
-            API Key 按服务标识独立存储，交换位置不会搬运密钥。为避免密钥错配到别的服务，交换时会清除这两个服务已保存的 API Key，需要你分别重新填写并保存。
+            两个服务已保存的 API Key 会跟随各自的服务一起对调，不需要重新填写。
           </Typography.Text>
           <Typography.Text type="secondary">
-            若主用服务的密钥来自环境变量，该变量仍会继续对新的主用服务生效。
+            若原主用服务的密钥来自环境变量，该变量只对主用服务生效，交换后会继续作用于新的主用服务，降级下来的服务需要单独填写密钥。
           </Typography.Text>
         </Space>
       ),
-      okText: "交换并重新填写密钥",
+      okText: "交换",
       cancelText: "取消",
       onOk: async () => {
-        // 先算出交换结果，确认可行再清密钥。反过来的话一旦交换失败，
-        // 用户的两个密钥已经被清掉了，白白丢失。
-        const swapped = promoteFallbackToPrimary(config, chain, index, createLlmEntryId());
+        // 先算出交换结果，确认可行再动密钥；反过来一旦交换失败，
+        // 密钥已经被搬走，配置却没变，两边就对不上了。
+        const swapped = promoteFallbackToPrimary(config, chain, index);
         if (!swapped) return;
-        await Promise.all([
-          clearLlmApiKey().catch(() => undefined),
-          clearLlmApiKeyFor(entry.id).catch(() => undefined),
-        ]);
-        const demotedId = swapped.fallbacks[index].id;
+        // 密钥明文不能进入前端，对调只能整体交给后端完成。
+        const statuses = await swapLlmCredentials(PRIMARY_LLM_ENTRY_ID, swapped.swappedId)
+          .then((result) => (result.success && Array.isArray(result.data) ? result.data : null))
+          .catch(() => null);
+        if (!statuses) {
+          setFeedback({ type: "error", text: "交换 API Key 失败，已取消本次调整，配置保持不变。" });
+          return;
+        }
         onChange(swapped.primary);
         onFallbacksChange?.(swapped.fallbacks);
         setCredentials((current) => ({
           ...current,
-          [PRIMARY_LLM_ENTRY_ID]: { configured: false, source: "none" },
-          [demotedId]: { configured: false, source: "none" },
+          ...Object.fromEntries(
+            statuses.map((status) => [
+              status.entry_id,
+              { configured: status.configured, source: status.source },
+            ]),
+          ),
         }));
         setModels({});
-        setPendingKeyIds([PRIMARY_LLM_ENTRY_ID, demotedId]);
-        setActiveKeys((keys) => [...keys.filter((key) => key !== entry.id), demotedId]);
-        setFeedback({ type: "info", text: "已交换主用与备用服务，请分别重新填写两者的 API Key 并保存。" });
+        setFeedback({ type: "success", text: "已交换主用与备用服务，API Key 已随服务一并对调。" });
       },
     });
   };
@@ -403,15 +408,6 @@ export function LlmConfigPanel({
           />
           <Button style={{ marginTop: 8 }} loading={loadingModels} onClick={() => void fetchModels(entryId, true)}>刷新模型列表</Button>
         </Form.Item>
-        {pendingKeyIds.includes(entryId) && (
-          <Alert
-            style={{ marginBottom: 12 }}
-            type="warning"
-            showIcon
-            message="该服务的 API Key 待重新填写"
-            description="交换主用/备用位置后密钥不会跟随搬运，请在下方重新填写并保存，否则该服务无法调用。"
-          />
-        )}
         <Typography.Text type="secondary">
           凭据状态：{credential?.configured ? `已配置（${credentialSourceText[credential.source]}）` : "未配置"}。应用不会读取或显示明文。
         </Typography.Text>
@@ -459,7 +455,6 @@ export function LlmConfigPanel({
                     <Tag>备用 {index + 1}</Tag>
                     <Typography.Text strong>{fallbackTitle(entry, index)}</Typography.Text>
                     {!entry.enabled && <Tag>已停用</Tag>}
-                    {pendingKeyIds.includes(entry.id) && <Tag color="warning">密钥待确认</Tag>}
                   </Space>
                 ),
                 extra: (
