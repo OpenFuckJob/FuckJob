@@ -2,7 +2,7 @@ use crate::command::base::CommandResult;
 use crate::config;
 use crate::dao::model::{ChatMessageRecord, InterviewJobAnalysis, JobDetail};
 use crate::dao::{analysis_dao, chat_message_dao, job_detail_dao};
-use crate::llm::service::LlmService;
+use crate::llm::service::LlmChainService;
 use chrono::{Duration, Local, NaiveDate, NaiveDateTime, TimeZone};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -506,11 +506,8 @@ pub async fn job_analyze(
         "background_context": background_context,
         "chat_context": chat_context,
     });
-    let credential = match crate::credential::resolve() {
-        Ok(v) => v,
-        Err(e) => return CommandResult::err(e),
-    };
-    let service = match LlmService::from_runtime(&app_config, &credential) {
+    // 非流式调用，走带重试与降级的链式服务
+    let service = match LlmChainService::from_runtime(&app_config) {
         Ok(v) => v,
         Err(e) => return CommandResult::err(e),
     };
