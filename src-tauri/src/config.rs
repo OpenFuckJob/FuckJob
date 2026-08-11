@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
 };
@@ -35,6 +36,8 @@ pub fn default_app_config() -> AppRuntimeConfig {
         schema_version: CURRENT_SCHEMA_VERSION,
         onboarding_completed: false,
         llm_config: None,
+        llm_fallbacks: Vec::new(),
+        llm_retry_config: LlmRetryConfig::default(),
         job_filter_config: JobFilterConfig {
             query: Some("Rust 工程师".to_string()),
             city: None,
@@ -207,6 +210,14 @@ pub(crate) fn parse_config_content(content: &str) -> Result<AppRuntimeConfig, St
     if let Some(llm_config) = value.get("llm_config") {
         config.llm_config = parse_llm_config(llm_config, config.schema_version == 0)?;
     }
+    if let Some(llm_fallbacks) = value.get("llm_fallbacks") {
+        config.llm_fallbacks =
+            serde_yaml::from_value(llm_fallbacks.clone()).map_err(|error| error.to_string())?;
+    }
+    if let Some(llm_retry_config) = value.get("llm_retry_config") {
+        config.llm_retry_config =
+            serde_yaml::from_value(llm_retry_config.clone()).map_err(|error| error.to_string())?;
+    }
     if let Some(job_filter_config) = value.get("job_filter_config") {
         config.job_filter_config =
             serde_yaml::from_value(job_filter_config.clone()).map_err(|error| error.to_string())?;
@@ -327,6 +338,9 @@ pub fn validate_and_normalize(config: &mut AppRuntimeConfig) -> Result<(), Strin
         ));
     }
 
+    normalize_llm_retry_config(&mut config.llm_retry_config);
+    normalize_llm_fallbacks(&mut config.llm_fallbacks)?;
+
     let Some(llm_config) = config.llm_config.as_mut() else {
         return Ok(());
     };
@@ -339,6 +353,65 @@ pub fn validate_and_normalize(config: &mut AppRuntimeConfig) -> Result<(), Strin
     if llm_config.model.is_empty() {
         return Err("模型名称不能为空".to_string());
     }
+    Ok(())
+}
+
+/// 重试参数超出合理区间时直接夹紧，而不是拒绝保存：
+/// 这类数值填错不影响功能正确性，没必要把用户挡在配置页外面。
+fn normalize_llm_retry_config(retry: &mut LlmRetryConfig) {
+    retry.network_retry_attempts = retry.network_retry_attempts.min(MAX_NETWORK_RETRY_ATTEMPTS);
+    retry.retry_base_delay_ms = retry
+        .retry_base_delay_ms
+        .clamp(MIN_RETRY_BASE_DELAY_MS, MAX_RETRY_BASE_DELAY_MS);
+}
+
+/// 标识只允许字母、数字、下划线和连字符：它会被拼进 keyring 条目名，
+/// 放开任意字符会让密钥存取在不同平台上行为不一致。
+fn is_valid_entry_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+fn normalize_llm_fallbacks(fallbacks: &mut Vec<LlmProviderEntry>) -> Result<(), String> {
+    for entry in fallbacks.iter_mut() {
+        entry.id = entry.id.trim().to_string();
+        entry.base_url = entry.base_url.trim().trim_end_matches('/').to_string();
+        entry.model = entry.model.trim().to_string();
+        entry.label = entry
+            .label
+            .as_deref()
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            .map(str::to_string);
+    }
+
+    // 界面上新增一行后还没来得及填写就保存，属于常见操作，静默丢弃即可；
+    // 填了一半才是真的配置错误，必须挡下来提醒用户。
+    fallbacks.retain(|entry| !(entry.base_url.is_empty() && entry.model.is_empty()));
+
+    let mut seen_ids: HashSet<&str> = HashSet::new();
+    for entry in fallbacks.iter() {
+        if !is_valid_entry_id(&entry.id) {
+            return Err("备用大模型服务的标识无效，仅支持字母、数字、下划线和连字符".to_string());
+        }
+        if entry.id == PRIMARY_LLM_ENTRY_ID {
+            return Err(format!(
+                "备用大模型服务不能使用保留标识 {PRIMARY_LLM_ENTRY_ID}"
+            ));
+        }
+        if !seen_ids.insert(entry.id.as_str()) {
+            return Err(format!("备用大模型服务标识重复：{}", entry.id));
+        }
+        if entry.base_url.is_empty() {
+            return Err("备用大模型服务的地址不能为空".to_string());
+        }
+        if entry.model.is_empty() {
+            return Err("备用大模型服务的模型名称不能为空".to_string());
+        }
+    }
+
     Ok(())
 }
 
@@ -391,8 +464,17 @@ pub struct AppRuntimeConfig {
     #[serde(default)]
     pub onboarding_completed: bool,
 
+    /// 主用大模型服务，同时也是降级链的首位
     #[serde(default)]
     pub llm_config: Option<LlmConfig>,
+
+    /// 主用服务不可用时按顺序尝试的备用服务
+    #[serde(default)]
+    pub llm_fallbacks: Vec<LlmProviderEntry>,
+
+    /// 大模型调用的重试策略
+    #[serde(default)]
+    pub llm_retry_config: LlmRetryConfig,
 
     /// 岗位筛选配置
     pub job_filter_config: JobFilterConfig,
@@ -440,6 +522,130 @@ pub struct LlmConfig {
     pub provider: LlmProviderPreset,
     pub base_url: String,
     pub model: String,
+}
+
+/// 主用服务在降级链中的保留标识。它的 API Key 仍存放在旧的 keyring 条目里，
+/// 这样老用户升级后无需重新填写密钥。
+pub const PRIMARY_LLM_ENTRY_ID: &str = "primary";
+
+/// 降级链中的一个备用大模型服务。
+/// 主用服务仍由 `llm_config` 承载，本列表按顺序作为它的后备。
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct LlmProviderEntry {
+    /// 稳定标识，用于关联独立存储的 API Key；由前端生成，重排序时不得变化
+    pub id: String,
+
+    /// 展示名称，为空时界面回退到「服务预设 + 模型名」
+    #[serde(default)]
+    pub label: Option<String>,
+
+    pub provider: LlmProviderPreset,
+
+    pub base_url: String,
+
+    pub model: String,
+
+    /// 是否参与降级链。关闭后保留配置但不再被调用
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// 大模型调用的重试策略
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct LlmRetryConfig {
+    /// 网络类瞬时故障的额外重试次数（不含首次请求），0 表示不重试
+    #[serde(default = "default_network_retry_attempts")]
+    pub network_retry_attempts: u32,
+
+    /// 首次重试前的等待毫秒数，之后按指数退避
+    #[serde(default = "default_retry_base_delay_ms")]
+    pub retry_base_delay_ms: u64,
+}
+
+fn default_network_retry_attempts() -> u32 {
+    2
+}
+
+fn default_retry_base_delay_ms() -> u64 {
+    500
+}
+
+impl Default for LlmRetryConfig {
+    fn default() -> Self {
+        Self {
+            network_retry_attempts: default_network_retry_attempts(),
+            retry_base_delay_ms: default_retry_base_delay_ms(),
+        }
+    }
+}
+
+/// 重试次数上限。再多也救不回真正故障的服务，只会拖慢整轮求职
+pub const MAX_NETWORK_RETRY_ATTEMPTS: u32 = 5;
+/// 重试等待时长的允许区间（毫秒）
+pub const MIN_RETRY_BASE_DELAY_MS: u64 = 100;
+pub const MAX_RETRY_BASE_DELAY_MS: u64 = 10_000;
+
+/// 降级链中的一环，屏蔽「主用配置」与「备用条目」之间的结构差异。
+/// 调用方只需按顺序遍历，不必关心某一环来自哪张表。
+#[derive(Debug, Clone, PartialEq)]
+pub struct LlmChainLink {
+    pub id: String,
+    pub label: Option<String>,
+    pub provider: LlmProviderPreset,
+    pub base_url: String,
+    pub model: String,
+}
+
+impl LlmChainLink {
+    /// 日志与错误提示里使用的可读名称
+    pub fn display_name(&self) -> String {
+        match self.label.as_deref() {
+            Some(label) if !label.trim().is_empty() => label.to_string(),
+            _ => self.model.clone(),
+        }
+    }
+
+    /// 是否为主用服务（其 API Key 存放在旧的 keyring 条目中）
+    pub fn is_primary(&self) -> bool {
+        self.id == PRIMARY_LLM_ENTRY_ID
+    }
+}
+
+impl AppRuntimeConfig {
+    /// 按调用顺序返回大模型降级链：主用服务在前，其后是处于启用状态的备用服务。
+    /// 未配置主用服务时返回空链，调用方据此报「请先配置大模型服务」。
+    pub fn llm_chain(&self) -> Vec<LlmChainLink> {
+        // 全局的 AI 功能门禁都以「是否配置了主用服务」为准，
+        // 这里必须保持一致：没有主用服务时整条链不可用，而不是退而使用备用服务。
+        let Some(primary) = self.llm_config.as_ref() else {
+            return Vec::new();
+        };
+
+        let mut chain = Vec::with_capacity(self.llm_fallbacks.len() + 1);
+        chain.push(LlmChainLink {
+            id: PRIMARY_LLM_ENTRY_ID.to_string(),
+            label: None,
+            provider: primary.provider.clone(),
+            base_url: primary.base_url.clone(),
+            model: primary.model.clone(),
+        });
+
+        chain.extend(self.llm_fallbacks.iter().filter(|entry| entry.enabled).map(
+            |entry| LlmChainLink {
+                id: entry.id.clone(),
+                label: entry.label.clone(),
+                provider: entry.provider.clone(),
+                base_url: entry.base_url.clone(),
+                model: entry.model.clone(),
+            },
+        ));
+
+        chain
+    }
 }
 
 // ================================
@@ -1015,6 +1221,150 @@ greet_config:
 
         let restored: GreetConfig = serde_yaml::from_str(&serialized).unwrap();
         assert!(restored.enable_llm);
+    }
+
+    fn fallback_entry(id: &str, model: &str) -> LlmProviderEntry {
+        LlmProviderEntry {
+            id: id.to_string(),
+            label: None,
+            provider: LlmProviderPreset::OpenAi,
+            base_url: "https://llm.example.test/v1".to_string(),
+            model: model.to_string(),
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn legacy_config_without_llm_chain_fields_uses_defaults() {
+        let config = parse_config_content("schema_version: 1\nllm_config: null\n").unwrap();
+
+        assert!(config.llm_fallbacks.is_empty());
+        assert_eq!(config.llm_retry_config, LlmRetryConfig::default());
+        assert_eq!(config.llm_retry_config.network_retry_attempts, 2);
+        assert_eq!(config.llm_retry_config.retry_base_delay_ms, 500);
+    }
+
+    #[test]
+    fn llm_chain_puts_primary_first_and_skips_disabled_fallbacks() {
+        let mut config = default_app_config();
+        config.llm_config = Some(LlmConfig {
+            provider: LlmProviderPreset::DeepSeek,
+            base_url: "https://api.deepseek.com".to_string(),
+            model: "deepseek-chat".to_string(),
+        });
+        let mut disabled = fallback_entry("backup-b", "gpt-4o-mini");
+        disabled.enabled = false;
+        config.llm_fallbacks = vec![fallback_entry("backup-a", "qwen-max"), disabled];
+
+        let chain = config.llm_chain();
+
+        assert_eq!(chain.len(), 2);
+        assert!(chain[0].is_primary());
+        assert_eq!(chain[0].model, "deepseek-chat");
+        assert_eq!(chain[1].id, "backup-a");
+        assert!(!chain[1].is_primary());
+    }
+
+    #[test]
+    fn llm_chain_is_empty_without_primary_service() {
+        let mut config = default_app_config();
+        config.llm_fallbacks = vec![fallback_entry("backup-a", "qwen-max")];
+
+        assert!(config.llm_chain().is_empty());
+    }
+
+    #[test]
+    fn chain_link_display_name_prefers_label_then_model() {
+        let mut config = default_app_config();
+        config.llm_config = Some(LlmConfig {
+            provider: LlmProviderPreset::OpenAi,
+            base_url: "https://llm.example.test/v1".to_string(),
+            model: "primary-model".to_string(),
+        });
+        let mut labeled = fallback_entry("backup-a", "qwen-max");
+        labeled.label = Some("阿里备用".to_string());
+        config.llm_fallbacks = vec![labeled, fallback_entry("backup-b", "gpt-4o-mini")];
+
+        let chain = config.llm_chain();
+
+        assert_eq!(chain[0].display_name(), "primary-model");
+        assert_eq!(chain[1].display_name(), "阿里备用");
+        assert_eq!(chain[2].display_name(), "gpt-4o-mini");
+    }
+
+    #[test]
+    fn retry_settings_are_clamped_instead_of_rejected() {
+        let mut config = default_app_config();
+        config.llm_retry_config = LlmRetryConfig {
+            network_retry_attempts: 99,
+            retry_base_delay_ms: 1,
+        };
+
+        validate_and_normalize(&mut config).unwrap();
+
+        assert_eq!(
+            config.llm_retry_config.network_retry_attempts,
+            MAX_NETWORK_RETRY_ATTEMPTS
+        );
+        assert_eq!(config.llm_retry_config.retry_base_delay_ms, MIN_RETRY_BASE_DELAY_MS);
+
+        config.llm_retry_config.retry_base_delay_ms = 999_999;
+        validate_and_normalize(&mut config).unwrap();
+        assert_eq!(config.llm_retry_config.retry_base_delay_ms, MAX_RETRY_BASE_DELAY_MS);
+    }
+
+    #[test]
+    fn blank_fallback_rows_are_dropped_but_half_filled_rows_are_rejected() {
+        let mut config = default_app_config();
+        let mut blank = fallback_entry("backup-blank", "");
+        blank.base_url = "   ".to_string();
+        config.llm_fallbacks = vec![blank, fallback_entry("backup-a", "qwen-max")];
+
+        validate_and_normalize(&mut config).unwrap();
+        assert_eq!(config.llm_fallbacks.len(), 1);
+        assert_eq!(config.llm_fallbacks[0].id, "backup-a");
+
+        config.llm_fallbacks = vec![fallback_entry("backup-a", "")];
+        let error = validate_and_normalize(&mut config).unwrap_err();
+        assert!(error.contains("模型名称不能为空"));
+    }
+
+    #[test]
+    fn fallback_ids_must_be_unique_safe_and_not_reserved() {
+        let mut config = default_app_config();
+
+        config.llm_fallbacks = vec![
+            fallback_entry("backup-a", "qwen-max"),
+            fallback_entry("backup-a", "gpt-4o-mini"),
+        ];
+        assert!(validate_and_normalize(&mut config)
+            .unwrap_err()
+            .contains("标识重复"));
+
+        config.llm_fallbacks = vec![fallback_entry(PRIMARY_LLM_ENTRY_ID, "qwen-max")];
+        assert!(validate_and_normalize(&mut config)
+            .unwrap_err()
+            .contains("保留标识"));
+
+        config.llm_fallbacks = vec![fallback_entry("backup a/b", "qwen-max")];
+        assert!(validate_and_normalize(&mut config)
+            .unwrap_err()
+            .contains("标识无效"));
+    }
+
+    #[test]
+    fn fallback_urls_are_trimmed_like_the_primary_service() {
+        let mut config = default_app_config();
+        let mut entry = fallback_entry("backup-a", "  qwen-max  ");
+        entry.base_url = "  https://llm.example.test/v1///  ".to_string();
+        entry.label = Some("   ".to_string());
+        config.llm_fallbacks = vec![entry];
+
+        validate_and_normalize(&mut config).unwrap();
+
+        assert_eq!(config.llm_fallbacks[0].base_url, "https://llm.example.test/v1");
+        assert_eq!(config.llm_fallbacks[0].model, "qwen-max");
+        assert_eq!(config.llm_fallbacks[0].label, None);
     }
 
     #[test]
