@@ -38,6 +38,7 @@ import type {
   FlowMode,
   JobTaskStatus,
   PlatformKind,
+  ReadinessItem,
   ReadinessReport,
 } from "../../types/rpa";
 import type { JobDetail } from "../../types/job-detail";
@@ -190,6 +191,10 @@ const WorkspacePage = ({
   const [platform, setPlatform] = useState<PlatformKind>("boss");
   const [logFilter, setLogFilter] = useState<LogFilter>("boss");
   const [readiness, setReadiness] = useState<ReadinessReport | null>(null);
+  // 弹窗打开时的预检加载态，与确认按钮的 confirmLoading 分开，避免互相干扰
+  const [readinessLoading, setReadinessLoading] = useState(false);
+  // 是否展开「已就绪」的检查明细
+  const [readyDetailsOpen, setReadyDetailsOpen] = useState(false);
   const [preflightLoading, setPreflightLoading] = useState(false);
   const [jobs, setJobs] = useState<JobDetail[]>([]);
   const [logCollapsed, setLogCollapsed] = useState(true);
@@ -326,33 +331,91 @@ const WorkspacePage = ({
     [loadJobs, messageApi, platform],
   );
 
+  /** 执行一次启动前预检，失败时给出提示并返回 null */
+  const runPreflight = useCallback(
+    async (
+      targetPlatform: PlatformKind,
+      targetMode: FlowMode,
+    ): Promise<ReadinessReport | null> => {
+      try {
+        const result = await invoke<CommandResult<ReadinessReport>>("preflight_job_task", {
+          platform: targetPlatform,
+          mode: targetMode,
+        });
+        if (!result.success || !result.data) {
+          messageApi.error(commandErrorMessage(result.error, "启动前检查失败"));
+          return null;
+        }
+        return result.data;
+      } catch (error) {
+        messageApi.error(error instanceof Error ? error.message : "启动前检查失败");
+        return null;
+      }
+    },
+    [messageApi],
+  );
+
+  /** 打开启动弹窗：只负责清空上一次的过期结果，预检交由下方 useEffect 统一触发 */
+  const openStartModal = useCallback(() => {
+    setReadiness(null);
+    setReadyDetailsOpen(false);
+    setStartModalOpen(true);
+  }, []);
+
+  /** 关闭启动弹窗并清空预检结果，避免下次打开时展示过期数据 */
+  const closeStartModal = useCallback(() => {
+    setStartModalOpen(false);
+    setReadiness(null);
+    setReadyDetailsOpen(false);
+  }, []);
+
+  // 弹窗打开期间（含打开瞬间、切换模式、切换平台）自动跑预检
+  useEffect(() => {
+    if (!startModalOpen) return;
+    let cancelled = false;
+    setReadinessLoading(true);
+    void (async () => {
+      const report = await runPreflight(platform, selectedMode);
+      if (cancelled) return;
+      setReadiness(report);
+      setReadyDetailsOpen(false);
+      setReadinessLoading(false);
+    })();
+    return () => {
+      // 快速切换模式/平台时丢弃过期响应
+      cancelled = true;
+    };
+  }, [startModalOpen, selectedMode, platform, runPreflight]);
+
   const handleStartConfirm = useCallback(async () => {
     setPreflightLoading(true);
     try {
-      const result = await invoke<CommandResult<ReadinessReport>>("preflight_job_task", {
-        platform,
-        mode: selectedMode,
-      });
-      if (!result.success || !result.data) {
-        messageApi.error(commandErrorMessage(result.error, "启动前检查失败"));
-        return;
-      }
-      setReadiness(result.data);
-      if (!result.data.ready) {
+      // 确认时再跑一次，避免用户在弹窗停留期间修改了配置
+      const report = await runPreflight(platform, selectedMode);
+      if (!report) return;
+      setReadiness(report);
+      setReadyDetailsOpen(false);
+      if (!report.ready) {
         messageApi.warning("准备工作尚未完成，请处理阻塞项后重试");
         return;
       }
-      setStartModalOpen(false);
+      closeStartModal();
       await handleRpaFlow(
         selectedMode,
         selectedMode === "periodic_job_hunting" ? intervalMinutes : undefined,
       );
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "启动前检查失败");
     } finally {
       setPreflightLoading(false);
     }
-  }, [handleRpaFlow, intervalMinutes, messageApi, platform, selectedMode]);
+  }, [
+    closeStartModal,
+    handleRpaFlow,
+    intervalMinutes,
+    messageApi,
+    platform,
+    runPreflight,
+    selectedMode,
+  ]);
 
   const handleStopTask = useCallback(async () => {
     try {
@@ -391,6 +454,50 @@ const WorkspacePage = ({
     : "当前";
   const filteredLogContent = filterLogContent(logContent, logFilter);
 
+  /* 预检明细：默认只展示需要处理的项，已就绪项折叠 */
+  const pendingReadinessItems =
+    readiness?.items.filter((item) => item.level !== "ready") ?? [];
+  const readyReadinessItems =
+    readiness?.items.filter((item) => item.level === "ready") ?? [];
+
+  const renderReadinessItem = (item: ReadinessItem) => (
+    <div
+      key={item.key}
+      style={{ display: "flex", justifyContent: "space-between", gap: 12 }}
+    >
+      <Typography.Text
+        type={
+          item.level === "blocked"
+            ? "danger"
+            : item.level === "warning"
+              ? "warning"
+              : "success"
+        }
+      >
+        {item.label}：{item.message}
+      </Typography.Text>
+      {item.level !== "ready" && item.config_group && onOpenConfig && (
+        <Button
+          size="small"
+          type="link"
+          onClick={() =>
+            onOpenConfig(
+              item.config_group as
+                | "resume"
+                | "llm"
+                | "job"
+                | "greet"
+                | "reply"
+                | "browser",
+            )
+          }
+        >
+          前往配置
+        </Button>
+      )}
+    </div>
+  );
+
   /* derived stats */
   const totalJobs = jobs.length;
   const sentCount = jobs.filter((j) => j.is_send_resume).length;
@@ -410,9 +517,9 @@ const WorkspacePage = ({
       bg: taskRunning ? "rgba(22,119,255,0.1)" : "rgba(148,163,184,0.1)",
     },
     {
-      label: "已检索岗位",
+      label: "已建联岗位",
       value: `${totalJobs}`,
-      subtitle: "累计采集",
+      subtitle: "本地已入库",
       icon: <DatabaseOutlined style={{ fontSize: 18 }} />,
       color: "#0ea5e9",
       bg: "rgba(14,165,233,0.1)",
@@ -420,7 +527,7 @@ const WorkspacePage = ({
     {
       label: "已投递简历",
       value: `${sentCount}`,
-      subtitle: totalJobs > 0 ? `占 ${((sentCount / totalJobs) * 100).toFixed(0)}%` : "暂无数据",
+      subtitle: totalJobs > 0 ? `占已建联 ${((sentCount / totalJobs) * 100).toFixed(0)}%` : "暂无数据",
       icon: <SendOutlined style={{ fontSize: 18 }} />,
       color: "#f59e0b",
       bg: "rgba(245,158,11,0.1)",
@@ -428,7 +535,7 @@ const WorkspacePage = ({
     {
       label: "沟通回复",
       value: `${repliedCount}`,
-      subtitle: `回复率 ${replyRate}`,
+      subtitle: `已建联岗位回复率 ${replyRate}`,
       icon: <MessageOutlined style={{ fontSize: 18 }} />,
       color: "#10b981",
       bg: "rgba(16,185,129,0.1)",
@@ -648,7 +755,7 @@ const WorkspacePage = ({
               icon={taskStopping ? <LoadingOutlined /> : taskRunning ? <StopOutlined /> : <PlayCircleOutlined />}
               loading={taskStopping}
               disabled={taskStopping}
-              onClick={taskRunning ? () => void handleStopTask() : () => setStartModalOpen(true)}
+              onClick={taskRunning ? () => void handleStopTask() : openStartModal}
             >
               {taskStopping ? `${runningPlatformLabel} 任务停止中...` : taskRunning ? `停止 ${runningPlatformLabel} 任务` : `启动 ${currentPlatform.shortLabel} 任务`}
             </Button>
@@ -665,9 +772,12 @@ const WorkspacePage = ({
       <Modal
         title={`启动 ${currentPlatform.label} 任务`}
         open={startModalOpen}
+        centered
+        width={640}
+        styles={{ body: { maxHeight: "60vh", overflowY: "auto", paddingRight: 4 } }}
         onOk={() => void handleStartConfirm()}
         confirmLoading={preflightLoading}
-        onCancel={() => setStartModalOpen(false)}
+        onCancel={closeStartModal}
         okText="确认启动"
         cancelText="取消"
         okButtonProps={{
@@ -678,7 +788,26 @@ const WorkspacePage = ({
         }}
       >
         <Space direction="vertical" size={16} style={{ width: "100%", paddingTop: 8 }}>
-          {readiness && (
+          {readinessLoading ? (
+            // 加载占位，保证弹窗高度不会在预检前后剧烈跳变
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                minHeight: 88,
+                padding: "12px 14px",
+                background: "#f8fafc",
+                border: "1px solid #e2e8f0",
+                borderRadius: 8,
+              }}
+            >
+              <LoadingOutlined style={{ color: "#1677ff" }} />
+              <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+                正在检查运行前置条件…
+              </Typography.Text>
+            </div>
+          ) : readiness ? (
             <Alert
               type={readiness.ready ? "success" : "warning"}
               showIcon
@@ -686,20 +815,34 @@ const WorkspacePage = ({
               description={
                 <Space direction="vertical" size={6} style={{ width: "100%", marginTop: 4 }}>
                   {readiness.summary.map((line) => <Typography.Text key={line}>{line}</Typography.Text>)}
-                  {readiness.items.map((item) => (
-                    <div key={item.key} style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-                      <Typography.Text type={item.level === "blocked" ? "danger" : item.level === "warning" ? "warning" : "success"}>
-                        {item.label}：{item.message}
-                      </Typography.Text>
-                      {item.level !== "ready" && item.config_group && onOpenConfig && (
-                        <Button size="small" type="link" onClick={() => onOpenConfig(item.config_group as "resume" | "llm" | "job" | "greet" | "reply" | "browser")}>
-                          前往配置
-                        </Button>
-                      )}
+                  {/* 默认只展示需要处理的阻塞/警告项 */}
+                  {pendingReadinessItems.map((item) => renderReadinessItem(item))}
+                  {readyReadinessItems.length > 0 ? (
+                    <div>
+                      <Button
+                        type="link"
+                        size="small"
+                        style={{ padding: 0, height: "auto", fontSize: 12 }}
+                        onClick={() => setReadyDetailsOpen((open) => !open)}
+                      >
+                        {readyDetailsOpen
+                          ? "收起已就绪的检查项"
+                          : pendingReadinessItems.length === 0
+                            ? `${readyReadinessItems.length} 项检查全部通过，查看明细`
+                            : `其余 ${readyReadinessItems.length} 项检查已就绪，查看明细`}
+                      </Button>
                     </div>
-                  ))}
+                  ) : null}
+                  {readyDetailsOpen ? readyReadinessItems.map((item) => renderReadinessItem(item)) : null}
                 </Space>
               }
+            />
+          ) : (
+            <Alert
+              type="info"
+              showIcon
+              message="暂未获取到预检结果"
+              description="可切换运行模式或点击「确认启动」重新检查运行前置条件。"
             />
           )}
           <Radio.Group
