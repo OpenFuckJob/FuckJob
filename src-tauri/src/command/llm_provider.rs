@@ -1,36 +1,173 @@
 use crate::command::base::CommandResult;
-use crate::config::LlmProviderPreset;
-use crate::credential::{self, CredentialStatus};
+use crate::config::{LlmChainLink, LlmProviderPreset, PRIMARY_LLM_ENTRY_ID};
+use crate::credential::{self, CredentialStatus, EffectiveCredentialSource, ResolvedCredential};
 use crate::error::AppError;
 use crate::llm::service::{normalize_provider_base_url, provider_requires_key, LlmService};
 use crate::llm::types::ConnectionReport;
 use rig::client::ModelListingClient;
 use rig::model::ModelListingError;
+use serde::Serialize;
 use std::time::Duration;
 use tokio::time::timeout;
 
-#[tauri::command]
-pub fn get_llm_credential_status() -> CommandResult<CredentialStatus> {
-    match credential::status() {
-        Ok(status) => CommandResult::ok(status),
+/// 批量查询降级链密钥状态时的单条结果。
+/// 比 `CredentialStatus` 多带一个 `entry_id`，让配置页可以直接按服务对号入座。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LlmEntryCredentialStatus {
+    pub entry_id: String,
+    pub configured: bool,
+    pub source: EffectiveCredentialSource,
+}
+
+/// 把内部 `Result` 收敛成命令层返回值，避免每个命令都重复 match
+fn to_command_result<T>(result: Result<T, AppError>) -> CommandResult<T> {
+    match result {
+        Ok(value) => CommandResult::ok(value),
         Err(error) => CommandResult::err(error),
     }
+}
+
+// ================================
+// 主用服务（沿用旧调用点）
+// ================================
+
+#[tauri::command]
+pub fn get_llm_credential_status() -> CommandResult<CredentialStatus> {
+    to_command_result(credential::status_for_entry(PRIMARY_LLM_ENTRY_ID))
 }
 
 #[tauri::command]
 pub fn set_llm_api_key(api_key: String) -> CommandResult<CredentialStatus> {
-    match credential::set(&api_key).and_then(|_| credential::status()) {
-        Ok(status) => CommandResult::ok(status),
-        Err(error) => CommandResult::err(error),
-    }
+    to_command_result(set_entry_api_key(PRIMARY_LLM_ENTRY_ID, &api_key))
 }
 
 #[tauri::command]
 pub fn clear_llm_api_key() -> CommandResult<CredentialStatus> {
-    match credential::delete().and_then(|_| credential::status()) {
-        Ok(status) => CommandResult::ok(status),
+    to_command_result(clear_entry_api_key(PRIMARY_LLM_ENTRY_ID))
+}
+
+// ================================
+// 按服务标识操作降级链
+// ================================
+
+fn set_entry_api_key(entry_id: &str, api_key: &str) -> Result<CredentialStatus, AppError> {
+    credential::set_for_entry(entry_id, api_key)?;
+    credential::status_for_entry(entry_id)
+}
+
+fn clear_entry_api_key(entry_id: &str) -> Result<CredentialStatus, AppError> {
+    credential::delete_for_entry(entry_id)?;
+    credential::status_for_entry(entry_id)
+}
+
+/// 查询单个服务的密钥状态
+#[tauri::command]
+pub fn get_llm_credential_status_for(entry_id: String) -> CommandResult<CredentialStatus> {
+    to_command_result(credential::status_for_entry(&entry_id))
+}
+
+/// 保存单个服务的密钥，返回保存后的状态
+#[tauri::command]
+pub fn set_llm_api_key_for(entry_id: String, api_key: String) -> CommandResult<CredentialStatus> {
+    to_command_result(set_entry_api_key(&entry_id, &api_key))
+}
+
+/// 清除单个服务的密钥，返回清除后的状态
+#[tauri::command]
+pub fn clear_llm_api_key_for(entry_id: String) -> CommandResult<CredentialStatus> {
+    to_command_result(clear_entry_api_key(&entry_id))
+}
+
+/// 批量查询多个服务的密钥状态，供配置页列表一次性渲染。
+/// 返回结果与入参等长且顺序一致，前端可以直接按下标对齐。
+#[tauri::command]
+pub fn list_llm_credential_status(
+    entry_ids: Vec<String>,
+) -> CommandResult<Vec<LlmEntryCredentialStatus>> {
+    to_command_result(collect_entry_credential_status(
+        &entry_ids,
+        credential::status_for_entry,
+    ))
+}
+
+fn collect_entry_credential_status<F>(
+    entry_ids: &[String],
+    mut status_of: F,
+) -> Result<Vec<LlmEntryCredentialStatus>, AppError>
+where
+    F: FnMut(&str) -> Result<CredentialStatus, AppError>,
+{
+    entry_ids
+        .iter()
+        .map(|entry_id| {
+            let status = status_of(entry_id)?;
+            Ok(LlmEntryCredentialStatus {
+                entry_id: entry_id.clone(),
+                configured: status.configured,
+                source: status.source,
+            })
+        })
+        .collect()
+}
+
+/// 在降级链中按标识定位一个服务。
+/// 链由已保存的配置推导而来，所以「找不到」既可能是标识写错，
+/// 也可能是用户刚在界面上填完还没保存，错误文案需要同时覆盖这两种情况。
+fn find_chain_link<'a>(
+    chain: &'a [LlmChainLink],
+    entry_id: &str,
+) -> Result<&'a LlmChainLink, AppError> {
+    chain
+        .iter()
+        .find(|link| link.id == entry_id)
+        .ok_or_else(|| {
+            AppError::configuration("未找到该大模型服务，请先保存配置后再测试；未保存或已停用的服务无法测试")
+        })
+}
+
+/// 用已保存的配置构建降级链中某个服务的实例
+fn entry_service(app_handle: tauri::AppHandle, entry_id: &str) -> Result<LlmService, AppError> {
+    let (link, credential) = resolve_chain_entry(app_handle, entry_id)?;
+    LlmService::from_chain_link(&link, &credential)
+}
+
+/// 读取已保存的配置，定位目标服务并取出它自己的密钥
+fn resolve_chain_entry(
+    app_handle: tauri::AppHandle,
+    entry_id: &str,
+) -> Result<(LlmChainLink, ResolvedCredential), AppError> {
+    let config = crate::config::load_app_config_inner(app_handle)?;
+    let chain = config.llm_chain();
+    let link = find_chain_link(&chain, entry_id)?.clone();
+    let credential = credential::resolve_for_entry(&link.id)?;
+    Ok((link, credential))
+}
+
+/// 用当前已保存的配置，测试降级链中某个服务的连通性
+#[tauri::command]
+pub async fn test_llm_entry_connection(
+    app_handle: tauri::AppHandle,
+    entry_id: String,
+) -> CommandResult<ConnectionReport> {
+    match entry_service(app_handle, &entry_id) {
+        Ok(service) => to_command_result(service.test_connection().await),
         Err(error) => CommandResult::err(error),
     }
+}
+
+/// 列出降级链中某个服务可用的模型
+#[tauri::command]
+pub async fn list_llm_models_for(
+    app_handle: tauri::AppHandle,
+    entry_id: String,
+) -> CommandResult<Vec<String>> {
+    let (link, credential) = match resolve_chain_entry(app_handle, &entry_id) {
+        Ok(resolved) => resolved,
+        Err(error) => return CommandResult::err(error),
+    };
+    to_command_result(
+        fetch_model_list_with_credential(link.provider, &link.base_url, &credential).await,
+    )
 }
 
 fn validate_llm_base_url(base_url: &str) -> Result<(), AppError> {
@@ -54,8 +191,18 @@ async fn fetch_model_list(
     provider: LlmProviderPreset,
     base_url: &str,
 ) -> Result<Vec<String>, AppError> {
+    let credential = credential::resolve_for_entry(PRIMARY_LLM_ENTRY_ID)?;
+    fetch_model_list_with_credential(provider, base_url, &credential).await
+}
+
+/// 用指定服务自己的密钥拉取模型列表。
+/// 降级链上每个服务的密钥独立存储，所以这里由调用方传入已解析的凭证。
+async fn fetch_model_list_with_credential(
+    provider: LlmProviderPreset,
+    base_url: &str,
+    credential: &ResolvedCredential,
+) -> Result<Vec<String>, AppError> {
     validate_llm_base_url(base_url)?;
-    let credential = credential::resolve()?;
     if provider_requires_key(&provider) && credential.secret().is_none() {
         return Err(AppError::credential("请先配置该大模型服务的 API Key"));
     }
@@ -243,5 +390,155 @@ pub async fn test_llm_connection(app_handle: tauri::AppHandle) -> CommandResult<
             Err(e) => CommandResult::err(e),
         },
         Err(e) => CommandResult::err(e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::AppErrorCode;
+
+    fn link(id: &str, model: &str) -> LlmChainLink {
+        LlmChainLink {
+            id: id.to_string(),
+            label: None,
+            provider: LlmProviderPreset::OpenAi,
+            base_url: "https://llm.example.test/v1".to_string(),
+            model: model.to_string(),
+        }
+    }
+
+    fn chain() -> Vec<LlmChainLink> {
+        vec![
+            link(PRIMARY_LLM_ENTRY_ID, "gpt-4o"),
+            link("backup-a", "qwen-max"),
+            link("backup-b", "gpt-4o-mini"),
+        ]
+    }
+
+    #[test]
+    fn find_chain_link_hits_primary_service() {
+        let chain = chain();
+
+        let found = find_chain_link(&chain, PRIMARY_LLM_ENTRY_ID).unwrap();
+
+        assert_eq!(found.id, PRIMARY_LLM_ENTRY_ID);
+        assert_eq!(found.model, "gpt-4o");
+        assert!(found.is_primary());
+    }
+
+    #[test]
+    fn find_chain_link_hits_fallback_service() {
+        let chain = chain();
+
+        let found = find_chain_link(&chain, "backup-b").unwrap();
+
+        assert_eq!(found.id, "backup-b");
+        assert_eq!(found.model, "gpt-4o-mini");
+        assert!(!found.is_primary());
+    }
+
+    #[test]
+    fn find_chain_link_reports_unsaved_service_clearly() {
+        let chain = chain();
+
+        // 界面上刚填完还没保存就点测试，是最常见的误用，错误文案必须点明这一点
+        let error = find_chain_link(&chain, "backup-unsaved").unwrap_err();
+
+        assert_eq!(error.code, AppErrorCode::Configuration);
+        assert!(error.message.contains("未找到该大模型服务"));
+        assert!(error.message.contains("保存"));
+    }
+
+    #[test]
+    fn find_chain_link_on_empty_chain_reports_the_same_error() {
+        let error = find_chain_link(&[], PRIMARY_LLM_ENTRY_ID).unwrap_err();
+
+        assert_eq!(error.code, AppErrorCode::Configuration);
+        assert!(error.message.contains("未找到该大模型服务"));
+    }
+
+    #[test]
+    fn batch_status_keeps_input_length_and_order() {
+        let entry_ids = vec![
+            PRIMARY_LLM_ENTRY_ID.to_string(),
+            "backup-b".to_string(),
+            "backup-a".to_string(),
+        ];
+
+        let statuses = collect_entry_credential_status(&entry_ids, |entry_id| {
+            Ok(CredentialStatus {
+                configured: entry_id != "backup-a",
+                source: if entry_id == "backup-a" {
+                    EffectiveCredentialSource::None
+                } else {
+                    EffectiveCredentialSource::Keychain
+                },
+            })
+        })
+        .unwrap();
+
+        assert_eq!(statuses.len(), entry_ids.len());
+        assert_eq!(
+            statuses.iter().map(|s| s.entry_id.as_str()).collect::<Vec<_>>(),
+            vec![PRIMARY_LLM_ENTRY_ID, "backup-b", "backup-a"]
+        );
+        assert_eq!(
+            statuses[2],
+            LlmEntryCredentialStatus {
+                entry_id: "backup-a".to_string(),
+                configured: false,
+                source: EffectiveCredentialSource::None,
+            }
+        );
+        assert!(statuses[0].configured);
+        assert!(statuses[1].configured);
+    }
+
+    #[test]
+    fn batch_status_on_empty_input_returns_empty_list() {
+        let statuses = collect_entry_credential_status(&[], |_| {
+            panic!("空入参不应触发任何凭证读取");
+        })
+        .unwrap();
+
+        assert!(statuses.is_empty());
+    }
+
+    #[test]
+    fn batch_status_propagates_the_first_failure() {
+        let entry_ids = vec![PRIMARY_LLM_ENTRY_ID.to_string(), "backup-a".to_string()];
+
+        let error = collect_entry_credential_status(&entry_ids, |entry_id| {
+            if entry_id == PRIMARY_LLM_ENTRY_ID {
+                Ok(CredentialStatus {
+                    configured: true,
+                    source: EffectiveCredentialSource::Keychain,
+                })
+            } else {
+                Err(AppError::credential("凭证读取失败"))
+            }
+        })
+        .unwrap_err();
+
+        assert_eq!(error.code, AppErrorCode::Credential);
+    }
+
+    #[test]
+    fn batch_status_never_serializes_a_secret_field() {
+        let statuses = collect_entry_credential_status(&["backup-a".to_string()], |_| {
+            Ok(CredentialStatus {
+                configured: true,
+                source: EffectiveCredentialSource::Keychain,
+            })
+        })
+        .unwrap();
+
+        let serialized = serde_json::to_string(&statuses).unwrap();
+
+        assert_eq!(
+            serialized,
+            r#"[{"entry_id":"backup-a","configured":true,"source":"keychain"}]"#
+        );
     }
 }
