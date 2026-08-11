@@ -1,3 +1,4 @@
+use crate::config::PRIMARY_LLM_ENTRY_ID;
 use crate::error::AppError;
 use serde::{Deserialize, Serialize};
 
@@ -43,12 +44,38 @@ impl ResolvedCredential {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-pub struct KeyringCredentialBackend;
+/// 降级链中每个服务的密钥独立存储。主用服务沿用旧条目名，
+/// 老用户升级后无需重新填写密钥；备用服务按标识各存一条。
+pub fn keyring_user_for_entry(entry_id: &str) -> String {
+    if entry_id == PRIMARY_LLM_ENTRY_ID {
+        KEYRING_USER.to_string()
+    } else {
+        format!("{KEYRING_USER}:{entry_id}")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyringCredentialBackend {
+    user: String,
+}
+
+impl Default for KeyringCredentialBackend {
+    fn default() -> Self {
+        Self {
+            user: KEYRING_USER.to_string(),
+        }
+    }
+}
 
 impl KeyringCredentialBackend {
+    pub fn for_entry(entry_id: &str) -> Self {
+        Self {
+            user: keyring_user_for_entry(entry_id),
+        }
+    }
+
     fn entry(&self) -> Result<keyring::Entry, AppError> {
-        keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).map_err(AppError::from)
+        keyring::Entry::new(KEYRING_SERVICE, &self.user).map_err(AppError::from)
     }
 }
 
@@ -74,21 +101,53 @@ impl CredentialBackend for KeyringCredentialBackend {
 }
 
 pub fn resolve() -> Result<ResolvedCredential, AppError> {
-    let environment = std::env::var(ENVIRONMENT_VARIABLE).ok();
-    resolve_with_environment(&KeyringCredentialBackend, environment.as_deref())
+    resolve_for_entry(PRIMARY_LLM_ENTRY_ID)
 }
 
 pub fn status() -> Result<CredentialStatus, AppError> {
-    let environment = std::env::var(ENVIRONMENT_VARIABLE).ok();
-    status_with_environment(&KeyringCredentialBackend, environment.as_deref())
+    status_for_entry(PRIMARY_LLM_ENTRY_ID)
 }
 
 pub fn set(secret: &str) -> Result<(), AppError> {
-    set_with_backend(&KeyringCredentialBackend, secret)
+    set_for_entry(PRIMARY_LLM_ENTRY_ID, secret)
 }
 
 pub fn delete() -> Result<(), AppError> {
-    delete_with_backend(&KeyringCredentialBackend)
+    delete_for_entry(PRIMARY_LLM_ENTRY_ID)
+}
+
+/// 环境变量兜底只对主用服务生效：备用服务的标识是前端生成的随机串，
+/// 让用户去猜一个带随机串的环境变量名没有任何意义。
+fn environment_for_entry(entry_id: &str) -> Option<String> {
+    if entry_id == PRIMARY_LLM_ENTRY_ID {
+        std::env::var(ENVIRONMENT_VARIABLE).ok()
+    } else {
+        None
+    }
+}
+
+pub fn resolve_for_entry(entry_id: &str) -> Result<ResolvedCredential, AppError> {
+    let environment = environment_for_entry(entry_id);
+    resolve_with_environment(
+        &KeyringCredentialBackend::for_entry(entry_id),
+        environment.as_deref(),
+    )
+}
+
+pub fn status_for_entry(entry_id: &str) -> Result<CredentialStatus, AppError> {
+    let environment = environment_for_entry(entry_id);
+    status_with_environment(
+        &KeyringCredentialBackend::for_entry(entry_id),
+        environment.as_deref(),
+    )
+}
+
+pub fn set_for_entry(entry_id: &str, secret: &str) -> Result<(), AppError> {
+    set_with_backend(&KeyringCredentialBackend::for_entry(entry_id), secret)
+}
+
+pub fn delete_for_entry(entry_id: &str) -> Result<(), AppError> {
+    delete_with_backend(&KeyringCredentialBackend::for_entry(entry_id))
 }
 
 pub fn resolve_with_environment<B: CredentialBackend + ?Sized>(
@@ -160,6 +219,39 @@ pub fn delete_with_backend<B: CredentialBackend + ?Sized>(backend: &B) -> Result
 fn normalized_secret(secret: String) -> Option<String> {
     let trimmed = secret.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+#[cfg(test)]
+mod entry_tests {
+    use super::*;
+
+    #[test]
+    fn primary_entry_keeps_the_legacy_keyring_user() {
+        // 老用户升级后不应被要求重新填写主用服务的密钥
+        assert_eq!(keyring_user_for_entry(PRIMARY_LLM_ENTRY_ID), KEYRING_USER);
+    }
+
+    #[test]
+    fn fallback_entries_get_their_own_keyring_user() {
+        assert_eq!(
+            keyring_user_for_entry("backup-a"),
+            format!("{KEYRING_USER}:backup-a")
+        );
+        assert_ne!(
+            keyring_user_for_entry("backup-a"),
+            keyring_user_for_entry("backup-b")
+        );
+    }
+
+    #[test]
+    fn environment_fallback_only_applies_to_the_primary_entry() {
+        assert!(KeyringCredentialBackend::for_entry(PRIMARY_LLM_ENTRY_ID)
+            == KeyringCredentialBackend::default());
+        assert_ne!(
+            KeyringCredentialBackend::for_entry("backup-a"),
+            KeyringCredentialBackend::default()
+        );
+    }
 }
 
 #[cfg(test)]

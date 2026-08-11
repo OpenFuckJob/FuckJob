@@ -24,7 +24,7 @@ pub fn run() {
             let config_path = config::config_path(&handle).map_err(|e| e.to_string())?;
             storage::migration::migrate_v0_to_v1(
                 &storage::migration::MigrationPaths::new(config_path, data_dir.clone()),
-                &credential::KeyringCredentialBackend,
+                &credential::KeyringCredentialBackend::default(),
             )
             .map_err(|e| e.to_string())?;
             browser::init_app_handle(handle.clone()).map_err(|e| e.to_string())?;
