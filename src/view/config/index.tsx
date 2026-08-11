@@ -326,11 +326,26 @@ export function ConfigPage(props: ConfigPageProps) {
     }
   };
 
-  const resourceTypeOptions = (enableLlm: boolean) => [
+  const resourceTypeOptions = () => [
     { value: "Text", label: "文本" },
     { value: "Image", label: "图片" },
-    ...(enableLlm ? [{ value: "LLM", label: "LLM" }] : []),
+    { value: "LLM", label: "LLM" },
   ];
+
+  const greetTemplateHasLlm =
+    props.config.greet_config.default_template.some(
+      (resource) => resource.resource_type === "LLM",
+    );
+
+  // 先追加一条默认的文本条目，再把它改成 LLM 类型（两次更新都是函数式的，按顺序生效）
+  const addGreetLlmResource = () => {
+    const appendedIndex = props.config.greet_config.default_template.length;
+    props.addGreetDefaultResource();
+    props.updateGreetDefaultResource(appendedIndex, {
+      resource_type: "LLM",
+      content: "",
+    });
+  };
 
   const renderResourceContent = (
     resource: ReplyResource,
@@ -897,7 +912,7 @@ export function ConfigPage(props: ConfigPageProps) {
                       LLM 主动沟通
                     </Text>
                     <Text className="text-slate-500 text-xs">
-                      启用后优先使用大模型生成打招呼内容
+                      需同时打开开关并填写下方提示词，才会调用大模型生成打招呼内容
                     </Text>
                   </div>
                   <Form.Item
@@ -934,6 +949,25 @@ export function ConfigPage(props: ConfigPageProps) {
                 )}
               </div>
 
+              {props.config.greet_config.enable_llm && !greetTemplateHasLlm && (
+                <Alert
+                  type="info"
+                  showIcon
+                  message="模型生成内容将作为第一条自动发送"
+                  description="当前模板里没有 LLM 条目。已启用 LLM 主动沟通时，模型生成的内容会作为第一条发送，随后再依次发送下面的文本条目。若想自己控制它在模板中的位置，可手动添加一条 LLM 内容。"
+                  action={
+                    <Button
+                      size="small"
+                      type="link"
+                      onClick={addGreetLlmResource}
+                      className="font-bold"
+                    >
+                      添加 LLM 内容
+                    </Button>
+                  }
+                />
+              )}
+
               <div className="rounded-2xl border border-slate-200/80 bg-white/85 p-6 space-y-4">
                 <div className="flex items-center justify-between">
                   <div>
@@ -941,7 +975,7 @@ export function ConfigPage(props: ConfigPageProps) {
                       默认打招呼模板
                     </Text>
                     <Text className="text-slate-500 text-xs">
-                      未启用 LLM 时使用的兜底内容
+                      按顺序发送的固定内容；启用 LLM 时，模型生成内容也会与这些条目一并发送
                     </Text>
                   </div>
                   <Button
@@ -969,9 +1003,7 @@ export function ConfigPage(props: ConfigPageProps) {
                                 value as ReplyResource["resource_type"],
                             })
                           }
-                          options={resourceTypeOptions(
-                            props.config.greet_config.enable_llm,
-                          )}
+                          options={resourceTypeOptions()}
                         />
                         {renderResourceContent(
                           resource,
@@ -1252,9 +1284,7 @@ export function ConfigPage(props: ConfigPageProps) {
                                           },
                                         )
                                       }
-                                      options={resourceTypeOptions(
-                                        props.config.replay_config.enable_llm,
-                                      )}
+                                      options={resourceTypeOptions()}
                                     />
                                     {renderResourceContent(
                                       resource,

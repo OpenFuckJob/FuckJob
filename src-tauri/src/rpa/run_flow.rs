@@ -185,16 +185,20 @@ pub fn inspect_readiness(
         config_group: Some("resume".to_string()),
     });
 
-    let greet_ready = config
+    let greet_prompt_ready = config
         .greet_config
-        .default_template
-        .iter()
-        .any(|resource| !resource.content.trim().is_empty())
-        || config
+        .reply_prompt
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
+    // 打开了 LLM 打招呼却没填提示词，模型不会被调用，属于配置不完整
+    let greet_prompt_missing = config.greet_config.enable_llm && !greet_prompt_ready;
+    let greet_ready = !greet_prompt_missing
+        && (config
             .greet_config
-            .reply_prompt
-            .as_deref()
-            .is_some_and(|value| !value.trim().is_empty());
+            .default_template
+            .iter()
+            .any(|resource| !resource.content.trim().is_empty())
+            || greet_prompt_ready);
     items.push(ReadinessItem {
         key: "greet".to_string(),
         label: "打招呼话术".to_string(),
@@ -207,6 +211,8 @@ pub fn inspect_readiness(
             "当前模式不使用打招呼话术".to_string()
         } else if greet_ready {
             "打招呼资源已配置".to_string()
+        } else if greet_prompt_missing {
+            "已启用 LLM 打招呼，请填写主动沟通提示词".to_string()
         } else {
             "请至少配置一条有效打招呼资源或提示词".to_string()
         },
@@ -273,6 +279,7 @@ pub fn inspect_readiness(
     let llm_needed = !matches!(mode, FlowMode::SyncChatHistory)
         && (config.replay_config.enable_llm
             || config.job_filter_config.enable_semantic_filter
+            || (config.greet_config.enable_llm && greet_prompt_ready)
             || config.greet_config.default_template.iter().any(|resource| {
                 matches!(
                     resource.resource_type,
@@ -525,6 +532,83 @@ async fn wait_periodic_interval(interval_minutes: u64) -> Result<(), anyhow::Err
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{default_app_config, ReplayResourceType, ReplyResource};
+
+    fn find_item<'a>(report: &'a ReadinessReport, key: &str) -> &'a ReadinessItem {
+        report
+            .items
+            .iter()
+            .find(|item| item.key == key)
+            .unwrap_or_else(|| panic!("未找到就绪项 {key}"))
+    }
+
+    fn job_hunting_report(config: &AppRuntimeConfig) -> ReadinessReport {
+        inspect_readiness(PlatformKind::Boss, FlowMode::JobHunting, config)
+    }
+
+    #[test]
+    fn greet_is_blocked_when_llm_enabled_without_prompt() {
+        let mut config = default_app_config();
+        config.job_filter_config.query = Some("Rust 工程师".to_string());
+        config.greet_config.enable_llm = true;
+        config.greet_config.reply_prompt = Some("   ".to_string());
+        config.greet_config.default_template = vec![ReplyResource {
+            resource_type: ReplayResourceType::Text,
+            content: "您好".to_string(),
+        }];
+
+        let report = job_hunting_report(&config);
+        let greet = find_item(&report, "greet");
+
+        assert_eq!(greet.level, ReadinessLevel::Blocked);
+        assert_eq!(greet.message, "已启用 LLM 打招呼，请填写主动沟通提示词");
+    }
+
+    #[test]
+    fn greet_is_ready_when_llm_enabled_with_prompt() {
+        let mut config = default_app_config();
+        config.job_filter_config.query = Some("Rust 工程师".to_string());
+        config.greet_config.enable_llm = true;
+        config.greet_config.reply_prompt = Some("请生成打招呼内容".to_string());
+
+        let report = job_hunting_report(&config);
+        let greet = find_item(&report, "greet");
+
+        assert_eq!(greet.level, ReadinessLevel::Ready);
+        assert_eq!(greet.message, "打招呼资源已配置");
+    }
+
+    #[test]
+    fn llm_is_required_when_greet_llm_enabled_with_prompt_but_no_llm_template() {
+        let mut config = default_app_config();
+        config.job_filter_config.query = Some("Rust 工程师".to_string());
+        config.greet_config.enable_llm = true;
+        config.greet_config.reply_prompt = Some("请生成打招呼内容".to_string());
+
+        let report = job_hunting_report(&config);
+        let llm = find_item(&report, "llm");
+
+        assert_eq!(llm.level, ReadinessLevel::Blocked);
+        assert_eq!(llm.message, "当前功能使用了大模型，请先配置模型服务");
+    }
+
+    #[test]
+    fn llm_is_not_required_when_greet_llm_disabled() {
+        let mut config = default_app_config();
+        config.job_filter_config.query = Some("Rust 工程师".to_string());
+        config.greet_config.enable_llm = false;
+        config.greet_config.reply_prompt = Some("请生成打招呼内容".to_string());
+        config.greet_config.default_template = vec![ReplyResource {
+            resource_type: ReplayResourceType::Text,
+            content: "您好".to_string(),
+        }];
+
+        let report = job_hunting_report(&config);
+        let llm = find_item(&report, "llm");
+
+        assert_eq!(llm.level, ReadinessLevel::Ready);
+        assert_eq!(llm.message, "当前模式不依赖大模型");
+    }
 
     #[test]
     fn flow_mode_deserializes_periodic_job_hunting() {

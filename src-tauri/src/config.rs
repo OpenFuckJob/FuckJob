@@ -24,6 +24,7 @@ pub fn config_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, AppError> {
 
 fn default_greet_config() -> GreetConfig {
     GreetConfig {
+        enable_llm: false,
         reply_prompt: None,
         default_template: Vec::new(),
     }
@@ -217,6 +218,17 @@ pub(crate) fn parse_config_content(content: &str) -> Result<AppRuntimeConfig, St
     if let Some(greet_config) = value.get("greet_config") {
         config.greet_config =
             serde_yaml::from_value(greet_config.clone()).map_err(|error| error.to_string())?;
+        // 兼容旧配置：早期版本没有 enable_llm 键，只要配过提示词就视为已启用 LLM 打招呼，
+        // 避免升级后功能被静默关闭。用户显式写了 enable_llm 时以用户设置为准。
+        if greet_config.get("enable_llm").is_none()
+            && config
+                .greet_config
+                .reply_prompt
+                .as_deref()
+                .is_some_and(|prompt| !prompt.trim().is_empty())
+        {
+            config.greet_config.enable_llm = true;
+        }
     }
     if let Some(replay_config) = value.get("replay_config") {
         config.replay_config =
@@ -589,6 +601,10 @@ pub struct MatchResult {
 // ================================
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct GreetConfig {
+    /// 是否启用大模型生成打招呼内容
+    #[serde(default)]
+    pub enable_llm: bool,
+
     /// 沟通生成提示词
     pub reply_prompt: Option<String>,
 
@@ -935,6 +951,70 @@ browser_config:
         assert_eq!(config.replay_config.templates[0].regex_rule.limit, 3);
         assert!(config.resume_config.resume_path.is_none());
         assert!(config.resume_config.resume_content.is_none());
+    }
+
+    #[test]
+    fn legacy_greet_config_without_enable_llm_but_with_prompt_is_migrated_to_enabled() {
+        let config = parse_config_content(
+            r#"
+schema_version: 1
+greet_config:
+  reply_prompt: "请根据岗位信息生成打招呼内容"
+  default_template: []
+"#,
+        )
+        .unwrap();
+
+        assert!(config.greet_config.enable_llm);
+    }
+
+    #[test]
+    fn legacy_greet_config_without_prompt_keeps_llm_disabled() {
+        for prompt in ["null", "\"\"", "\"   \""] {
+            let config = parse_config_content(&format!(
+                r#"
+schema_version: 1
+greet_config:
+  reply_prompt: {prompt}
+  default_template: []
+"#
+            ))
+            .unwrap();
+
+            assert!(
+                !config.greet_config.enable_llm,
+                "提示词为 {prompt} 时不应自动启用 LLM 打招呼"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_greet_enable_llm_false_is_respected_over_migration() {
+        let config = parse_config_content(
+            r#"
+schema_version: 1
+greet_config:
+  enable_llm: false
+  reply_prompt: "请根据岗位信息生成打招呼内容"
+  default_template: []
+"#,
+        )
+        .unwrap();
+
+        assert!(!config.greet_config.enable_llm);
+    }
+
+    #[test]
+    fn greet_enable_llm_is_serialized_back_to_yaml() {
+        let mut greet = default_greet_config();
+        greet.enable_llm = true;
+
+        let serialized = serde_yaml::to_string(&greet).unwrap();
+
+        assert!(serialized.contains("enable_llm: true"));
+
+        let restored: GreetConfig = serde_yaml::from_str(&serialized).unwrap();
+        assert!(restored.enable_llm);
     }
 
     #[test]
