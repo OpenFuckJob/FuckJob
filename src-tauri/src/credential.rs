@@ -1,3 +1,4 @@
+use crate::config::PRIMARY_LLM_ENTRY_ID;
 use crate::error::AppError;
 use serde::{Deserialize, Serialize};
 
@@ -43,12 +44,38 @@ impl ResolvedCredential {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-pub struct KeyringCredentialBackend;
+/// 降级链中每个服务的密钥独立存储。主用服务沿用旧条目名，
+/// 老用户升级后无需重新填写密钥；备用服务按标识各存一条。
+pub fn keyring_user_for_entry(entry_id: &str) -> String {
+    if entry_id == PRIMARY_LLM_ENTRY_ID {
+        KEYRING_USER.to_string()
+    } else {
+        format!("{KEYRING_USER}:{entry_id}")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyringCredentialBackend {
+    user: String,
+}
+
+impl Default for KeyringCredentialBackend {
+    fn default() -> Self {
+        Self {
+            user: KEYRING_USER.to_string(),
+        }
+    }
+}
 
 impl KeyringCredentialBackend {
+    pub fn for_entry(entry_id: &str) -> Self {
+        Self {
+            user: keyring_user_for_entry(entry_id),
+        }
+    }
+
     fn entry(&self) -> Result<keyring::Entry, AppError> {
-        keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).map_err(AppError::from)
+        keyring::Entry::new(KEYRING_SERVICE, &self.user).map_err(AppError::from)
     }
 }
 
@@ -74,21 +101,103 @@ impl CredentialBackend for KeyringCredentialBackend {
 }
 
 pub fn resolve() -> Result<ResolvedCredential, AppError> {
-    let environment = std::env::var(ENVIRONMENT_VARIABLE).ok();
-    resolve_with_environment(&KeyringCredentialBackend, environment.as_deref())
+    resolve_for_entry(PRIMARY_LLM_ENTRY_ID)
 }
 
 pub fn status() -> Result<CredentialStatus, AppError> {
-    let environment = std::env::var(ENVIRONMENT_VARIABLE).ok();
-    status_with_environment(&KeyringCredentialBackend, environment.as_deref())
+    status_for_entry(PRIMARY_LLM_ENTRY_ID)
 }
 
 pub fn set(secret: &str) -> Result<(), AppError> {
-    set_with_backend(&KeyringCredentialBackend, secret)
+    set_for_entry(PRIMARY_LLM_ENTRY_ID, secret)
 }
 
 pub fn delete() -> Result<(), AppError> {
-    delete_with_backend(&KeyringCredentialBackend)
+    delete_for_entry(PRIMARY_LLM_ENTRY_ID)
+}
+
+/// 环境变量兜底只对主用服务生效：备用服务的标识是前端生成的随机串，
+/// 让用户去猜一个带随机串的环境变量名没有任何意义。
+fn environment_for_entry(entry_id: &str) -> Option<String> {
+    if entry_id == PRIMARY_LLM_ENTRY_ID {
+        std::env::var(ENVIRONMENT_VARIABLE).ok()
+    } else {
+        None
+    }
+}
+
+pub fn resolve_for_entry(entry_id: &str) -> Result<ResolvedCredential, AppError> {
+    let environment = environment_for_entry(entry_id);
+    resolve_with_environment(
+        &KeyringCredentialBackend::for_entry(entry_id),
+        environment.as_deref(),
+    )
+}
+
+pub fn status_for_entry(entry_id: &str) -> Result<CredentialStatus, AppError> {
+    let environment = environment_for_entry(entry_id);
+    status_with_environment(
+        &KeyringCredentialBackend::for_entry(entry_id),
+        environment.as_deref(),
+    )
+}
+
+pub fn set_for_entry(entry_id: &str, secret: &str) -> Result<(), AppError> {
+    set_with_backend(&KeyringCredentialBackend::for_entry(entry_id), secret)
+}
+
+pub fn delete_for_entry(entry_id: &str) -> Result<(), AppError> {
+    delete_with_backend(&KeyringCredentialBackend::for_entry(entry_id))
+}
+
+/// 互换两个服务已保存的密钥。
+///
+/// 降级链上调整主用/备用顺序时，密钥必须跟着各自的服务一起走。
+/// 由于密钥明文不允许离开 Rust（`ResolvedCredential` 刻意不实现 `Serialize`），
+/// 这件事只能在这里整体完成，不能拆成前端读取再写回。
+pub fn swap_entries(entry_a: &str, entry_b: &str) -> Result<(), AppError> {
+    if entry_a == entry_b {
+        return Ok(());
+    }
+    swap_with_backends(
+        &KeyringCredentialBackend::for_entry(entry_a),
+        &KeyringCredentialBackend::for_entry(entry_b),
+    )
+}
+
+pub fn swap_with_backends<A: CredentialBackend + ?Sized, B: CredentialBackend + ?Sized>(
+    backend_a: &A,
+    backend_b: &B,
+) -> Result<(), AppError> {
+    // 只搬运存放在系统凭证里的密钥。环境变量兜底得到的值不属于任何一个条目，
+    // 把它写进 keyring 会凭空生成一份用户从未保存过的副本。
+    let secret_a = backend_a.get()?;
+    let secret_b = backend_b.get()?;
+
+    if secret_a.is_none() && secret_b.is_none() {
+        return Ok(());
+    }
+
+    apply_secret(backend_a, secret_b.as_deref())?;
+
+    // 第二步失败时把第一步改回去，避免出现「A 拿到了 B 的密钥，B 的还在原地」
+    // 这种两个服务共用同一把密钥的中间态。
+    if let Err(error) = apply_secret(backend_b, secret_a.as_deref()) {
+        let _ = apply_secret(backend_a, secret_a.as_deref());
+        return Err(error);
+    }
+
+    Ok(())
+}
+
+fn apply_secret<B: CredentialBackend + ?Sized>(
+    backend: &B,
+    secret: Option<&str>,
+) -> Result<(), AppError> {
+    match secret {
+        Some(secret) => backend.set(secret),
+        None => backend.delete(),
+    }
 }
 
 pub fn resolve_with_environment<B: CredentialBackend + ?Sized>(
@@ -163,6 +272,39 @@ fn normalized_secret(secret: String) -> Option<String> {
 }
 
 #[cfg(test)]
+mod entry_tests {
+    use super::*;
+
+    #[test]
+    fn primary_entry_keeps_the_legacy_keyring_user() {
+        // 老用户升级后不应被要求重新填写主用服务的密钥
+        assert_eq!(keyring_user_for_entry(PRIMARY_LLM_ENTRY_ID), KEYRING_USER);
+    }
+
+    #[test]
+    fn fallback_entries_get_their_own_keyring_user() {
+        assert_eq!(
+            keyring_user_for_entry("backup-a"),
+            format!("{KEYRING_USER}:backup-a")
+        );
+        assert_ne!(
+            keyring_user_for_entry("backup-a"),
+            keyring_user_for_entry("backup-b")
+        );
+    }
+
+    #[test]
+    fn environment_fallback_only_applies_to_the_primary_entry() {
+        assert!(KeyringCredentialBackend::for_entry(PRIMARY_LLM_ENTRY_ID)
+            == KeyringCredentialBackend::default());
+        assert_ne!(
+            KeyringCredentialBackend::for_entry("backup-a"),
+            KeyringCredentialBackend::default()
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::RefCell;
@@ -206,6 +348,82 @@ mod tests {
             *self.value.borrow_mut() = None;
             Ok(())
         }
+    }
+
+    struct FailingSetBackend {
+        value: RefCell<Option<String>>,
+    }
+
+    impl CredentialBackend for FailingSetBackend {
+        fn get(&self) -> Result<Option<String>, AppError> {
+            Ok(self.value.borrow().clone())
+        }
+
+        fn set(&self, _secret: &str) -> Result<(), AppError> {
+            Err(AppError::credential("写入凭证失败"))
+        }
+
+        fn delete(&self) -> Result<(), AppError> {
+            Err(AppError::credential("删除凭证失败"))
+        }
+    }
+
+    #[test]
+    fn swapping_moves_each_secret_to_the_other_entry() {
+        let a = FakeBackend::with_value(Some("secret-a"));
+        let b = FakeBackend::with_value(Some("secret-b"));
+
+        swap_with_backends(&a, &b).unwrap();
+
+        assert_eq!(a.value.borrow().as_deref(), Some("secret-b"));
+        assert_eq!(b.value.borrow().as_deref(), Some("secret-a"));
+    }
+
+    #[test]
+    fn swapping_with_one_side_unset_moves_the_absence_too() {
+        let a = FakeBackend::with_value(Some("secret-a"));
+        let b = FakeBackend::with_value(None);
+
+        swap_with_backends(&a, &b).unwrap();
+
+        // 未配置密钥的一侧不能凭空得到一份，否则两个服务会共用同一把密钥
+        assert_eq!(a.value.borrow().as_deref(), None);
+        assert_eq!(b.value.borrow().as_deref(), Some("secret-a"));
+    }
+
+    #[test]
+    fn swapping_two_empty_entries_is_a_noop() {
+        let a = FakeBackend::with_value(None);
+        let b = FakeBackend::with_value(None);
+
+        swap_with_backends(&a, &b).unwrap();
+
+        assert_eq!(a.value.borrow().as_deref(), None);
+        assert_eq!(b.value.borrow().as_deref(), None);
+    }
+
+    #[test]
+    fn swapping_rolls_back_when_the_second_write_fails() {
+        let a = FakeBackend::with_value(Some("secret-a"));
+        let b = FailingSetBackend {
+            value: RefCell::new(Some("secret-b".to_string())),
+        };
+
+        let error = swap_with_backends(&a, &b).unwrap_err();
+
+        assert!(error.message.contains("凭证"));
+        // A 必须被还原成自己的密钥，不能停在「持有 B 的密钥」这种中间态
+        assert_eq!(a.value.borrow().as_deref(), Some("secret-a"));
+        assert_eq!(b.value.borrow().as_deref(), Some("secret-b"));
+    }
+
+    #[test]
+    fn read_failure_aborts_before_touching_anything() {
+        let a = FakeBackend::with_get_error("读取失败");
+        let b = FakeBackend::with_value(Some("secret-b"));
+
+        assert!(swap_with_backends(&a, &b).is_err());
+        assert_eq!(b.value.borrow().as_deref(), Some("secret-b"));
     }
 
     #[test]

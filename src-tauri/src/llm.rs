@@ -1,6 +1,9 @@
 use crate::config::AppRuntimeConfig;
 use crate::dao::job_detail_dao;
-use crate::llm::service::LlmService;
+// 自动求职链路上的调用全部是非流式的，统一走带重试与降级的 LlmChainService。
+// 流式调用点（模拟面试等）仍使用 LlmService：失败前增量文本可能已经推送到界面，
+// 换服务重发会造成内容重复，因此不做重试也不参与降级。
+use crate::llm::service::LlmChainService;
 use crate::logger;
 use crate::rpa::common::{ChatMessage, RpaJob};
 use serde::{Deserialize, Serialize};
@@ -69,8 +72,7 @@ pub async fn evaluate_job_match(
         serde_json::to_string(&input)?
     );
 
-    let credential = crate::credential::resolve()?;
-    let service = LlmService::from_runtime(config, &credential)?;
+    let service = LlmChainService::from_runtime(config)?;
     let response = service.generate(prompt).await?;
     parse_job_semantic_match(&response.content)
 }
@@ -123,8 +125,7 @@ pub async fn generate_greet_text(
         }
     }
 
-    let credential = crate::credential::resolve()?;
-    let service = LlmService::from_runtime(&config, &credential)?;
+    let service = LlmChainService::from_runtime(&config)?;
     let vo = service.generate_template(&template, &params).await?;
     Ok(LlmGenerateResult {
         success: true,
@@ -183,8 +184,7 @@ pub async fn generate_replay_text(
         }
     }
 
-    let credential = crate::credential::resolve()?;
-    let service = LlmService::from_runtime(config, &credential)?;
+    let service = LlmChainService::from_runtime(config)?;
     let vo = service.generate_template(&template, &params).await?;
     Ok(LlmGenerateResult {
         success: true,

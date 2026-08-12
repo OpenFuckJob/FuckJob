@@ -16,6 +16,8 @@ const config: AppRuntimeConfig = {
   schema_version: 1,
   onboarding_completed: false,
   llm_config: null,
+  llm_fallbacks: [],
+  llm_retry_config: { network_retry_attempts: 2, retry_base_delay_ms: 500 },
   job_filter_config: { query: null, city: null, job_type: 0, salary: 0, experience: [], dgree: [], industry: [], scale: [], stage: [], keywords: [], exclude_keywords: [], company_keywords: [], company_exclude_keywords: [], enable_semantic_filter: false, semantic_filter_intent: null, regex_rules: [] },
   platform_filter_config: { liepin: { dq: null, salary_code: null, pub_time: null, work_year_code: null, comp_tag: [] } },
   greet_config: { enable_llm: false, reply_prompt: null, default_template: [] },

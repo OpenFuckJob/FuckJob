@@ -44,6 +44,9 @@ function MainShell({ config, update, save, status, message, dirty, importConfig,
     onOpenLlmConfig={openLlm}
     updateLlm={(llm_config) => update((c) => ({ ...c, llm_config }))}
     persistLlm={async (llm_config) => save({ ...config, llm_config })}
+    updateLlmFallbacks={(llm_fallbacks) => update((c) => ({ ...c, llm_fallbacks }))}
+    updateLlmRetryConfig={(llm_retry_config) => update((c) => ({ ...c, llm_retry_config }))}
+    persistConfig={() => save()}
     updateJobFilter={(v: Partial<JobFilterConfig>) => merge("job_filter_config", v)}
     updateGreet={(v: Partial<GreetConfig>) => merge("greet_config", v)}
     updateGreetDefaultResource={(i: number, v: Partial<ReplyResource>) => update((c) => ({ ...c, greet_config: { ...c.greet_config, default_template: updateAt(c.greet_config.default_template, i, v) } }))}

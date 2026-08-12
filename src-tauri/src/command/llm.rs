@@ -1,7 +1,7 @@
 use crate::command::base::CommandResult;
 use crate::config::RegexRule;
 use crate::error::AppError;
-use crate::llm::service::LlmService;
+use crate::llm::service::LlmChainService;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -84,9 +84,12 @@ pub async fn generate_job_filter_rules(
     }
 }
 
-fn service(config: &crate::config::AppRuntimeConfig) -> Result<LlmService, crate::error::AppError> {
-    let credential = crate::credential::resolve()?;
-    LlmService::from_runtime(config, &credential)
+/// 这里的调用全部是非流式的，统一走带重试与降级的链式服务，
+/// 与自动求职链路保持一致的可用性。
+fn service(
+    config: &crate::config::AppRuntimeConfig,
+) -> Result<LlmChainService, crate::error::AppError> {
+    LlmChainService::from_runtime(config)
 }
 
 #[tauri::command]

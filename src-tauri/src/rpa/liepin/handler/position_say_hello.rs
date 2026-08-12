@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use crate::{
     browser,
-    config::{AppRuntimeConfig, ReplayResourceType, ReplyResource},
+    config::{AppRuntimeConfig, GreetConfig, ReplayResourceType, ReplyResource},
     dao::{job_detail_dao, model::JobDetail},
     llm::generate_greet_text,
     logger,
@@ -546,10 +546,12 @@ async fn build_greet_resources(
     config: &AppRuntimeConfig,
     job: &RpaJob,
 ) -> Result<Vec<ReplyResource>, anyhow::Error> {
-    let resources = config.greet_config.default_template.clone();
+    let greet = &config.greet_config;
+    let resources = greet.default_template.clone();
 
-    if config.greet_config.reply_prompt.is_none() {
-        return Ok(resources);
+    // 未启用 LLM 打招呼或提示词为空时不调用模型，同时丢弃模板里的 LLM 空壳条目
+    if !should_use_llm(greet) {
+        return Ok(compose_greet_resources(resources, None));
     }
 
     let generated = match generate_greet_text(config.clone(), job).await {
@@ -563,16 +565,66 @@ async fn build_greet_resources(
             None
         }
     };
-    Ok(resources
-        .into_iter()
-        .filter_map(|mut resource| {
-            if resource.resource_type == ReplayResourceType::LLM {
-                let text = generated.as_ref()?;
-                resource.content = text.clone();
+
+    if generated.is_some() && !has_llm_resource(&resources) {
+        logger::info("打招呼模板未配置 LLM 条目，已将模型生成内容作为首条发送")?;
+    }
+
+    Ok(compose_greet_resources(resources, generated))
+}
+
+/// 只有同时打开开关并填写了提示词，才真正调用大模型
+fn should_use_llm(greet: &GreetConfig) -> bool {
+    greet.enable_llm
+        && greet
+            .reply_prompt
+            .as_deref()
+            .is_some_and(|prompt| !prompt.trim().is_empty())
+}
+
+fn has_llm_resource(resources: &[ReplyResource]) -> bool {
+    resources
+        .iter()
+        .any(|resource| resource.resource_type == ReplayResourceType::LLM)
+}
+
+/// 根据模型生成结果拼装最终要发送的资源列表：
+/// - 有生成内容且模板里没有 LLM 条目：插到首位发送
+/// - 有生成内容且模板里有 LLM 条目：替换所有 LLM 条目的内容
+/// - 没有生成内容：丢弃全部 LLM 条目，仅发送显式模板
+fn compose_greet_resources(
+    resources: Vec<ReplyResource>,
+    generated: Option<String>,
+) -> Vec<ReplyResource> {
+    let mut composed: Vec<ReplyResource> = match generated {
+        Some(text) => {
+            if has_llm_resource(&resources) {
+                resources
+                    .into_iter()
+                    .map(|mut resource| {
+                        if resource.resource_type == ReplayResourceType::LLM {
+                            resource.content = text.clone();
+                        }
+                        resource
+                    })
+                    .collect()
+            } else {
+                let mut merged = vec![ReplyResource {
+                    resource_type: ReplayResourceType::LLM,
+                    content: text,
+                }];
+                merged.extend(resources);
+                merged
             }
-            (!resource.content.trim().is_empty()).then_some(resource)
-        })
-        .collect())
+        }
+        None => resources
+            .into_iter()
+            .filter(|resource| resource.resource_type != ReplayResourceType::LLM)
+            .collect(),
+    };
+
+    composed.retain(|resource| !resource.content.trim().is_empty());
+    composed
 }
 
 pub(crate) fn send_resources(
@@ -1049,5 +1101,94 @@ mod tests {
         assert!(message.contains("皓元医药"));
         assert!(message.contains("发送失败"));
         assert!(message.contains("跳过该岗位，继续处理下一个"));
+    }
+
+    fn text_resource(content: &str) -> ReplyResource {
+        ReplyResource {
+            resource_type: ReplayResourceType::Text,
+            content: content.to_string(),
+        }
+    }
+
+    fn llm_resource(content: &str) -> ReplyResource {
+        ReplyResource {
+            resource_type: ReplayResourceType::LLM,
+            content: content.to_string(),
+        }
+    }
+
+    fn greet_config(enable_llm: bool, prompt: Option<&str>) -> GreetConfig {
+        GreetConfig {
+            enable_llm,
+            reply_prompt: prompt.map(|value| value.to_string()),
+            default_template: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn should_use_llm_requires_switch_and_non_empty_prompt() {
+        assert!(should_use_llm(&greet_config(true, Some("生成打招呼内容"))));
+        assert!(!should_use_llm(&greet_config(false, Some("生成打招呼内容"))));
+        assert!(!should_use_llm(&greet_config(true, None)));
+        assert!(!should_use_llm(&greet_config(true, Some("   "))));
+    }
+
+    #[test]
+    fn generated_text_is_prepended_when_template_has_no_llm_resource() {
+        let resources = compose_greet_resources(
+            vec![text_resource("您好，期待沟通")],
+            Some("模型生成的开场白".to_string()),
+        );
+
+        assert_eq!(resources.len(), 2);
+        assert_eq!(resources[0].resource_type, ReplayResourceType::LLM);
+        assert_eq!(resources[0].content, "模型生成的开场白");
+        assert_eq!(resources[1].content, "您好，期待沟通");
+    }
+
+    #[test]
+    fn generated_text_replaces_existing_llm_resources_in_place() {
+        let resources = compose_greet_resources(
+            vec![
+                text_resource("您好"),
+                llm_resource(""),
+                text_resource("期待回复"),
+            ],
+            Some("模型生成的开场白".to_string()),
+        );
+
+        assert_eq!(resources.len(), 3);
+        assert_eq!(resources[0].content, "您好");
+        assert_eq!(resources[1].resource_type, ReplayResourceType::LLM);
+        assert_eq!(resources[1].content, "模型生成的开场白");
+        assert_eq!(resources[2].content, "期待回复");
+    }
+
+    #[test]
+    fn llm_resources_are_dropped_when_generation_is_unavailable() {
+        let resources = compose_greet_resources(
+            vec![
+                llm_resource(""),
+                text_resource("您好，期待沟通"),
+                llm_resource("残留内容"),
+            ],
+            None,
+        );
+
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].resource_type, ReplayResourceType::Text);
+        assert_eq!(resources[0].content, "您好，期待沟通");
+    }
+
+    #[test]
+    fn empty_resources_are_filtered_out() {
+        let resources = compose_greet_resources(
+            vec![text_resource("   "), text_resource("您好")],
+            Some("模型生成的开场白".to_string()),
+        );
+
+        assert_eq!(resources.len(), 2);
+        assert_eq!(resources[0].content, "模型生成的开场白");
+        assert_eq!(resources[1].content, "您好");
     }
 }
