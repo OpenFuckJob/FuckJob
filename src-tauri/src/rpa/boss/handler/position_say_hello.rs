@@ -3,14 +3,12 @@ use std::time::Duration;
 
 use crate::{
     browser,
-    config::{
-        AppRuntimeConfig, GreetConfig, JobFilterConfig, ReplayResourceType, ReplyResource,
-    },
+    config::{AppRuntimeConfig, JobFilterConfig, ReplyResource},
     dao::{job_detail_dao, model::JobDetail},
-    llm::generate_greet_text,
     logger,
     rpa::{
         boss::{handler::send_messages, model::GreetJob},
+        greet::build_greet_resources,
         run_flow::is_job_task_stop_requested,
         run_flow::PlatformKind,
     },
@@ -1005,94 +1003,6 @@ where
     send(resources)
 }
 
-/// 是否需要真的调用大模型：既要开关打开，也要有非空提示词。
-/// 否则调用模型只是白白消耗 token 和时间。
-fn should_use_llm(greet: &GreetConfig) -> bool {
-    greet.enable_llm
-        && greet
-            .reply_prompt
-            .as_deref()
-            .is_some_and(|prompt| !prompt.trim().is_empty())
-}
-
-/// 模板中是否存在 LLM 占位条目
-fn has_llm_slot(resources: &[ReplyResource]) -> bool {
-    resources
-        .iter()
-        .any(|resource| resource.resource_type == ReplayResourceType::LLM)
-}
-
-/// 根据模板列表与模型生成结果产出最终要发送的资源列表。
-/// - 有生成内容且模板里没有 LLM 条目：把生成内容插到最前面，不再白白丢弃
-/// - 有生成内容且模板里有 LLM 条目：替换所有 LLM 条目的内容
-/// - 没有生成内容：丢弃 LLM 空壳条目，只发送显式模板
-fn compose_greet_resources(
-    resources: Vec<ReplyResource>,
-    generated: Option<String>,
-) -> Vec<ReplyResource> {
-    let mut resources = match generated {
-        Some(text) => {
-            if has_llm_slot(&resources) {
-                resources
-                    .into_iter()
-                    .map(|mut resource| {
-                        if resource.resource_type == ReplayResourceType::LLM {
-                            resource.content = text.clone();
-                        }
-                        resource
-                    })
-                    .collect()
-            } else {
-                let mut merged = Vec::with_capacity(resources.len() + 1);
-                merged.push(ReplyResource {
-                    resource_type: ReplayResourceType::LLM,
-                    content: text,
-                });
-                merged.extend(resources);
-                merged
-            }
-        }
-        None => resources
-            .into_iter()
-            .filter(|resource| resource.resource_type != ReplayResourceType::LLM)
-            .collect(),
-    };
-
-    resources.retain(|resource| !resource.content.trim().is_empty());
-    resources
-}
-
-async fn build_greet_resources(
-    config: &AppRuntimeConfig,
-    greet_job: &GreetJob,
-) -> Result<Vec<ReplyResource>, anyhow::Error> {
-    let greet = &config.greet_config;
-    let resources = greet.default_template.clone();
-
-    // 未启用 LLM 或没有可用提示词：不调用模型，同时丢弃 LLM 类型的空壳条目
-    if !should_use_llm(greet) {
-        return Ok(compose_greet_resources(resources, None));
-    }
-
-    let generated = match generate_greet_text(config.clone(), greet_job).await {
-        Ok(result) if result.success && !result.data.trim().is_empty() => Some(result.data),
-        Ok(_) => {
-            logger::warning("LLM 未生成打招呼内容，仅发送显式模板")?;
-            None
-        }
-        Err(error) => {
-            logger::warning(format!("LLM 打招呼生成失败，仅发送显式模板: {}", error))?;
-            None
-        }
-    };
-
-    if generated.is_some() && !has_llm_slot(&resources) {
-        logger::info("打招呼模板未配置 LLM 条目，已将模型生成内容作为首条发送")?;
-    }
-
-    Ok(compose_greet_resources(resources, generated))
-}
-
 /// 一次滚动前后的页面高度，作为“是否加载了新内容”的辅助信号
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ScrollProbe {
@@ -1385,7 +1295,8 @@ mod tests {
     fn scroll_script_moves_up_before_returning_to_the_bottom() {
         // 已经在底部时必须先产生反向位移，否则懒加载观察器不会被唤醒
         assert!(SCROLL_NUDGE_UP_SCRIPT.contains("scrollContainer.scrollTop - 520"));
-        assert!(SCROLL_BOTTOM_SCRIPT.contains("scrollContainer.scrollTop = scrollContainer.scrollHeight"));
+        assert!(SCROLL_BOTTOM_SCRIPT
+            .contains("scrollContainer.scrollTop = scrollContainer.scrollHeight"));
         assert!(SCROLL_NUDGE_UP_SCRIPT.contains("scrollHeight"));
         assert!(SCROLL_HEIGHT_SCRIPT.contains("scrollHeight"));
     }
@@ -1490,109 +1401,6 @@ mod tests {
             assert!(text.contains("正常结束、不是程序崩溃"), "{text}");
             assert!(text.contains("周期投递"), "{text}");
         }
-    }
-
-    fn text_resource(content: &str) -> ReplyResource {
-        ReplyResource {
-            resource_type: ReplayResourceType::Text,
-            content: content.to_string(),
-        }
-    }
-
-    fn llm_resource(content: &str) -> ReplyResource {
-        ReplyResource {
-            resource_type: ReplayResourceType::LLM,
-            content: content.to_string(),
-        }
-    }
-
-    fn greet_config(enable_llm: bool, reply_prompt: Option<&str>) -> GreetConfig {
-        GreetConfig {
-            enable_llm,
-            reply_prompt: reply_prompt.map(|prompt| prompt.to_string()),
-            default_template: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn llm_is_only_called_when_enabled_with_a_non_blank_prompt() {
-        assert!(should_use_llm(&greet_config(true, Some("请生成招呼语"))));
-        assert!(!should_use_llm(&greet_config(false, Some("请生成招呼语"))));
-        assert!(!should_use_llm(&greet_config(true, None)));
-        assert!(!should_use_llm(&greet_config(true, Some("   "))));
-    }
-
-    #[test]
-    fn generated_text_is_prepended_when_the_template_has_no_llm_slot() {
-        let resources = compose_greet_resources(
-            vec![text_resource("您好，我对该岗位很感兴趣")],
-            Some("您好，我有五年 Rust 经验".to_string()),
-        );
-
-        assert_eq!(resources.len(), 2);
-        assert_eq!(resources[0].resource_type, ReplayResourceType::LLM);
-        assert_eq!(resources[0].content, "您好，我有五年 Rust 经验");
-        assert_eq!(resources[1].content, "您好，我对该岗位很感兴趣");
-    }
-
-    #[test]
-    fn generated_text_replaces_every_existing_llm_slot() {
-        let resources = compose_greet_resources(
-            vec![
-                text_resource("固定开场白"),
-                llm_resource(""),
-                llm_resource("占位"),
-            ],
-            Some("模型生成内容".to_string()),
-        );
-
-        assert_eq!(resources.len(), 3);
-        assert_eq!(resources[0].content, "固定开场白");
-        assert_eq!(resources[1].content, "模型生成内容");
-        assert_eq!(resources[2].content, "模型生成内容");
-    }
-
-    #[test]
-    fn llm_slots_are_dropped_when_generation_fails() {
-        let resources = compose_greet_resources(
-            vec![llm_resource("占位"), text_resource("固定开场白")],
-            None,
-        );
-
-        assert_eq!(resources.len(), 1);
-        assert_eq!(resources[0].resource_type, ReplayResourceType::Text);
-        assert_eq!(resources[0].content, "固定开场白");
-    }
-
-    #[test]
-    fn llm_slots_are_dropped_when_llm_is_disabled() {
-        // 未启用 LLM 时上层传入 None，等价于直接丢弃 LLM 空壳条目
-        let greet = greet_config(false, Some("请生成招呼语"));
-        assert!(!should_use_llm(&greet));
-
-        let resources =
-            compose_greet_resources(vec![llm_resource(""), text_resource("固定开场白")], None);
-
-        assert_eq!(resources.len(), 1);
-        assert_eq!(resources[0].content, "固定开场白");
-    }
-
-    #[test]
-    fn blank_resources_are_filtered_out() {
-        let resources = compose_greet_resources(
-            vec![
-                text_resource("   "),
-                text_resource(""),
-                text_resource("有效内容"),
-            ],
-            None,
-        );
-
-        assert_eq!(resources.len(), 1);
-        assert_eq!(resources[0].content, "有效内容");
-
-        // 模型返回空白时同样不会被塞进发送列表
-        assert!(compose_greet_resources(Vec::new(), Some("  \n ".to_string())).is_empty());
     }
 
     #[test]

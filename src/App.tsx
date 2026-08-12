@@ -3,7 +3,7 @@ import { Alert, Button, ConfigProvider, Spin, Tabs, Typography } from "antd";
 import { RocketOutlined } from "@ant-design/icons";
 import "./App.css";
 import { useAppConfig } from "@/hooks/useAppConfig";
-import type { AppRuntimeConfig, BrowserConfig, GreetConfig, JobFilterConfig, RegexRule, ReplayConfig, ReplyResource, ReplyTemplate, ResumeConfig } from "@/types/app-config";
+import type { AppRuntimeConfig, BrowserConfig, GreetConfig, GreetResource, JobFilterConfig, RegexRule, ReplayConfig, ReplyResource, ReplyTemplate, ResumeConfig } from "@/types/app-config";
 import { Onboarding } from "@/view/onboarding";
 import { ConfigPage } from "@/view/config";
 import ConversationDebugPage from "@/view/conversation-debug";
@@ -22,6 +22,13 @@ const tabs: Array<{ key: AppTabKey; label: string }> = [
   { key: "config", label: "配置中心" },
 ];
 const updateAt = <T,>(items: T[], index: number, next: Partial<T>) => items.map((item, i) => i === index ? { ...item, ...next } : item);
+const moveAt = <T,>(items: T[], index: number, offset: -1 | 1) => {
+  const target = index + offset;
+  if (target < 0 || target >= items.length) return items;
+  const next = [...items];
+  [next[index], next[target]] = [next[target], next[index]];
+  return next;
+};
 
 function MainShell({ config, update, save, status, message, dirty, importConfig, exportConfig }: {
   config: AppRuntimeConfig; update: (fn: (c: AppRuntimeConfig) => AppRuntimeConfig) => void;
@@ -49,8 +56,9 @@ function MainShell({ config, update, save, status, message, dirty, importConfig,
     persistConfig={() => save()}
     updateJobFilter={(v: Partial<JobFilterConfig>) => merge("job_filter_config", v)}
     updateGreet={(v: Partial<GreetConfig>) => merge("greet_config", v)}
-    updateGreetDefaultResource={(i: number, v: Partial<ReplyResource>) => update((c) => ({ ...c, greet_config: { ...c.greet_config, default_template: updateAt(c.greet_config.default_template, i, v) } }))}
-    addGreetDefaultResource={() => update((c) => ({ ...c, greet_config: { ...c.greet_config, default_template: [...c.greet_config.default_template, { resource_type: "Text", content: "" }] } }))}
+    updateGreetDefaultResource={(i: number, v: Partial<GreetResource>) => update((c) => ({ ...c, greet_config: { ...c.greet_config, default_template: updateAt(c.greet_config.default_template, i, v) } }))}
+    addGreetDefaultResource={(resourceType: GreetResource["resource_type"] = "Text") => update((c) => ({ ...c, greet_config: { ...c.greet_config, default_template: [...c.greet_config.default_template, { resource_type: resourceType, content: "" }] } }))}
+    moveGreetDefaultResource={(i: number, offset: -1 | 1) => update((c) => ({ ...c, greet_config: { ...c.greet_config, default_template: moveAt(c.greet_config.default_template, i, offset) } }))}
     removeGreetDefaultResource={(i: number) => update((c) => ({ ...c, greet_config: { ...c.greet_config, default_template: c.greet_config.default_template.filter((_, x) => x !== i) } }))}
     updateReplay={(v: Partial<ReplayConfig>) => merge("replay_config", v)}
     updateReplyTemplate={(i: number, v: Partial<ReplyTemplate>) => update((c) => ({ ...c, replay_config: { ...c.replay_config, templates: updateAt(c.replay_config.templates, i, v) } }))}
