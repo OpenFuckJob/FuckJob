@@ -104,6 +104,13 @@ export const MAX_RETRY_BASE_DELAY_MS = 10_000;
 
 export type ReplayResourceType = "Text" | "Image" | "LLM";
 
+export interface GreetResource {
+  /** 是否参与发送；旧配置缺失时视为启用 */
+  enabled?: boolean;
+  resource_type: ReplayResourceType;
+  content: string;
+}
+
 export interface ReplyResource {
   resource_type: ReplayResourceType;
   content: string;
@@ -123,7 +130,7 @@ export interface ReplyTemplate {
 export interface GreetConfig {
   enable_llm: boolean;
   reply_prompt: string | null;
-  default_template: ReplyResource[];
+  default_template: GreetResource[];
 }
 
 export interface ReplayConfig {

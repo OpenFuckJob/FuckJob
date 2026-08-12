@@ -12,7 +12,7 @@ use crate::{
 };
 
 const CONFIG_FILE_NAME: &str = "app_config.yaml";
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 const DEFAULT_CONFIG_YAML: &str = include_str!("resource/app_config.yaml");
 
@@ -240,6 +240,10 @@ pub(crate) fn parse_config_content(content: &str) -> Result<AppRuntimeConfig, St
         {
             config.greet_config.enable_llm = true;
         }
+
+        if config.schema_version < 2 {
+            migrate_greet_send_sequence(&mut config.greet_config);
+        }
     }
     if let Some(replay_config) = value.get("replay_config") {
         config.replay_config =
@@ -340,6 +344,7 @@ pub fn validate_and_normalize(config: &mut AppRuntimeConfig) -> Result<(), Strin
 
     normalize_llm_retry_config(&mut config.llm_retry_config);
     normalize_llm_fallbacks(&mut config.llm_fallbacks)?;
+    validate_greet_template(&config.greet_config)?;
 
     let Some(llm_config) = config.llm_config.as_mut() else {
         return Ok(());
@@ -352,6 +357,45 @@ pub fn validate_and_normalize(config: &mut AppRuntimeConfig) -> Result<(), Strin
     }
     if llm_config.model.is_empty() {
         return Err("模型名称不能为空".to_string());
+    }
+    Ok(())
+}
+
+/// v1 在模板缺少 LLM 条目时会在运行期把生成内容隐式插到第一条。
+/// v2 改为完全显式的发送序列，因此升级时只需补出这个条目；运行期不再保留兼容分支。
+fn migrate_greet_send_sequence(greet: &mut GreetConfig) {
+    let mut found_llm = false;
+    greet.default_template.retain(|resource| {
+        if resource.resource_type != ReplayResourceType::LLM {
+            return true;
+        }
+        if found_llm {
+            return false;
+        }
+        found_llm = true;
+        true
+    });
+
+    let prompt_ready = greet
+        .reply_prompt
+        .as_deref()
+        .is_some_and(|prompt| !prompt.trim().is_empty());
+    if greet.enable_llm && prompt_ready && !found_llm {
+        greet.default_template.insert(
+            0,
+            GreetResource::new(ReplayResourceType::LLM, String::new()),
+        );
+    }
+}
+
+fn validate_greet_template(greet: &GreetConfig) -> Result<(), String> {
+    let llm_count = greet
+        .default_template
+        .iter()
+        .filter(|resource| resource.resource_type == ReplayResourceType::LLM)
+        .count();
+    if llm_count > 1 {
+        return Err("打招呼发送序列最多只能包含一条 LLM 内容".to_string());
     }
     Ok(())
 }
@@ -634,15 +678,18 @@ impl AppRuntimeConfig {
             model: primary.model.clone(),
         });
 
-        chain.extend(self.llm_fallbacks.iter().filter(|entry| entry.enabled).map(
-            |entry| LlmChainLink {
-                id: entry.id.clone(),
-                label: entry.label.clone(),
-                provider: entry.provider.clone(),
-                base_url: entry.base_url.clone(),
-                model: entry.model.clone(),
-            },
-        ));
+        chain.extend(
+            self.llm_fallbacks
+                .iter()
+                .filter(|entry| entry.enabled)
+                .map(|entry| LlmChainLink {
+                    id: entry.id.clone(),
+                    label: entry.label.clone(),
+                    provider: entry.provider.clone(),
+                    base_url: entry.base_url.clone(),
+                    model: entry.model.clone(),
+                }),
+        );
 
         chain
     }
@@ -815,7 +862,35 @@ pub struct GreetConfig {
     pub reply_prompt: Option<String>,
 
     // 默认模板
-    pub default_template: Vec<ReplyResource>,
+    pub default_template: Vec<GreetResource>,
+}
+
+impl GreetConfig {
+    pub fn prompt_ready(&self) -> bool {
+        self.reply_prompt
+            .as_deref()
+            .is_some_and(|prompt| !prompt.trim().is_empty())
+    }
+
+    pub fn has_enabled_llm_resource(&self) -> bool {
+        self.default_template
+            .iter()
+            .any(|resource| resource.enabled && resource.resource_type == ReplayResourceType::LLM)
+    }
+
+    pub fn llm_resource_ready(&self) -> bool {
+        self.enable_llm && self.prompt_ready() && self.has_enabled_llm_resource()
+    }
+
+    pub fn has_sendable_resource(&self) -> bool {
+        self.default_template.iter().any(|resource| {
+            resource.enabled
+                && match resource.resource_type {
+                    ReplayResourceType::LLM => self.llm_resource_ready(),
+                    _ => !resource.content.trim().is_empty(),
+                }
+        })
+    }
 }
 
 // ================================
@@ -858,6 +933,32 @@ pub struct ReplyRegexRule {
 
     /// 匹配目标 最近的limit条聊天记录
     pub limit: i32,
+}
+
+// 打招呼发送资源
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct GreetResource {
+    /// 是否参与发送。旧配置缺少此字段时默认启用；启用状态不落盘，保持配置简洁。
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub enabled: bool,
+    /// 回复类型
+    pub resource_type: ReplayResourceType,
+    /// 回复内容 图片 则传 图片路径
+    pub content: String,
+}
+
+impl GreetResource {
+    pub fn new(resource_type: ReplayResourceType, content: String) -> Self {
+        Self {
+            enabled: true,
+            resource_type,
+            content,
+        }
+    }
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 // 回复资源
@@ -922,10 +1023,10 @@ mod tests {
     }
 
     #[test]
-    fn default_config_is_version_one_and_ai_unconfigured() {
+    fn default_config_uses_current_version_and_ai_is_unconfigured() {
         let config = default_app_config();
 
-        assert_eq!(config.schema_version, 1);
+        assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
         assert!(!config.onboarding_completed);
         assert!(config.llm_config.is_none());
     }
@@ -964,7 +1065,11 @@ mod tests {
 
     #[test]
     fn future_schema_versions_are_rejected_instead_of_downgraded() {
-        let error = parse_config_content("schema_version: 2\nllm_config: null\n").unwrap_err();
+        let error = parse_config_content(&format!(
+            "schema_version: {}\nllm_config: null\n",
+            CURRENT_SCHEMA_VERSION + 1
+        ))
+        .unwrap_err();
 
         assert!(error.contains("版本"));
     }
@@ -1172,6 +1277,11 @@ greet_config:
         .unwrap();
 
         assert!(config.greet_config.enable_llm);
+        assert_eq!(config.greet_config.default_template.len(), 1);
+        assert_eq!(
+            config.greet_config.default_template[0].resource_type,
+            ReplayResourceType::LLM
+        );
     }
 
     #[test]
@@ -1221,6 +1331,73 @@ greet_config:
 
         let restored: GreetConfig = serde_yaml::from_str(&serialized).unwrap();
         assert!(restored.enable_llm);
+    }
+
+    #[test]
+    fn legacy_resource_without_enabled_field_defaults_to_enabled() {
+        let resource: GreetResource = serde_yaml::from_str(
+            r#"
+resource_type: Text
+content: "您好"
+"#,
+        )
+        .unwrap();
+
+        assert!(resource.enabled);
+        let serialized = serde_yaml::to_string(&resource).unwrap();
+        assert!(!serialized.contains("enabled:"));
+    }
+
+    #[test]
+    fn disabled_resource_is_serialized_explicitly() {
+        let resource = GreetResource {
+            enabled: false,
+            resource_type: ReplayResourceType::Text,
+            content: "保留但不发送".to_string(),
+        };
+
+        let serialized = serde_yaml::to_string(&resource).unwrap();
+
+        assert!(serialized.contains("enabled: false"));
+    }
+
+    #[test]
+    fn v1_greet_without_llm_slot_is_migrated_once_to_an_explicit_first_item() {
+        let config = parse_config_content(
+            r#"
+schema_version: 1
+greet_config:
+  enable_llm: true
+  reply_prompt: "生成内容"
+  default_template:
+    - resource_type: Text
+      content: "固定内容"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.greet_config.default_template.len(), 2);
+        assert_eq!(
+            config.greet_config.default_template[0].resource_type,
+            ReplayResourceType::LLM
+        );
+        assert_eq!(config.greet_config.default_template[1].content, "固定内容");
+
+        let serialized = serde_yaml::to_string(&config).unwrap();
+        let restored = parse_config_content(&serialized).unwrap();
+        assert_eq!(restored.greet_config.default_template.len(), 2);
+    }
+
+    #[test]
+    fn multiple_llm_items_are_rejected() {
+        let mut config = default_app_config();
+        config.greet_config.default_template = vec![
+            GreetResource::new(ReplayResourceType::LLM, String::new()),
+            GreetResource::new(ReplayResourceType::LLM, String::new()),
+        ];
+
+        let error = validate_and_normalize(&mut config).unwrap_err();
+        assert!(error.contains("最多只能包含一条 LLM"));
     }
 
     fn fallback_entry(id: &str, model: &str) -> LlmProviderEntry {
@@ -1306,11 +1483,17 @@ greet_config:
             config.llm_retry_config.network_retry_attempts,
             MAX_NETWORK_RETRY_ATTEMPTS
         );
-        assert_eq!(config.llm_retry_config.retry_base_delay_ms, MIN_RETRY_BASE_DELAY_MS);
+        assert_eq!(
+            config.llm_retry_config.retry_base_delay_ms,
+            MIN_RETRY_BASE_DELAY_MS
+        );
 
         config.llm_retry_config.retry_base_delay_ms = 999_999;
         validate_and_normalize(&mut config).unwrap();
-        assert_eq!(config.llm_retry_config.retry_base_delay_ms, MAX_RETRY_BASE_DELAY_MS);
+        assert_eq!(
+            config.llm_retry_config.retry_base_delay_ms,
+            MAX_RETRY_BASE_DELAY_MS
+        );
     }
 
     #[test]
@@ -1362,7 +1545,10 @@ greet_config:
 
         validate_and_normalize(&mut config).unwrap();
 
-        assert_eq!(config.llm_fallbacks[0].base_url, "https://llm.example.test/v1");
+        assert_eq!(
+            config.llm_fallbacks[0].base_url,
+            "https://llm.example.test/v1"
+        );
         assert_eq!(config.llm_fallbacks[0].model, "qwen-max");
         assert_eq!(config.llm_fallbacks[0].label, None);
     }

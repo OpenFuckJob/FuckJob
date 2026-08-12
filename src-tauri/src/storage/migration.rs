@@ -78,7 +78,7 @@ impl MigrationReport {
     }
 }
 
-pub fn migrate_v0_to_v1<B: CredentialBackend + ?Sized>(
+pub fn migrate_to_current<B: CredentialBackend + ?Sized>(
     paths: &MigrationPaths,
     credential_backend: &B,
 ) -> Result<MigrationReport, AppError> {
@@ -511,7 +511,7 @@ browser_config:
         let expected = resume_document(&[("old", "old content")]);
         write_json(&paths.legacy_user_resumes_path(), &expected);
 
-        let report = migrate_v0_to_v1(&paths, &FakeCredentialBackend::default()).unwrap();
+        let report = migrate_to_current(&paths, &FakeCredentialBackend::default()).unwrap();
 
         assert_eq!(report.resume_action, ResumeMigrationAction::OldCopied);
         assert_eq!(
@@ -535,7 +535,7 @@ browser_config:
         write_json(&paths.user_resumes_path(), &expected);
         let original = fs::read(paths.user_resumes_path()).unwrap();
 
-        let report = migrate_v0_to_v1(&paths, &FakeCredentialBackend::default()).unwrap();
+        let report = migrate_to_current(&paths, &FakeCredentialBackend::default()).unwrap();
 
         assert_eq!(report.resume_action, ResumeMigrationAction::TargetKept);
         assert_eq!(fs::read(paths.user_resumes_path()).unwrap(), original);
@@ -556,7 +556,7 @@ browser_config:
         )
         .unwrap();
 
-        let report = migrate_v0_to_v1(&paths, &FakeCredentialBackend::default()).unwrap();
+        let report = migrate_to_current(&paths, &FakeCredentialBackend::default()).unwrap();
 
         assert_eq!(
             report.resume_action,
@@ -580,7 +580,7 @@ browser_config:
             &resume_document(&[("shared", "target"), ("target-only", "target-only")]),
         );
 
-        let report = migrate_v0_to_v1(&paths, &FakeCredentialBackend::default()).unwrap();
+        let report = migrate_to_current(&paths, &FakeCredentialBackend::default()).unwrap();
 
         assert_eq!(report.resume_action, ResumeMigrationAction::Merged);
         let merged: Value =
@@ -606,7 +606,7 @@ browser_config:
         fs::create_dir_all(paths.user_resumes_path().parent().unwrap()).unwrap();
         fs::write(paths.user_resumes_path(), b"{ corrupt").unwrap();
 
-        let report = migrate_v0_to_v1(&paths, &FakeCredentialBackend::default()).unwrap();
+        let report = migrate_to_current(&paths, &FakeCredentialBackend::default()).unwrap();
 
         assert_eq!(report.resume_action, ResumeMigrationAction::TargetRestored);
         assert_eq!(
@@ -630,7 +630,7 @@ browser_config:
         fs::create_dir_all(paths.user_resumes_path().parent().unwrap()).unwrap();
         fs::write(paths.user_resumes_path(), br#"{"broken": 42}"#).unwrap();
 
-        let error = migrate_v0_to_v1(&paths, &FakeCredentialBackend::default()).unwrap_err();
+        let error = migrate_to_current(&paths, &FakeCredentialBackend::default()).unwrap_err();
 
         assert_eq!(error.code, AppErrorCode::Storage);
         assert!(error
@@ -661,11 +661,11 @@ browser_config:
         );
         let backend = FakeCredentialBackend::default();
 
-        let first = migrate_v0_to_v1(&paths, &backend).unwrap();
+        let first = migrate_to_current(&paths, &backend).unwrap();
         let config_after_first = fs::read(&paths.config_path).unwrap();
         let target_after_first = fs::read(paths.user_resumes_path()).unwrap();
         let backups_after_first = fs::read_dir(paths.backups_dir()).unwrap().count();
-        let second = migrate_v0_to_v1(&paths, &backend).unwrap();
+        let second = migrate_to_current(&paths, &backend).unwrap();
 
         assert!(first.migrated);
         assert!(!second.migrated);
@@ -696,7 +696,7 @@ browser_config:
         write_config(&paths, content);
         let backend = FakeCredentialBackend::default();
 
-        let report = migrate_v0_to_v1(&paths, &backend).unwrap();
+        let report = migrate_to_current(&paths, &backend).unwrap();
 
         assert_eq!(backend.value.borrow().as_deref(), Some("plaintext-secret"));
         let migrated = fs::read_to_string(&paths.config_path).unwrap();
@@ -708,7 +708,7 @@ browser_config:
         }
         let raw: Value = serde_yaml::from_str(&migrated).unwrap();
         assert!(raw["llm_config"].get("api_key").is_none());
-        assert!(migrated.contains("schema_version: 1"));
+        assert!(migrated.contains(&format!("schema_version: {CURRENT_SCHEMA_VERSION}")));
     }
 
     #[test]
@@ -731,7 +731,7 @@ browser_config:
             fail_set: true,
         };
 
-        let error = migrate_v0_to_v1(&paths, &backend).unwrap_err();
+        let error = migrate_to_current(&paths, &backend).unwrap_err();
 
         assert_eq!(error.code, AppErrorCode::Credential);
         assert_eq!(fs::read(&paths.config_path).unwrap(), original);
@@ -757,7 +757,7 @@ browser_config:
             fail_set: false,
         };
 
-        migrate_v0_to_v1(&paths, &backend).unwrap();
+        migrate_to_current(&paths, &backend).unwrap();
 
         assert_eq!(backend.value.borrow().as_deref(), Some("newer-secret"));
     }
@@ -774,7 +774,7 @@ browser_config:
             &resume_document(&[("target", "valid")]),
         );
 
-        let report = migrate_v0_to_v1(&paths, &FakeCredentialBackend::default()).unwrap();
+        let report = migrate_to_current(&paths, &FakeCredentialBackend::default()).unwrap();
 
         assert_eq!(
             report.resume_action,
@@ -791,17 +791,20 @@ browser_config:
     fn future_schema_version_aborts_without_touching_config_or_data() {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(dir.path());
-        let future = b"schema_version: 2\nllm_config: null\n";
-        write_config(&paths, future);
+        let future = format!(
+            "schema_version: {}\nllm_config: null\n",
+            CURRENT_SCHEMA_VERSION + 1
+        );
+        write_config(&paths, future.as_bytes());
         write_json(
             &paths.legacy_user_resumes_path(),
             &resume_document(&[("legacy", "content")]),
         );
 
-        let error = migrate_v0_to_v1(&paths, &FakeCredentialBackend::default()).unwrap_err();
+        let error = migrate_to_current(&paths, &FakeCredentialBackend::default()).unwrap_err();
 
         assert_eq!(error.code, AppErrorCode::Configuration);
-        assert_eq!(fs::read(&paths.config_path).unwrap(), future);
+        assert_eq!(fs::read(&paths.config_path).unwrap(), future.as_bytes());
         assert!(!paths.user_resumes_path().exists());
     }
 
@@ -828,17 +831,17 @@ browser_config:
     }
 
     #[test]
-    fn new_install_starts_directly_at_version_one() {
+    fn new_install_starts_directly_at_current_version() {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(dir.path());
 
-        let report = migrate_v0_to_v1(&paths, &FakeCredentialBackend::default()).unwrap();
+        let report = migrate_to_current(&paths, &FakeCredentialBackend::default()).unwrap();
 
         assert!(report.migrated);
         let config =
             crate::config::parse_config_content(&fs::read_to_string(&paths.config_path).unwrap())
                 .unwrap();
-        assert_eq!(config.schema_version, 1);
+        assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
         assert!(config.llm_config.is_none());
         assert_eq!(
             config.browser_config.user_data_dir,

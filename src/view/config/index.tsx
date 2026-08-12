@@ -26,6 +26,7 @@ import {
   RuleMode,
   JobFilterConfig,
   GreetConfig,
+  GreetResource,
   ReplayConfig,
   ReplyResource,
   ReplyTemplate,
@@ -57,6 +58,10 @@ import {
   InfoCircleOutlined,
   RobotOutlined,
   DatabaseOutlined,
+  ArrowUpOutlined,
+  ArrowDownOutlined,
+  EyeOutlined,
+  EyeInvisibleOutlined,
 } from "@ant-design/icons";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -144,9 +149,12 @@ export interface ConfigPageProps {
   updateGreet: (next: Partial<GreetConfig>) => void;
   updateGreetDefaultResource: (
     resourceIndex: number,
-    next: Partial<ReplyResource>,
+    next: Partial<GreetResource>,
   ) => void;
-  addGreetDefaultResource: () => void;
+  addGreetDefaultResource: (
+    resourceType?: GreetResource["resource_type"],
+  ) => void;
+  moveGreetDefaultResource: (resourceIndex: number, offset: -1 | 1) => void;
   removeGreetDefaultResource: (resourceIndex: number) => void;
   updateReplay: (next: Partial<ReplayConfig>) => void;
   updateReplyTemplate: (index: number, next: Partial<ReplyTemplate>) => void;
@@ -340,15 +348,7 @@ export function ConfigPage(props: ConfigPageProps) {
       (resource) => resource.resource_type === "LLM",
     );
 
-  // 先追加一条默认的文本条目，再把它改成 LLM 类型（两次更新都是函数式的，按顺序生效）
-  const addGreetLlmResource = () => {
-    const appendedIndex = props.config.greet_config.default_template.length;
-    props.addGreetDefaultResource();
-    props.updateGreetDefaultResource(appendedIndex, {
-      resource_type: "LLM",
-      content: "",
-    });
-  };
+  const addGreetLlmResource = () => props.addGreetDefaultResource("LLM");
 
   const renderResourceContent = (
     resource: ReplyResource,
@@ -966,10 +966,10 @@ export function ConfigPage(props: ConfigPageProps) {
 
               {props.config.greet_config.enable_llm && !greetTemplateHasLlm && (
                 <Alert
-                  type="info"
+                  type="warning"
                   showIcon
-                  message="模型生成内容将作为第一条自动发送"
-                  description="当前模板里没有 LLM 条目。已启用 LLM 主动沟通时，模型生成的内容会作为第一条发送，随后再依次发送下面的文本条目。若想自己控制它在模板中的位置，可手动添加一条 LLM 内容。"
+                  message="发送序列中尚未添加 LLM 内容"
+                  description="大模型不会被隐式插入发送。添加 LLM 内容并启用后，才会在对应位置生成并发送。"
                   action={
                     <Button
                       size="small"
@@ -987,16 +987,16 @@ export function ConfigPage(props: ConfigPageProps) {
                 <div className="flex items-center justify-between">
                   <div>
                     <Text className="text-slate-900 font-bold block">
-                      默认打招呼模板
+                      打招呼发送顺序
                     </Text>
                     <Text className="text-slate-500 text-xs">
-                      按顺序发送的固定内容；启用 LLM 时，模型生成内容也会与这些条目一并发送
+                      仅启用的内容会按从上到下依次发送
                     </Text>
                   </div>
                   <Button
                     type="text"
                     icon={<PlusOutlined />}
-                    onClick={props.addGreetDefaultResource}
+                    onClick={() => props.addGreetDefaultResource()}
                     className="text-sky-500! hover:bg-sky-50! rounded-lg! font-bold"
                   >
                     添加内容
@@ -1008,17 +1008,26 @@ export function ConfigPage(props: ConfigPageProps) {
                     (resource, index) => (
                       <div
                         key={index}
-                        className="grid grid-cols-1 md:grid-cols-[120px_1fr_40px] gap-3 items-start"
+                        className="grid grid-cols-1 md:grid-cols-[40px_120px_minmax(0,1fr)_auto] gap-3 items-start rounded-2xl border border-slate-200/80 bg-white p-3 shadow-sm transition-shadow hover:shadow-md"
                       >
+                        <div className="flex h-8 items-center justify-center rounded-lg bg-sky-50 text-xs font-bold text-sky-600">
+                          {index + 1}
+                        </div>
                         <Select
                           value={resource.resource_type}
                           onChange={(value) =>
                             props.updateGreetDefaultResource(index, {
                               resource_type:
-                                value as ReplyResource["resource_type"],
+                                value as GreetResource["resource_type"],
                             })
                           }
-                          options={resourceTypeOptions()}
+                          options={resourceTypeOptions().map((option) => ({
+                            ...option,
+                            disabled:
+                              option.value === "LLM" &&
+                              greetTemplateHasLlm &&
+                              resource.resource_type !== "LLM",
+                          }))}
                         />
                         {renderResourceContent(
                           resource,
@@ -1032,14 +1041,76 @@ export function ConfigPage(props: ConfigPageProps) {
                               content,
                             }),
                         )}
-                        <Button
-                          type="text"
-                          danger
-                          icon={<DeleteOutlined />}
-                          onClick={() =>
-                            props.removeGreetDefaultResource(index)
-                          }
-                        />
+                        <div className="flex items-center justify-self-end rounded-xl border border-slate-200 bg-slate-50/80 p-1 shadow-inner">
+                          <div className="flex items-center gap-0.5 pr-1">
+                            <Button
+                              type="text"
+                              title="上移"
+                              aria-label={`上移第 ${index + 1} 条打招呼内容`}
+                              icon={<ArrowUpOutlined />}
+                              disabled={index === 0}
+                              onClick={() =>
+                                props.moveGreetDefaultResource(index, -1)
+                              }
+                              className="h-8! w-8! min-w-8! rounded-lg! p-0! text-slate-600! hover:bg-white! hover:shadow-sm!"
+                            />
+                            <Button
+                              type="text"
+                              title="下移"
+                              aria-label={`下移第 ${index + 1} 条打招呼内容`}
+                              icon={<ArrowDownOutlined />}
+                              disabled={
+                                index ===
+                                props.config.greet_config.default_template.length - 1
+                              }
+                              onClick={() =>
+                                props.moveGreetDefaultResource(index, 1)
+                              }
+                              className="h-8! w-8! min-w-8! rounded-lg! p-0! text-slate-600! hover:bg-white! hover:shadow-sm!"
+                            />
+                          </div>
+                          <div className="h-5 w-px bg-slate-200" />
+                          <Button
+                            title={
+                              resource.enabled === false
+                                ? "启用发送"
+                                : "停用发送"
+                            }
+                            aria-label={`${
+                              resource.enabled === false ? "启用" : "停用"
+                            }第 ${index + 1} 条打招呼内容`}
+                            type="text"
+                            className={
+                              resource.enabled === false
+                                ? "mx-1! h-8! w-8! min-w-8! rounded-lg! p-0! text-slate-500! hover:bg-white!"
+                                : "mx-1! h-8! w-8! min-w-8! rounded-lg! bg-emerald-50! p-0! text-emerald-600! hover:bg-emerald-100!"
+                            }
+                            icon={
+                              resource.enabled === false ? (
+                                <EyeInvisibleOutlined />
+                              ) : (
+                                <EyeOutlined />
+                              )
+                            }
+                            onClick={() =>
+                              props.updateGreetDefaultResource(index, {
+                                enabled: resource.enabled === false,
+                              })
+                            }
+                          />
+                          <div className="h-5 w-px bg-slate-200" />
+                          <Button
+                            type="text"
+                            title="删除"
+                            aria-label={`删除第 ${index + 1} 条打招呼内容`}
+                            danger
+                            icon={<DeleteOutlined />}
+                            onClick={() =>
+                              props.removeGreetDefaultResource(index)
+                            }
+                            className="ml-1! h-8! w-8! min-w-8! rounded-lg! p-0! hover:bg-red-50!"
+                          />
+                        </div>
                       </div>
                     ),
                   )}

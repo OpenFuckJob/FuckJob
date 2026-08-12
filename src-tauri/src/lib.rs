@@ -22,7 +22,7 @@ pub fn run() {
             let handle = app.handle().clone();
             let data_dir = handle.path().app_data_dir().map_err(|e| e.to_string())?;
             let config_path = config::config_path(&handle).map_err(|e| e.to_string())?;
-            storage::migration::migrate_v0_to_v1(
+            storage::migration::migrate_to_current(
                 &storage::migration::MigrationPaths::new(config_path, data_dir.clone()),
                 &credential::KeyringCredentialBackend::default(),
             )
