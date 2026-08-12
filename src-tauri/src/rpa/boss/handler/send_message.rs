@@ -1,11 +1,11 @@
 use anyhow::anyhow;
-use base64::{engine::general_purpose::STANDARD, Engine as _};
 use rust_drission::{utils::sleep_random_ms, Page};
 use std::{path::Path, time::Duration};
 
 use crate::{
     config::{ReplayResourceType, ReplyResource},
     logger,
+    rpa::common::upload_image_to_file_input,
 };
 
 // 发送文本消息
@@ -27,61 +27,21 @@ pub fn send_text_message(page: &Page, greeting: &str) -> Result<bool, anyhow::Er
     Ok(false)
 }
 
+// 不加 `input[type=file]` 裸兜底：Boss 聊天页还有简历上传框，误命中会把图片塞错地方
+const BOSS_IMAGE_INPUT_SELECTORS: &[&str] = &["input[type='file'][accept*='image']"];
+
 // 发送图片
 pub fn send_image(page: &Page, image_path: &Path) -> Result<bool, anyhow::Error> {
-    let file_data = std::fs::read(image_path)?;
-    let base64_data = STANDARD.encode(&file_data);
+    let outcome = upload_image_to_file_input(page, image_path, BOSS_IMAGE_INPUT_SELECTORS)?;
+    if !outcome.success {
+        logger::warning(format!("Boss 图片上传失败：{}", outcome.message))?;
+        return Ok(false);
+    }
 
-    let ext = image_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("png");
-    let mime_type = match ext.to_lowercase().as_str() {
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        _ => "image/png",
-    };
-
-    let filename = image_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("upload.png");
-
-    let base64_str = format!("data:{};base64,{}", mime_type, base64_data);
-
-    let js = format!(
-        r#"
-(() => {{
-  const base64 = "{}";
-  const input = document.querySelector('input[type="file"][accept*="image"]');
-  if (!input) {{
-    console.error("没找到上传 input");
-    return;
-  }}
-  function base64ToFile(base64, filename) {{
-    const arr = base64.split(',');
-    const mime = arr[0].match(/:(.*?);/)[1];
-    const bstr = atob(arr[1]);
-    let n = bstr.length;
-    const u8arr = new Uint8Array(n);
-    while (n--) {{
-      u8arr[n] = bstr.charCodeAt(n);
-    }}
-    return new File([u8arr], filename, {{ type: mime }});
-  }}
-  const file = base64ToFile(base64, "{}");
-  const dt = new DataTransfer();
-  dt.items.add(file);
-  input.files = dt.files;
-  input.dispatchEvent(new Event("change", {{ bubbles: true }}));
-  console.log("图片已自动上传");
-}})();
-"#,
-        base64_str, filename
-    );
-
-    page.run_js_await(&js)?;
+    logger::info(format!(
+        "Boss 图片已投递到上传控件（selector={} handled={}）",
+        outcome.matched_selector, outcome.handled
+    ))?;
     Ok(true)
 }
 

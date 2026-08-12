@@ -107,7 +107,6 @@ const PLATFORM_META: Record<PlatformKind, PlatformMeta> = {
     shortLabel: "猎聘",
     accent: "#722ed1",
     description: "适合猎聘职位搜索、筛选和主动沟通。",
-    limitation: "猎聘暂不支持自动发送图片资源，图片话术会被跳过。",
   },
 };
 
