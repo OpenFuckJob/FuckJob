@@ -189,7 +189,7 @@ export function DataManagementPanel() {
                 checked={includeConfig}
                 onChange={(e) => setIncludeConfig(e.target.checked)}
               >
-                同时导出应用系统全局配置 (包含打招呼/自动回复模板与岗位筛选规则)
+                同时导出应用配置（包含求职方案、话术与岗位筛选规则）
               </Checkbox>
             </Space>
             <div>
@@ -259,6 +259,9 @@ export function DataManagementPanel() {
               <Descriptions.Item label="简历快照与模板">
                 {previewManifest.stats.user_resumes_count} 个
               </Descriptions.Item>
+              <Descriptions.Item label="求职方案执行快照">
+                {previewManifest.stats.job_profile_snapshots_count ?? 0} 个
+              </Descriptions.Item>
             </Descriptions>
 
             <Divider style={{ margin: "12px 0" }} />
@@ -295,7 +298,7 @@ export function DataManagementPanel() {
                   checked={importConfig}
                   onChange={(e) => setImportConfig(e.target.checked)}
                 >
-                  同步覆盖更新系统配置 (打招呼与筛选规则)
+                  同步覆盖更新应用配置（包含求职方案、话术与筛选规则）
                 </Checkbox>
               </div>
             )}

@@ -8,6 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   filterTaskLogContent,
   filterTasksByPlatform,
+  getTaskProfileLabel,
   requestStopJobTask,
   sortTasksForQueue,
   sortTasksNewestFirst,
@@ -103,5 +104,12 @@ describe("workspace task API", () => {
       "liepin-old",
     ]);
     expect(filterTasksByPlatform(tasks, "all")).toBe(tasks);
+  });
+
+  it("shows conversation routing for reply tasks without a fixed profile", () => {
+    const replyTask = { ...task("reply", "boss", "queued", "2026-08-13T12:00:00Z"), mode: "reply_unread" as const };
+    expect(getTaskProfileLabel(replyTask)).toBe("按会话方案自动路由");
+    expect(getTaskProfileLabel({ ...replyTask, profile_name: "按会话自动选择" })).toBe("按会话方案自动路由");
+    expect(getTaskProfileLabel({ ...replyTask, profile_id: "ai", profile_name: "AI 工程师" })).toBe("AI 工程师");
   });
 });

@@ -260,6 +260,10 @@ fn upsert_synced_job(
     job_detail_dao::create(JobDetail {
         id: job_id.to_string(),
         platform: "boss".to_string(),
+        source_task_id: None,
+        profile_id: None,
+        profile_name: None,
+        profile_snapshot_id: None,
         title,
         company_name: company_name
             .map(|value| value.trim().to_string())

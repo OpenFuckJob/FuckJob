@@ -7,6 +7,7 @@ import {
   InputNumber,
   Modal,
   Radio,
+  Select,
   Segmented,
   Space,
   Steps,
@@ -44,6 +45,7 @@ import {
   isActiveJobTask,
 } from "../../types/rpa";
 import type { JobDetail } from "../../types/job-detail";
+import { getDefaultJobProfile, getJobProfiles, type AppRuntimeConfig } from "../../types/app-config";
 
 type CheckPhase = "idle" | "checking" | "done";
 
@@ -159,6 +161,12 @@ export function filterTaskLogContent(
     .join("\n");
 }
 
+export function getTaskProfileLabel(task: Pick<JobTaskInfo, "mode" | "profile_id" | "profile_name">): string {
+  if (task.mode === "reply_unread" && !task.profile_id) return "按会话方案自动路由";
+  if (task.mode === "sync_chat_history" && !task.profile_id) return "不使用求职方案";
+  return task.profile_name || "默认求职方案";
+}
+
 const TASK_STATE_ORDER: Record<JobTaskInfo["status"], number> = {
   running: 0,
   starting: 0,
@@ -239,7 +247,9 @@ interface StatTile {
 /* ────────── Component ────────── */
 
 const WorkspacePage = ({
+  config,
 }: {
+  config: AppRuntimeConfig;
   onNavigate?: (tab: "job-data") => void;
   onOpenConfig?: (group: "resume" | "llm" | "job" | "greet" | "reply" | "browser") => void;
 }) => {
@@ -259,6 +269,7 @@ const WorkspacePage = ({
   const [startModalOpen, setStartModalOpen] = useState(false);
   const [selectedMode, setSelectedMode] = useState<FlowMode>("job_hunting");
   const [intervalMinutes, setIntervalMinutes] = useState<number>(30);
+  const [selectedProfileId, setSelectedProfileId] = useState<string>(() => getDefaultJobProfile(config).id);
   const [platform, setPlatform] = useState<PlatformKind>("boss");
   const [modalPlatform, setModalPlatform] = useState<PlatformKind>("boss");
   const [pendingStartPlatforms, setPendingStartPlatforms] = useState<
@@ -391,6 +402,7 @@ const WorkspacePage = ({
       startedPlatform: PlatformKind,
       mode: FlowMode,
       intervalMinutes?: number,
+      profileId?: string,
     ) => {
       setPendingStartPlatforms((current) => ({
         ...current,
@@ -401,6 +413,7 @@ const WorkspacePage = ({
           platform: startedPlatform,
           mode,
           intervalMinutes: mode === "periodic_job_hunting" ? intervalMinutes : undefined,
+          profileId: mode === "job_hunting" || mode === "periodic_job_hunting" ? profileId : undefined,
         });
         if (!result.success || !result.data) {
           messageApi.error(commandErrorMessage(result.error, "启动失败"));
@@ -428,8 +441,9 @@ const WorkspacePage = ({
   const openStartModal = useCallback((targetPlatform: PlatformKind) => {
     setModalPlatform(targetPlatform);
     setSelectedMode("job_hunting");
+    setSelectedProfileId(getDefaultJobProfile(config).id);
     setStartModalOpen(true);
-  }, []);
+  }, [config]);
 
   const closeStartModal = useCallback(() => {
     setStartModalOpen(false);
@@ -441,6 +455,7 @@ const WorkspacePage = ({
       modalPlatform,
       selectedMode,
       selectedMode === "periodic_job_hunting" ? intervalMinutes : undefined,
+      selectedMode === "job_hunting" || selectedMode === "periodic_job_hunting" ? selectedProfileId : undefined,
     );
   }, [
     closeStartModal,
@@ -448,6 +463,7 @@ const WorkspacePage = ({
     intervalMinutes,
     modalPlatform,
     selectedMode,
+    selectedProfileId,
   ]);
 
   const handleStopTask = useCallback(async (taskId: string) => {
@@ -756,6 +772,9 @@ const WorkspacePage = ({
                     <Typography.Text type="secondary" style={{ display: "block", marginTop: 3, fontSize: 11.5 }}>
                       {task.task_id.slice(0, 8)} · {new Date(task.created_at).toLocaleString()}
                     </Typography.Text>
+                    <Typography.Text type="secondary" style={{ display: "block", marginTop: 2, fontSize: 11.5 }}>
+                      方案：{getTaskProfileLabel(task)}
+                    </Typography.Text>
                   </div>
                   <Tag color={taskStateColor(task.status)} style={{ width: "fit-content" }}>
                     {taskStateLabel(task.status)}{queuePosition ? ` · 第 ${queuePosition} 位` : ""}
@@ -842,6 +861,26 @@ const WorkspacePage = ({
               />
             </div>
           )}
+          {(selectedMode === "job_hunting" || selectedMode === "periodic_job_hunting") ? (
+            <div style={{ padding: "12px", background: "#f0f7ff", border: "1px solid #d6e8ff", borderRadius: 8 }}>
+              <Typography.Text strong style={{ display: "block", marginBottom: 8 }}>本次使用的求职方案</Typography.Text>
+              <Select
+                aria-label="本次使用的求职方案"
+                style={{ width: "100%" }}
+                value={selectedProfileId}
+                onChange={setSelectedProfileId}
+                options={getJobProfiles(config).filter((profile) => !profile.archived).map((profile) => ({
+                  value: profile.id,
+                  label: `${profile.name}${profile.id === (config.default_job_profile_id || getDefaultJobProfile(config).id) ? "（默认）" : ""}`,
+                }))}
+              />
+              <Typography.Text type="secondary" style={{ display: "block", marginTop: 6, fontSize: 12 }}>
+                任务加入队列后会固定使用该方案快照，之后修改配置不会影响本次任务。
+              </Typography.Text>
+            </div>
+          ) : selectedMode === "reply_unread" ? (
+            <Alert type="info" showIcon message="按会话方案自动路由" description="每条未读消息会沿用首次联系该岗位时使用的求职方案。" />
+          ) : null}
         </Space>
       </Modal>
 

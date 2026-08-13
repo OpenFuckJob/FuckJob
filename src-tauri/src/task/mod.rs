@@ -55,6 +55,12 @@ pub struct JobTaskInfo {
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub error: Option<String>,
+    #[serde(default)]
+    pub profile_id: Option<String>,
+    #[serde(default)]
+    pub profile_name: Option<String>,
+    #[serde(default)]
+    pub profile_snapshot_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -97,6 +103,7 @@ impl SchedulerState {
         mode: FlowMode,
         interval_minutes: Option<u64>,
         config: Arc<AppRuntimeConfig>,
+        profile: Option<JobTaskProfile>,
     ) -> Result<JobTaskInfo, String> {
         if self.queue.len() >= MAX_QUEUED_TASKS {
             return Err(format!(
@@ -125,6 +132,11 @@ impl SchedulerState {
             started_at: None,
             finished_at: None,
             error: None,
+            profile_id: profile.as_ref().and_then(|value| value.profile_id.clone()),
+            profile_name: profile
+                .as_ref()
+                .and_then(|value| value.profile_name.clone()),
+            profile_snapshot_id: profile.and_then(|value| value.profile_snapshot_id),
         };
         self.tasks.insert(
             task_id.clone(),
@@ -305,11 +317,12 @@ impl TaskManager {
         mode: FlowMode,
         interval_minutes: Option<u64>,
         config: AppRuntimeConfig,
+        profile: Option<JobTaskProfile>,
     ) -> Result<JobTaskInfo, String> {
         let max_parallel_tasks = config.browser_config.max_parallel_tasks;
         let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
         state.max_parallel_tasks = normalize_parallelism(max_parallel_tasks);
-        let info = state.enqueue(platform, mode, interval_minutes, Arc::new(config))?;
+        let info = state.enqueue(platform, mode, interval_minutes, Arc::new(config), profile)?;
         self.inner.wake_scheduler.notify_one();
         Ok(info)
     }
@@ -332,6 +345,13 @@ impl TaskManager {
         self.inner.wake_scheduler.notify_one();
         result
     }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct JobTaskProfile {
+    pub profile_id: Option<String>,
+    pub profile_name: Option<String>,
+    pub profile_snapshot_id: Option<String>,
 }
 
 pub static JOB_TASK_MANAGER: Lazy<TaskManager> = Lazy::new(TaskManager::new);
@@ -417,6 +437,7 @@ mod tests {
                 FlowMode::JobHunting,
                 None,
                 Arc::new(default_app_config()),
+                None,
             )
             .unwrap()
     }
@@ -500,6 +521,7 @@ mod tests {
                 FlowMode::PeriodicJobHunting,
                 Some(30),
                 Arc::new(default_app_config()),
+                None,
             )
             .unwrap();
 
@@ -509,9 +531,32 @@ mod tests {
                 FlowMode::PeriodicJobHunting,
                 Some(60),
                 Arc::new(default_app_config()),
+                None,
             )
             .unwrap_err();
 
         assert!(error.contains("已有周期投递任务"));
+    }
+
+    #[test]
+    fn task_info_exposes_bound_profile_metadata() {
+        let mut state = SchedulerState::new(1);
+        let info = state
+            .enqueue(
+                PlatformKind::Boss,
+                FlowMode::JobHunting,
+                None,
+                Arc::new(default_app_config()),
+                Some(JobTaskProfile {
+                    profile_id: Some("rust".into()),
+                    profile_name: Some("Rust 后端".into()),
+                    profile_snapshot_id: Some("fnv-1".into()),
+                }),
+            )
+            .unwrap();
+
+        assert_eq!(info.profile_id.as_deref(), Some("rust"));
+        assert_eq!(info.profile_name.as_deref(), Some("Rust 后端"));
+        assert_eq!(info.profile_snapshot_id.as_deref(), Some("fnv-1"));
     }
 }

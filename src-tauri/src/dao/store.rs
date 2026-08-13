@@ -1,4 +1,4 @@
-use crate::dao::model::{ChatMessageRecord, InterviewJobAnalysis, JobDetail};
+use crate::dao::model::{ChatMessageRecord, InterviewJobAnalysis, JobDetail, JobProfileSnapshot};
 use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -35,6 +35,12 @@ impl Identifiable for InterviewJobAnalysis {
 impl Identifiable for ChatMessageRecord {
     fn id(&self) -> &str {
         &self.id
+    }
+}
+
+impl Identifiable for JobProfileSnapshot {
+    fn id(&self) -> &str {
+        &self.snapshot_id
     }
 }
 

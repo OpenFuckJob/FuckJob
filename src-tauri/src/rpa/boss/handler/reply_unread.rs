@@ -7,7 +7,7 @@ use rust_drission::utils::sleep_random_ms;
 use crate::{
     browser,
     config::{AppRuntimeConfig, ReplayResourceType, ReplyResource, ReplyTemplate},
-    dao::{chat_message_dao, job_detail_dao},
+    dao::{chat_message_dao, job_detail_dao, profile_snapshot_dao},
     llm, logger,
     rpa::{
         boss::{
@@ -53,7 +53,6 @@ pub async fn reply_unread_on_page(
     page.get(BOSS_CHAT_URL)?;
     page.wait(".label-list .label-name", Duration::from_secs(10))?;
 
-    let replay_config = app_runtime_config.replay_config.clone();
     loop {
         if is_job_task_stop_requested() {
             logger::info("沟通任务已结束")?;
@@ -160,9 +159,36 @@ pub async fn reply_unread_on_page(
                 }
             }
 
-            if let Some(resources) =
-                resolve_reply_resources(&app_runtime_config, &replay_config, &chat_messages, job_id)
-                    .await?
+            let job = job_id.as_deref().and_then(|id| {
+                job_detail_dao::find_by_platform_job_id("boss", id)
+                    .ok()
+                    .flatten()
+            });
+            let (conversation_config, source) =
+                profile_snapshot_dao::resolve_for_job(&app_runtime_config, job.as_ref())
+                    .map_err(anyhow::Error::msg)?;
+            match source {
+                profile_snapshot_dao::ResolutionSource::Snapshot => {}
+                profile_snapshot_dao::ResolutionSource::CurrentProfile => {
+                    logger::warning("岗位方案快照缺失，按当前同名方案回复")?;
+                }
+                profile_snapshot_dao::ResolutionSource::DefaultProfile => {
+                    logger::warning("会话没有可恢复的求职方案归属，按默认方案回复")?;
+                }
+            }
+
+            if !conversation_config.replay_config.enable_auto_replay {
+                logger::info("该会话所属求职方案未启用自动回复，跳过")?;
+                continue;
+            }
+
+            if let Some(resources) = resolve_reply_resources(
+                &conversation_config,
+                &conversation_config.replay_config,
+                &chat_messages,
+                job_id,
+            )
+            .await?
             {
                 send_messages(page, resources)?;
                 logger::info("回复消息已发送")?;

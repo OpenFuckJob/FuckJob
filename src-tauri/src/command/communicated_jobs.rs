@@ -386,6 +386,10 @@ fn merge_collected_job_detail(
         Some(existing) => JobDetail {
             id: collected.id,
             platform: "boss".to_string(),
+            source_task_id: existing.source_task_id,
+            profile_id: existing.profile_id,
+            profile_name: existing.profile_name,
+            profile_snapshot_id: existing.profile_snapshot_id,
             title: prefer_new(collected.title, existing.title),
             company_name: prefer_new(collected.company_name, existing.company_name),
             detail: prefer_new(collected.detail, existing.detail),
@@ -400,6 +404,10 @@ fn merge_collected_job_detail(
         None => JobDetail {
             id: collected.id,
             platform: "boss".to_string(),
+            source_task_id: None,
+            profile_id: None,
+            profile_name: None,
+            profile_snapshot_id: None,
             title: collected.title,
             company_name: collected.company_name,
             detail: collected.detail,
@@ -564,6 +572,10 @@ mod tests {
         JobDetail {
             id: "abc123".to_string(),
             platform: "boss".to_string(),
+            source_task_id: None,
+            profile_id: None,
+            profile_name: None,
+            profile_snapshot_id: None,
             title: "旧标题".to_string(),
             company_name: "旧公司".to_string(),
             detail: "旧 JD".to_string(),

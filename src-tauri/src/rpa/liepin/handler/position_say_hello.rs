@@ -580,7 +580,7 @@ async fn greet_job(
 
         let resources = build_greet_resources(&config, &job).await?;
         send_resources(&page, resources)?;
-        save_job_detail(&job);
+        save_job_detail(&job, &config);
         logger::info(format!("猎聘 {} 初次沟通成功", job.title))?;
         Ok(())
     }
@@ -1081,11 +1081,16 @@ fn build_send_text_script(text: &str) -> String {
     )
 }
 
-fn save_job_detail(job: &RpaJob) {
+fn save_job_detail(job: &RpaJob, config: &AppRuntimeConfig) {
     let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let active = config.active_job_profile.as_ref();
     let job_detail = JobDetail {
         id: format!("liepin:{}", job.platform_job_id),
         platform: "liepin".to_string(),
+        source_task_id: crate::rpa::run_flow::current_job_task_id(),
+        profile_id: active.map(|profile| profile.id.clone()),
+        profile_name: active.map(|profile| profile.name.clone()),
+        profile_snapshot_id: active.map(|profile| profile.snapshot_id.clone()),
         title: job.title.clone(),
         company_name: job.company_name.clone(),
         detail: job.detail.clone(),

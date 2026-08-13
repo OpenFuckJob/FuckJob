@@ -12,9 +12,11 @@ use crate::{
 };
 
 const CONFIG_FILE_NAME: &str = "app_config.yaml";
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 pub const MIN_PARALLEL_TASKS: usize = 1;
 pub const MAX_PARALLEL_TASKS: usize = 2;
+pub const DEFAULT_JOB_PROFILE_ID: &str = "default";
+pub const DEFAULT_JOB_PROFILE_NAME: &str = "默认求职方案";
 
 const DEFAULT_CONFIG_YAML: &str = include_str!("resource/app_config.yaml");
 
@@ -34,49 +36,69 @@ fn default_greet_config() -> GreetConfig {
 }
 
 pub fn default_app_config() -> AppRuntimeConfig {
+    let job_filter_config = JobFilterConfig {
+        query: Some("Rust 工程师".to_string()),
+        city: None,
+        job_type: 0,
+        salary: 0,
+        experience: Vec::new(),
+        dgree: Vec::new(),
+        industry: Vec::new(),
+        scale: Vec::new(),
+        stage: Vec::new(),
+        keywords: Vec::new(),
+        exclude_keywords: Vec::new(),
+        company_keywords: Vec::new(),
+        company_exclude_keywords: Vec::new(),
+        enable_semantic_filter: false,
+        semantic_filter_intent: None,
+        regex_rules: Vec::new(),
+    };
+    let platform_filter_config = PlatformFilterConfig::default();
+    let greet_config = default_greet_config();
+    let replay_config = ReplayConfig {
+        enable_auto_replay: false,
+        templates: Vec::new(),
+        enable_llm: false,
+        reply_prompt: None,
+        background_context: None,
+    };
+    let resume_config = ResumeConfig {
+        inject_llm_context: false,
+        resume_path: None,
+        resume_content: None,
+    };
+    let default_profile = JobProfile {
+        id: DEFAULT_JOB_PROFILE_ID.to_string(),
+        name: DEFAULT_JOB_PROFILE_NAME.to_string(),
+        description: None,
+        archived: false,
+        job_filter_config: job_filter_config.clone(),
+        platform_filter_config: platform_filter_config.clone(),
+        resume_config: resume_config.clone(),
+        greet_config: greet_config.clone(),
+        replay_config: replay_config.clone(),
+    };
+
     AppRuntimeConfig {
         schema_version: CURRENT_SCHEMA_VERSION,
         onboarding_completed: false,
         llm_config: None,
         llm_fallbacks: Vec::new(),
         llm_retry_config: LlmRetryConfig::default(),
-        job_filter_config: JobFilterConfig {
-            query: Some("Rust 工程师".to_string()),
-            city: None,
-            job_type: 0,
-            salary: 0,
-            experience: Vec::new(),
-            dgree: Vec::new(),
-            industry: Vec::new(),
-            scale: Vec::new(),
-            stage: Vec::new(),
-            keywords: Vec::new(),
-            exclude_keywords: Vec::new(),
-            company_keywords: Vec::new(),
-            company_exclude_keywords: Vec::new(),
-            enable_semantic_filter: false,
-            semantic_filter_intent: None,
-            regex_rules: Vec::new(),
-        },
-        platform_filter_config: PlatformFilterConfig::default(),
-        greet_config: default_greet_config(),
-        replay_config: ReplayConfig {
-            enable_auto_replay: false,
-            templates: Vec::new(),
-            enable_llm: false,
-            reply_prompt: None,
-            background_context: None,
-        },
+        job_profiles: vec![default_profile],
+        default_job_profile_id: DEFAULT_JOB_PROFILE_ID.to_string(),
+        active_job_profile: None,
+        job_filter_config,
+        platform_filter_config,
+        greet_config,
+        replay_config,
         browser_config: BrowserConfig {
             user_data_dir: "".to_string(),
             chrome_exe_path: None,
             max_parallel_tasks: default_max_parallel_tasks(),
         },
-        resume_config: ResumeConfig {
-            inject_llm_context: false,
-            resume_path: None,
-            resume_content: None,
-        },
+        resume_config,
     }
 }
 
@@ -260,6 +282,24 @@ pub(crate) fn parse_config_content(content: &str) -> Result<AppRuntimeConfig, St
         config.resume_config =
             serde_yaml::from_value(resume_config.clone()).map_err(|error| error.to_string())?;
     }
+    if let Some(job_profiles) = value.get("job_profiles") {
+        config.job_profiles =
+            serde_yaml::from_value(job_profiles.clone()).map_err(|error| error.to_string())?;
+    } else {
+        // v0-v2 的五块求职配置就是唯一的求职方案。迁移时完整复制，避免升级丢失
+        // 平台筛选、简历或话术；之后仍保留顶层字段作为旧调用方的执行镜像。
+        config.job_profiles = vec![JobProfile::from_runtime_mirror(
+            DEFAULT_JOB_PROFILE_ID,
+            DEFAULT_JOB_PROFILE_NAME,
+            &config,
+        )];
+    }
+    config.default_job_profile_id = value
+        .get("default_job_profile_id")
+        .map(|profile_id| serde_yaml::from_value(profile_id.clone()))
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .unwrap_or_else(|| DEFAULT_JOB_PROFILE_ID.to_string());
 
     validate_and_normalize(&mut config)?;
     Ok(config)
@@ -347,7 +387,7 @@ pub fn validate_and_normalize(config: &mut AppRuntimeConfig) -> Result<(), Strin
 
     normalize_llm_retry_config(&mut config.llm_retry_config);
     normalize_llm_fallbacks(&mut config.llm_fallbacks)?;
-    validate_greet_template(&config.greet_config)?;
+    normalize_job_profiles(config)?;
     config.browser_config.max_parallel_tasks = config
         .browser_config
         .max_parallel_tasks
@@ -527,6 +567,18 @@ pub struct AppRuntimeConfig {
     #[serde(default)]
     pub llm_retry_config: LlmRetryConfig,
 
+    /// 可复用的求职方案卡。方案卡是持久化主数据，顶层五块配置仅作为默认方案的兼容镜像。
+    #[serde(default)]
+    pub job_profiles: Vec<JobProfile>,
+
+    /// 未显式选择方案时使用的方案标识
+    #[serde(default = "default_job_profile_id")]
+    pub default_job_profile_id: String,
+
+    /// 队列执行快照所绑定的方案元信息，不写入配置文件。
+    #[serde(skip)]
+    pub active_job_profile: Option<ActiveJobProfile>,
+
     /// 岗位筛选配置
     pub job_filter_config: JobFilterConfig,
 
@@ -545,6 +597,119 @@ pub struct AppRuntimeConfig {
 
     /// 简历配置
     pub resume_config: ResumeConfig,
+}
+
+fn default_job_profile_id() -> String {
+    DEFAULT_JOB_PROFILE_ID.to_string()
+}
+
+/// 一张完整、可独立执行的求职方案卡。
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct JobProfile {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub archived: bool,
+    pub job_filter_config: JobFilterConfig,
+    #[serde(default)]
+    pub platform_filter_config: PlatformFilterConfig,
+    pub resume_config: ResumeConfig,
+    pub greet_config: GreetConfig,
+    pub replay_config: ReplayConfig,
+}
+
+impl JobProfile {
+    fn from_runtime_mirror(id: &str, name: &str, config: &AppRuntimeConfig) -> Self {
+        Self {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: None,
+            archived: false,
+            job_filter_config: config.job_filter_config.clone(),
+            platform_filter_config: config.platform_filter_config.clone(),
+            resume_config: config.resume_config.clone(),
+            greet_config: config.greet_config.clone(),
+            replay_config: config.replay_config.clone(),
+        }
+    }
+}
+
+/// 运行中的配置快照实际绑定到哪张方案卡。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveJobProfile {
+    pub id: String,
+    pub name: String,
+    pub snapshot_id: String,
+}
+
+/// 方案解析结果：既提供旧 RPA 可直接消费的扁平配置，也提供队列持久化所需元信息。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedJobProfile {
+    pub config: AppRuntimeConfig,
+    pub profile_id: String,
+    pub profile_name: String,
+    pub snapshot_id: String,
+}
+
+/// 将选中方案解析为旧执行层所需的扁平配置快照。
+/// `profile_id` 为空时解析默认方案；归档方案不能用于创建新任务。
+pub fn resolve_job_profile(
+    config: &AppRuntimeConfig,
+    profile_id: Option<&str>,
+) -> Result<ResolvedJobProfile, String> {
+    let mut snapshot = config.clone();
+    validate_and_normalize(&mut snapshot)?;
+    let profile = snapshot.job_profile(profile_id)?.clone();
+    if profile.archived {
+        return Err(format!(
+            "求职方案「{}」已归档，不能用于新任务",
+            profile.name
+        ));
+    }
+
+    let snapshot_id = job_profile_snapshot_id(&profile)?;
+    let active = ActiveJobProfile {
+        id: profile.id.clone(),
+        name: profile.name.clone(),
+        snapshot_id: snapshot_id.clone(),
+    };
+    snapshot.job_filter_config = profile.job_filter_config;
+    snapshot.platform_filter_config = profile.platform_filter_config;
+    snapshot.resume_config = profile.resume_config;
+    snapshot.greet_config = profile.greet_config;
+    snapshot.replay_config = profile.replay_config;
+    snapshot.active_job_profile = Some(active);
+
+    Ok(ResolvedJobProfile {
+        config: snapshot,
+        profile_id: profile.id,
+        profile_name: profile.name,
+        snapshot_id,
+    })
+}
+
+fn job_profile_snapshot_id(profile: &JobProfile) -> Result<String, String> {
+    // 对稳定方案身份和实际执行内容做指纹。重命名或说明调整不会产生新版本；
+    // 但两张不同方案即使内容暂时相同也必须保持快照身份隔离，否则后保存的
+    // 方案元数据会覆盖前一张卡的历史归属。
+    let bytes = serde_json::to_vec(&(
+        &profile.id,
+        &profile.job_filter_config,
+        &profile.platform_filter_config,
+        &profile.resume_config,
+        &profile.greet_config,
+        &profile.replay_config,
+    ))
+    .map_err(|error| error.to_string())?;
+    // FNV-1a 是跨进程、跨平台确定的内容指纹；这里只用于识别相同执行内容，不承担安全用途。
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    Ok(format!("jp-{hash:016x}"))
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -667,6 +832,18 @@ impl LlmChainLink {
 }
 
 impl AppRuntimeConfig {
+    /// 按稳定标识查找方案；未传标识时使用默认方案。
+    pub fn job_profile(&self, profile_id: Option<&str>) -> Result<&JobProfile, String> {
+        let profile_id = profile_id
+            .map(str::trim)
+            .filter(|profile_id| !profile_id.is_empty())
+            .unwrap_or(self.default_job_profile_id.as_str());
+        self.job_profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .ok_or_else(|| format!("求职方案不存在：{profile_id}"))
+    }
+
     /// 按调用顺序返回大模型降级链：主用服务在前，其后是处于启用状态的备用服务。
     /// 未配置主用服务时返回空链，调用方据此报「请先配置大模型服务」。
     pub fn llm_chain(&self) -> Vec<LlmChainLink> {
@@ -1002,6 +1179,68 @@ pub struct BrowserConfig {
     /// 同时执行的自动化任务上限。当前仅开放跨平台双任务并行。
     #[serde(default = "default_max_parallel_tasks")]
     pub max_parallel_tasks: usize,
+}
+
+fn normalize_job_profiles(config: &mut AppRuntimeConfig) -> Result<(), String> {
+    // 备份导入等旧路径可能直接把 v0-v2 YAML 反序列化为 AppRuntimeConfig，绕过
+    // parse_config_content。这里补上同等迁移；v3 显式保存空列表仍按无效配置拒绝。
+    if config.job_profiles.is_empty() && config.schema_version < 3 {
+        config.job_profiles = vec![JobProfile::from_runtime_mirror(
+            DEFAULT_JOB_PROFILE_ID,
+            DEFAULT_JOB_PROFILE_NAME,
+            config,
+        )];
+        config.default_job_profile_id = DEFAULT_JOB_PROFILE_ID.to_string();
+    }
+
+    let mut ids = HashSet::new();
+    let mut active_count = 0usize;
+
+    for profile in &mut config.job_profiles {
+        profile.id = profile.id.trim().to_string();
+        profile.name = profile.name.trim().to_string();
+        profile.description = profile
+            .description
+            .take()
+            .map(|description| description.trim().to_string())
+            .filter(|description| !description.is_empty());
+
+        if profile.id.is_empty() {
+            return Err("求职方案标识不能为空".to_string());
+        }
+        if profile.name.is_empty() {
+            return Err(format!("求职方案 {} 的名称不能为空", profile.id));
+        }
+        if !ids.insert(profile.id.clone()) {
+            return Err(format!("求职方案标识重复：{}", profile.id));
+        }
+        if !profile.archived {
+            active_count += 1;
+        }
+        validate_greet_template(&profile.greet_config)
+            .map_err(|error| format!("求职方案「{}」无效：{error}", profile.name))?;
+    }
+
+    if active_count == 0 {
+        return Err("至少需要保留一张未归档的求职方案".to_string());
+    }
+
+    config.default_job_profile_id = config.default_job_profile_id.trim().to_string();
+    let default_profile = config
+        .job_profiles
+        .iter()
+        .find(|profile| profile.id == config.default_job_profile_id)
+        .ok_or_else(|| "默认求职方案不存在".to_string())?;
+    if default_profile.archived {
+        return Err("默认求职方案不能是已归档方案".to_string());
+    }
+
+    config.job_filter_config = default_profile.job_filter_config.clone();
+    config.platform_filter_config = default_profile.platform_filter_config.clone();
+    config.resume_config = default_profile.resume_config.clone();
+    config.greet_config = default_profile.greet_config.clone();
+    config.replay_config = default_profile.replay_config.clone();
+    Ok(())
 }
 
 fn default_max_parallel_tasks() -> usize {
@@ -1405,13 +1644,270 @@ greet_config:
     #[test]
     fn multiple_llm_items_are_rejected() {
         let mut config = default_app_config();
-        config.greet_config.default_template = vec![
+        config.job_profiles[0].greet_config.default_template = vec![
             GreetResource::new(ReplayResourceType::LLM, String::new()),
             GreetResource::new(ReplayResourceType::LLM, String::new()),
         ];
 
         let error = validate_and_normalize(&mut config).unwrap_err();
         assert!(error.contains("最多只能包含一条 LLM"));
+    }
+
+    #[test]
+    fn v2_flat_config_is_migrated_losslessly_to_default_profile() {
+        let config = parse_config_content(
+            r#"
+schema_version: 2
+job_filter_config:
+  query: AI 应用工程师
+  city: 101020100
+  job_type: 1901
+  salary: 405
+  experience: [103]
+  dgree: [203]
+  industry: []
+  scale: []
+  stage: []
+  keywords: [Agent]
+  exclude_keywords: [外包]
+  company_keywords: []
+  company_exclude_keywords: []
+  enable_semantic_filter: true
+  semantic_filter_intent: "AI Agent 应用开发"
+  regex_rules: []
+platform_filter_config:
+  liepin:
+    dq: "020"
+    salary_code: "40$60"
+    pub_time: "3"
+    work_year_code: "1$3"
+    comp_tag: ["104"]
+greet_config:
+  enable_llm: false
+  reply_prompt: null
+  default_template:
+    - resource_type: Text
+      content: "您好"
+replay_config:
+  enable_auto_replay: false
+  templates: []
+  enable_llm: false
+  reply_prompt: null
+  background_context: "可立即到岗"
+browser_config:
+  user_data_dir: profile
+  chrome_exe_path: null
+resume_config:
+  inject_llm_context: true
+  resume_path: resume.pdf
+  resume_content: "Agent 项目经验"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.job_profiles.len(), 1);
+        assert_eq!(config.default_job_profile_id, DEFAULT_JOB_PROFILE_ID);
+        let profile = &config.job_profiles[0];
+        assert_eq!(profile.name, DEFAULT_JOB_PROFILE_NAME);
+        assert_eq!(
+            profile.job_filter_config.query.as_deref(),
+            Some("AI 应用工程师")
+        );
+        assert_eq!(
+            profile.platform_filter_config.liepin.dq.as_deref(),
+            Some("020")
+        );
+        assert_eq!(
+            profile.resume_config.resume_content.as_deref(),
+            Some("Agent 项目经验")
+        );
+        assert_eq!(profile.greet_config.default_template[0].content, "您好");
+        assert_eq!(
+            profile.replay_config.background_context.as_deref(),
+            Some("可立即到岗")
+        );
+    }
+
+    #[test]
+    fn job_profile_validation_rejects_invalid_collections_and_default() {
+        let mut config = default_app_config();
+        config.job_profiles[0].name = "   ".to_string();
+        assert!(validate_and_normalize(&mut config)
+            .unwrap_err()
+            .contains("名称不能为空"));
+
+        let mut config = default_app_config();
+        config.job_profiles.push(config.job_profiles[0].clone());
+        assert!(validate_and_normalize(&mut config)
+            .unwrap_err()
+            .contains("标识重复"));
+
+        let mut config = default_app_config();
+        config.default_job_profile_id = "missing".to_string();
+        assert!(validate_and_normalize(&mut config)
+            .unwrap_err()
+            .contains("默认求职方案不存在"));
+
+        let mut config = default_app_config();
+        config.job_profiles[0].archived = true;
+        assert!(validate_and_normalize(&mut config)
+            .unwrap_err()
+            .contains("至少需要保留"));
+
+        let mut config = default_app_config();
+        let mut available = config.job_profiles[0].clone();
+        available.id = "available".to_string();
+        config.job_profiles.push(available);
+        config.job_profiles[0].archived = true;
+        assert!(validate_and_normalize(&mut config)
+            .unwrap_err()
+            .contains("默认求职方案不能是已归档"));
+    }
+
+    #[test]
+    fn v3_explicit_empty_profile_collection_is_rejected() {
+        let error = parse_config_content(
+            r#"
+schema_version: 3
+default_job_profile_id: default
+job_profiles: []
+"#,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("至少需要保留"));
+    }
+
+    #[test]
+    fn direct_v2_deserialization_is_migrated_during_normalization() {
+        let serialized = serde_yaml::to_string(&default_app_config()).unwrap();
+        let mut value: serde_yaml::Value = serde_yaml::from_str(&serialized).unwrap();
+        let mapping = value.as_mapping_mut().unwrap();
+        mapping.remove(serde_yaml::Value::String("job_profiles".to_string()));
+        mapping.remove(serde_yaml::Value::String(
+            "default_job_profile_id".to_string(),
+        ));
+        mapping.insert(
+            serde_yaml::Value::String("schema_version".to_string()),
+            serde_yaml::Value::Number(2.into()),
+        );
+        let legacy = serde_yaml::to_string(&value).unwrap();
+        let mut config: AppRuntimeConfig = serde_yaml::from_str(&legacy).unwrap();
+
+        validate_and_normalize(&mut config).unwrap();
+
+        assert_eq!(config.job_profiles.len(), 1);
+        assert_eq!(config.job_profiles[0].id, DEFAULT_JOB_PROFILE_ID);
+        assert_eq!(
+            config.job_profiles[0].job_filter_config,
+            config.job_filter_config
+        );
+    }
+
+    #[test]
+    fn profile_config_round_trip_preserves_cards_and_default_mirror() {
+        let mut config = default_app_config();
+        let mut second = config.job_profiles[0].clone();
+        second.id = "rust-backend".to_string();
+        second.name = "Rust 后端".to_string();
+        second.description = Some("  高并发服务端方向  ".to_string());
+        second.job_filter_config.query = Some("Rust 后端工程师".to_string());
+        config.job_profiles.push(second);
+        config.default_job_profile_id = "rust-backend".to_string();
+        validate_and_normalize(&mut config).unwrap();
+
+        let serialized = serde_yaml::to_string(&config).unwrap();
+        let restored = parse_config_content(&serialized).unwrap();
+
+        assert_eq!(restored.job_profiles.len(), 2);
+        assert_eq!(restored.default_job_profile_id, "rust-backend");
+        assert_eq!(
+            restored.job_profiles[1].description.as_deref(),
+            Some("高并发服务端方向")
+        );
+        assert_eq!(
+            restored.job_filter_config.query.as_deref(),
+            Some("Rust 后端工程师")
+        );
+        assert_eq!(restored.active_job_profile, None);
+    }
+
+    #[test]
+    fn normalization_mirrors_default_profile_into_flat_config() {
+        let mut config = default_app_config();
+        config.job_profiles[0].job_filter_config.query = Some("后端工程师".to_string());
+        config.job_profiles[0].resume_config.resume_content = Some("Rust 项目".to_string());
+        config.job_filter_config.query = Some("过期镜像".to_string());
+
+        validate_and_normalize(&mut config).unwrap();
+
+        assert_eq!(
+            config.job_filter_config.query.as_deref(),
+            Some("后端工程师")
+        );
+        assert_eq!(
+            config.resume_config.resume_content.as_deref(),
+            Some("Rust 项目")
+        );
+    }
+
+    #[test]
+    fn resolve_job_profile_builds_flat_immutable_execution_snapshot() {
+        let mut config = default_app_config();
+        let mut ai_profile = config.job_profiles[0].clone();
+        ai_profile.id = "ai-agent".to_string();
+        ai_profile.name = "AI Agent".to_string();
+        ai_profile.job_filter_config.query = Some("AI Agent 工程师".to_string());
+        ai_profile.resume_config.resume_content = Some("定向简历".to_string());
+        config.job_profiles.push(ai_profile);
+
+        let resolved = resolve_job_profile(&config, Some("ai-agent")).unwrap();
+
+        assert_eq!(resolved.profile_id, "ai-agent");
+        assert_eq!(resolved.profile_name, "AI Agent");
+        assert!(resolved.snapshot_id.starts_with("jp-"));
+        assert_eq!(
+            resolved.config.job_filter_config.query.as_deref(),
+            Some("AI Agent 工程师")
+        );
+        assert_eq!(
+            resolved.config.resume_config.resume_content.as_deref(),
+            Some("定向简历")
+        );
+        assert_eq!(
+            resolved.config.active_job_profile.as_ref().unwrap().id,
+            "ai-agent"
+        );
+        assert!(!serde_yaml::to_string(&resolved.config)
+            .unwrap()
+            .contains("active_job_profile"));
+
+        // 后续编辑原方案不会污染已经解析完成的队列快照。
+        config.job_profiles[1].resume_config.resume_content = Some("新版简历".to_string());
+        assert_eq!(
+            resolved.config.resume_config.resume_content.as_deref(),
+            Some("定向简历")
+        );
+    }
+
+    #[test]
+    fn snapshot_id_tracks_execution_content_but_not_profile_label() {
+        let config = default_app_config();
+        let first = resolve_job_profile(&config, None).unwrap();
+        let mut renamed = config.clone();
+        renamed.job_profiles[0].name = "重命名方案".to_string();
+        let second = resolve_job_profile(&renamed, None).unwrap();
+        assert_eq!(first.snapshot_id, second.snapshot_id);
+
+        renamed.job_profiles[0].job_filter_config.query = Some("Java".to_string());
+        let changed = resolve_job_profile(&renamed, None).unwrap();
+        assert_ne!(first.snapshot_id, changed.snapshot_id);
+
+        let mut copied = config.clone();
+        copied.job_profiles[0].id = "copied-profile".to_string();
+        copied.default_job_profile_id = "copied-profile".to_string();
+        let copied = resolve_job_profile(&copied, None).unwrap();
+        assert_ne!(first.snapshot_id, copied.snapshot_id);
     }
 
     fn fallback_entry(id: &str, model: &str) -> LlmProviderEntry {

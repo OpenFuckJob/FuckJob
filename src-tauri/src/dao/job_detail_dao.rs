@@ -26,6 +26,25 @@ pub fn get_by_id(id: &str) -> Result<Option<JobDetail>> {
     store().get_by_id(id)
 }
 
+/// 平台侧有时会给出带/不带平台前缀的岗位标识，按两种形式查找归属。
+pub fn find_by_platform_job_id(platform: &str, id: &str) -> Result<Option<JobDetail>> {
+    if let Some(job) = get_by_id(id)? {
+        return Ok(Some(job));
+    }
+    let prefixed = format!("{platform}:{id}");
+    if let Some(job) = get_by_id(&prefixed)? {
+        return Ok(Some(job));
+    }
+    Ok(list()?.into_iter().find(|job| {
+        job.platform.eq_ignore_ascii_case(platform)
+            && job
+                .id
+                .strip_prefix(&format!("{platform}:"))
+                .unwrap_or(&job.id)
+                == id
+    }))
+}
+
 pub fn create(job: JobDetail) -> Result<()> {
     store().insert(job)
 }

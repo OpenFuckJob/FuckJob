@@ -3,6 +3,7 @@ export interface BackupStats {
   chat_messages_count: number;
   interview_analyses_count: number;
   user_resumes_count: number;
+  job_profile_snapshots_count?: number;
 }
 
 export interface ExportManifest {
@@ -21,6 +22,8 @@ export interface ImportResultStats {
   interview_analyses_updated: number;
   user_resumes_added: number;
   config_imported: boolean;
+  job_profile_snapshots_added?: number;
+  job_profile_snapshots_updated?: number;
 }
 
 export type ImportStrategy = "merge" | "overwrite";

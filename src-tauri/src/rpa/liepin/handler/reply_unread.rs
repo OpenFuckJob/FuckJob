@@ -8,6 +8,7 @@ use serde::Deserialize;
 use crate::{
     browser,
     config::{AppRuntimeConfig, ReplayResourceType, ReplyResource, ReplyTemplate},
+    dao::{job_detail_dao, model::JobDetail, profile_snapshot_dao},
     logger,
     rpa::{
         common::ChatMessage,
@@ -61,7 +62,6 @@ pub async fn reply_unread_on_page(
     // 会话列表是抽屉打开那一刻才拉的，记录器必须赶在那次点击之前挂上
     let mut since = open_chat_drawer(page)?;
 
-    let replay_config = config.replay_config.clone();
     // 处理完的会话未读角标会消失，但列表会随新消息重排，
     // 用会话 id 去重才不会漏处理或重复处理
     let mut handled: HashSet<String> = HashSet::new();
@@ -145,8 +145,34 @@ pub async fn reply_unread_on_page(
                 truncate_str(latest, 30)
             ))?;
 
-            if let Some(resources) =
-                resolve_reply_resources(&config, &replay_config.templates, &chat_messages).await?
+            let owned_job = resolve_owned_job(&contact, &chat_messages);
+            let (conversation_config, source) =
+                profile_snapshot_dao::resolve_for_job(&config, owned_job.as_ref())
+                    .map_err(anyhow::Error::msg)?;
+            match source {
+                profile_snapshot_dao::ResolutionSource::Snapshot => {}
+                profile_snapshot_dao::ResolutionSource::CurrentProfile => {
+                    logger::warning("猎聘会话的方案快照缺失，按当前同名方案回复")?;
+                }
+                profile_snapshot_dao::ResolutionSource::DefaultProfile => {
+                    logger::warning(format!(
+                        "猎聘会话「{}」无法可靠映射到历史岗位，按默认方案回复",
+                        truncate_str(&contact.display_name(), 20)
+                    ))?;
+                }
+            }
+
+            if !conversation_config.replay_config.enable_auto_replay {
+                logger::info("猎聘会话所属求职方案未启用自动回复，跳过")?;
+                continue;
+            }
+
+            if let Some(resources) = resolve_reply_resources(
+                &conversation_config,
+                &conversation_config.replay_config.templates,
+                &chat_messages,
+            )
+            .await?
             {
                 send_resources(page, resources)?;
                 logger::info("猎聘回复消息已发送")?;
@@ -157,6 +183,36 @@ pub async fn reply_unread_on_page(
             sleep_random_ms(2500, 4500);
         }
     }
+}
+
+/// 猎聘当前接口没有直接给出岗位 ID。只有公司唯一命中，或岗位标题也能从消息中
+/// 明确命中时才建立归属；存在歧义时宁可回退默认方案，不能猜测后自动发送。
+fn resolve_owned_job(contact: &UnreadContact, messages: &[ChatMessage]) -> Option<JobDetail> {
+    if contact.company.trim().is_empty() {
+        return None;
+    }
+    let candidates = job_detail_dao::find_by_company(&contact.company).ok()?;
+    select_owned_job(candidates, messages)
+}
+
+fn select_owned_job(candidates: Vec<JobDetail>, messages: &[ChatMessage]) -> Option<JobDetail> {
+    let liepin = candidates
+        .into_iter()
+        .filter(|job| job.platform.eq_ignore_ascii_case("liepin"))
+        .collect::<Vec<_>>();
+    if liepin.len() == 1 {
+        return liepin.into_iter().next();
+    }
+    let title_matches = liepin
+        .into_iter()
+        .filter(|job| {
+            !job.title.trim().is_empty()
+                && messages
+                    .iter()
+                    .any(|message| message.text.contains(&job.title))
+        })
+        .collect::<Vec<_>>();
+    (title_matches.len() == 1).then(|| title_matches[0].clone())
 }
 
 /// 打开右侧会话抽屉，返回抓包的时间基准。
@@ -762,6 +818,37 @@ fn truncate_str(s: &str, max_len: usize) -> &str {
 mod tests {
     use super::*;
 
+    fn job(id: &str, title: &str) -> JobDetail {
+        JobDetail {
+            id: id.into(),
+            platform: "liepin".into(),
+            source_task_id: None,
+            profile_id: Some(id.into()),
+            profile_name: None,
+            profile_snapshot_id: None,
+            title: title.into(),
+            company_name: "同一家公司".into(),
+            detail: String::new(),
+            salary: String::new(),
+            location: None,
+            is_reply: false,
+            is_send_resume: false,
+            created_at: String::new(),
+            resume_sent_at: None,
+            updated_at: String::new(),
+        }
+    }
+
+    fn message(text: &str) -> ChatMessage {
+        ChatMessage {
+            mid: 1,
+            received: true,
+            text: text.into(),
+            time: 1,
+            from_name: String::new(),
+        }
+    }
+
     #[test]
     fn only_contacts_with_unread_count_are_returned() {
         let body = r#"{
@@ -881,5 +968,18 @@ mod tests {
             .unwrap()
             .is_empty());
         assert!(parse_unread_contacts(r#"{"flag":1}"#).unwrap().is_empty());
+    }
+
+    #[test]
+    fn ambiguous_company_never_guesses_job_ownership() {
+        let candidates = vec![job("one", "Rust 工程师"), job("two", "Java 工程师")];
+        assert!(select_owned_job(candidates, &[message("方便聊聊吗")]).is_none());
+    }
+
+    #[test]
+    fn ambiguous_company_can_use_unique_explicit_job_title() {
+        let candidates = vec![job("one", "Rust 工程师"), job("two", "Java 工程师")];
+        let selected = select_owned_job(candidates, &[message("Rust 工程师岗位方便聊聊吗")]);
+        assert_eq!(selected.map(|job| job.id), Some("one".into()));
     }
 }

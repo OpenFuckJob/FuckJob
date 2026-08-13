@@ -35,6 +35,10 @@ export interface JobTaskInfo {
   started_at: string | null;
   finished_at: string | null;
   error: string | null;
+  /** 求职任务绑定的方案快照；回复未读等路由任务为空。 */
+  profile_id?: string | null;
+  profile_name?: string | null;
+  profile_snapshot_id?: string | null;
 }
 
 export interface JobTaskOverview {

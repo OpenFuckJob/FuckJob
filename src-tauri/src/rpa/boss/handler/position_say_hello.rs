@@ -633,11 +633,16 @@ fn extract_job_id(url: &str) -> Option<&str> {
     Some(&url[start..end])
 }
 
-fn save_job_detail(job_id: &str, greet_job: &GreetJob) {
+fn save_job_detail(job_id: &str, greet_job: &GreetJob, config: &AppRuntimeConfig) {
     let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let active = config.active_job_profile.as_ref();
     let job_detail = JobDetail {
         id: job_id.to_string(),
         platform: "boss".to_string(),
+        source_task_id: crate::rpa::run_flow::current_job_task_id(),
+        profile_id: active.map(|profile| profile.id.clone()),
+        profile_name: active.map(|profile| profile.name.clone()),
+        profile_snapshot_id: active.map(|profile| profile.snapshot_id.clone()),
         title: greet_job.title.clone(),
         company_name: greet_job.company_name.clone(),
         detail: greet_job.detail.clone(),
@@ -932,7 +937,7 @@ async fn handle_greet_on_work_tab(
     // 已显示成功提示但站点没有跳转聊天页时，默认招呼已经真实发出；不能误判为失败。
     if greet_success_seen {
         logger::info("站点已确认向 BOSS 发送消息，未跳转聊天页，当前岗位视为建联成功")?;
-        save_job_detail(&greet_job.platform_job_id, &greet_job);
+        save_job_detail(&greet_job.platform_job_id, &greet_job, &config);
         return Ok(());
     }
 
@@ -986,7 +991,7 @@ async fn handle_send_message_on_chat_page(
     send_if_any(resources, |resources| send_messages(page, resources))?;
 
     // 保存该岗位至本地数据库
-    save_job_detail(&greet_job.platform_job_id, &greet_job);
+    save_job_detail(&greet_job.platform_job_id, &greet_job, &config);
 
     sleep_random_ms(1200, 2000);
 

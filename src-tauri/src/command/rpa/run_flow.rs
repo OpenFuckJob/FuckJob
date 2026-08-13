@@ -1,9 +1,10 @@
 use crate::{
     command::base::CommandResult,
-    config::load_app_config,
+    config::{load_app_config, resolve_job_profile},
+    dao::{model::JobProfileSnapshot, profile_snapshot_dao},
     logger,
     rpa::run_flow::{self, EnvCheckResult, FlowMode, PlatformKind, ReadinessReport},
-    task::{JobTaskInfo, JobTaskOverview, JOB_TASK_MANAGER},
+    task::{JobTaskInfo, JobTaskOverview, JobTaskProfile, JOB_TASK_MANAGER},
 };
 
 #[tauri::command]
@@ -192,14 +193,51 @@ pub fn start_job_task(
     platform: PlatformKind,
     mode: FlowMode,
     interval_minutes: Option<u64>,
+    profile_id: Option<String>,
 ) -> CommandResult<JobTaskInfo> {
     if mode == FlowMode::PeriodicJobHunting && interval_minutes.is_none_or(|minutes| minutes == 0) {
         return CommandResult::err("周期性投递间隔必须大于 0 分钟");
     }
 
-    let config = match crate::config::load_app_config_inner(app_handle) {
+    let base_config = match crate::config::load_app_config_inner(app_handle) {
         Ok(config) => config,
         Err(error) => return CommandResult::err(error),
+    };
+    let (config, task_profile) = match mode {
+        FlowMode::JobHunting | FlowMode::PeriodicJobHunting => {
+            let resolved = match resolve_job_profile(&base_config, profile_id.as_deref()) {
+                Ok(resolved) => resolved,
+                Err(error) => return CommandResult::err(error),
+            };
+            let Some(snapshot) = JobProfileSnapshot::from_resolved(&resolved.config) else {
+                return CommandResult::err("创建求职方案快照失败：缺少活动方案元信息");
+            };
+            if let Err(error) = profile_snapshot_dao::upsert(snapshot) {
+                return CommandResult::err(format!("保存求职方案快照失败：{error}"));
+            }
+            let profile = JobTaskProfile {
+                profile_id: Some(resolved.profile_id),
+                profile_name: Some(resolved.profile_name),
+                profile_snapshot_id: Some(resolved.snapshot_id),
+            };
+            (resolved.config, Some(profile))
+        }
+        FlowMode::ReplyUnread => {
+            // 回复任务会逐会话恢复首次建联快照，不能在整批任务上固定一张方案。
+            let config = match resolve_job_profile(&base_config, None) {
+                Ok(resolved) => resolved.config,
+                Err(error) => return CommandResult::err(error),
+            };
+            (
+                config,
+                Some(JobTaskProfile {
+                    profile_id: None,
+                    profile_name: Some("按会话自动选择".to_string()),
+                    profile_snapshot_id: None,
+                }),
+            )
+        }
+        FlowMode::SyncChatHistory => (base_config, None),
     };
     let readiness = run_flow::inspect_readiness(platform, mode, &config);
     if !readiness.ready {
@@ -213,7 +251,7 @@ pub fn start_job_task(
         return CommandResult::err(format!("任务准备未完成：{missing}"));
     }
 
-    match JOB_TASK_MANAGER.submit(platform, mode, interval_minutes, config) {
+    match JOB_TASK_MANAGER.submit(platform, mode, interval_minutes, config, task_profile) {
         Ok(task) => CommandResult::ok(task),
         Err(error) => CommandResult::err(error),
     }

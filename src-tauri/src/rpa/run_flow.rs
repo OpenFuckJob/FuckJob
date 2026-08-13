@@ -219,14 +219,26 @@ pub fn inspect_readiness(
     });
 
     let needs_reply_config = matches!(mode, FlowMode::ReplyUnread);
+    let replay_configs = config
+        .job_profiles
+        .iter()
+        .map(|profile| &profile.replay_config)
+        .collect::<Vec<_>>();
+    let auto_reply_configs = replay_configs
+        .iter()
+        .copied()
+        .filter(|replay| replay.enable_auto_replay)
+        .collect::<Vec<_>>();
+    let any_auto_reply = !auto_reply_configs.is_empty();
     let reply_ready = !needs_reply_config
-        || !config.replay_config.enable_auto_replay
-        || config.replay_config.enable_llm
-        || config.replay_config.templates.iter().any(|template| {
-            template
-                .content
-                .iter()
-                .any(|resource| !resource.content.trim().is_empty())
+        || auto_reply_configs.iter().all(|replay| {
+            replay.enable_llm
+                || replay.templates.iter().any(|template| {
+                    template
+                        .content
+                        .iter()
+                        .any(|resource| !resource.content.trim().is_empty())
+                })
         });
     items.push(ReadinessItem {
         key: "reply".to_string(),
@@ -238,8 +250,8 @@ pub fn inspect_readiness(
         },
         message: if !needs_reply_config {
             "当前模式不使用自动回复".to_string()
-        } else if !config.replay_config.enable_auto_replay {
-            "自动回复未启用".to_string()
+        } else if !any_auto_reply {
+            "所有求职方案均未启用自动回复".to_string()
         } else if reply_ready {
             "自动回复资源已配置".to_string()
         } else {
@@ -275,10 +287,14 @@ pub fn inspect_readiness(
         config_group: Some("job".to_string()),
     });
 
-    let llm_needed = !matches!(mode, FlowMode::SyncChatHistory)
-        && (config.replay_config.enable_llm
-            || config.job_filter_config.enable_semantic_filter
-            || config.greet_config.llm_resource_ready());
+    let llm_needed = match mode {
+        FlowMode::ReplyUnread => auto_reply_configs.iter().any(|replay| replay.enable_llm),
+        FlowMode::JobHunting | FlowMode::PeriodicJobHunting => {
+            config.job_filter_config.enable_semantic_filter
+                || config.greet_config.llm_resource_ready()
+        }
+        FlowMode::SyncChatHistory => false,
+    };
     items.push(ReadinessItem {
         key: "llm".to_string(),
         label: "大模型".to_string(),
@@ -390,6 +406,16 @@ impl Drop for JobTaskContextGuard {
 pub fn enter_job_task_context(task_id: String, cancelled: Arc<AtomicBool>) -> JobTaskContextGuard {
     CURRENT_JOB_TASK.with(|current| *current.borrow_mut() = Some((task_id, cancelled)));
     JobTaskContextGuard
+}
+
+/// 当前队列 worker 的任务标识。非队列兼容入口返回 None。
+pub fn current_job_task_id() -> Option<String> {
+    CURRENT_JOB_TASK.with(|current| {
+        current
+            .borrow()
+            .as_ref()
+            .map(|(task_id, _)| task_id.clone())
+    })
 }
 
 fn has_managed_job_task_context() -> bool {
@@ -768,6 +794,38 @@ mod tests {
 
         assert_eq!(llm.level, ReadinessLevel::Ready);
         assert_eq!(llm.message, "当前模式不依赖大模型");
+    }
+
+    #[test]
+    fn reply_readiness_checks_all_profile_routes_instead_of_only_default() {
+        let mut config = default_app_config();
+        config.job_profiles[0].replay_config.enable_auto_replay = false;
+        let mut routed = config.job_profiles[0].clone();
+        routed.id = "routed".to_string();
+        routed.name = "需要 AI 的历史方案".to_string();
+        routed.replay_config.enable_auto_replay = true;
+        routed.replay_config.enable_llm = true;
+        config.job_profiles.push(routed);
+
+        let report = inspect_readiness(PlatformKind::Boss, FlowMode::ReplyUnread, &config);
+
+        assert_eq!(find_item(&report, "reply").level, ReadinessLevel::Ready);
+        assert_eq!(find_item(&report, "llm").level, ReadinessLevel::Blocked);
+    }
+
+    #[test]
+    fn reply_readiness_allows_a_sync_run_when_every_profile_disables_auto_reply() {
+        let mut config = default_app_config();
+        config.job_profiles[0].replay_config.enable_auto_replay = false;
+
+        let report = inspect_readiness(PlatformKind::Boss, FlowMode::ReplyUnread, &config);
+
+        assert_eq!(find_item(&report, "reply").level, ReadinessLevel::Ready);
+        assert_eq!(
+            find_item(&report, "reply").message,
+            "所有求职方案均未启用自动回复"
+        );
+        assert_eq!(find_item(&report, "llm").level, ReadinessLevel::Ready);
     }
 
     #[test]

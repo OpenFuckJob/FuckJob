@@ -16,6 +16,10 @@ import {
   Cascader,
   Collapse,
   Alert,
+  Dropdown,
+  Modal,
+  Tabs,
+  Tag,
   message as antdMessage,
 } from "antd";
 import {
@@ -33,6 +37,8 @@ import {
   BrowserConfig,
   ResumeConfig,
   RegexRule,
+  JobProfile,
+  getJobProfiles,
 } from "@/types/app-config";
 import {
   jobTypeOptions,
@@ -62,6 +68,11 @@ import {
   ArrowDownOutlined,
   EyeOutlined,
   EyeInvisibleOutlined,
+  CopyOutlined,
+  MoreOutlined,
+  EditOutlined,
+  StarOutlined,
+  InboxOutlined,
 } from "@ant-design/icons";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -175,6 +186,14 @@ export interface ConfigPageProps {
   removeRule: (index: number) => void;
   importConfig: (path: string) => Promise<void>;
   exportConfig: (path: string) => Promise<void>;
+  activeProfileId: string;
+  onSelectProfile: (id: string) => void;
+  onCreateProfile: (meta: Pick<JobProfile, "name" | "description">) => void;
+  onDuplicateProfile: () => void;
+  onUpdateProfileMeta: (next: Partial<Pick<JobProfile, "name" | "description">>) => void;
+  onSetDefaultProfile: () => void;
+  onArchiveProfile: () => void;
+  onDeleteProfile: () => void;
 }
 
 const configGroupKeys = [
@@ -195,24 +214,29 @@ const toVisibleConfigGroup = (group?: ConfigGroup): VisibleConfigGroup =>
     : "resume";
 
 const menuItems = [
-  { type: "group" as const, label: "基础环境", children: [
-    { key: "browser", icon: <GlobalOutlined />, label: "浏览器环境" },
+  { type: "group" as const, label: "求职设置", children: [
+    { key: "profile", icon: <ProductOutlined />, label: "求职方案" },
+  ] },
+  { type: "group" as const, label: "系统能力", children: [
     { key: "llm", icon: <RobotOutlined />, label: "大模型" },
+    { key: "browser", icon: <GlobalOutlined />, label: "浏览器环境" },
   ] },
-  { type: "group" as const, label: "求职策略", children: [
-    { key: "job", icon: <ProductOutlined />, label: "岗位筛选" },
-    { key: "resume", icon: <FilePdfOutlined />, label: "简历配置" },
-  ] },
-  { type: "group" as const, label: "沟通策略", children: [
-    { key: "greet", icon: <CommentOutlined />, label: "打招呼配置" },
-    { key: "reply", icon: <CommentOutlined />, label: "自动回复" },
-  ] },
-  { type: "group" as const, label: "数据管理", children: [
+  { type: "group" as const, label: "数据与应用", children: [
     { key: "data", icon: <DatabaseOutlined />, label: "备份与设备共享" },
-  ] },
-  { type: "group" as const, label: "系统信息", children: [
     { key: "about", icon: <InfoCircleOutlined />, label: "软件与更新" },
   ] },
+];
+
+const profileGroupKeys = ["job", "resume", "greet", "reply"] as const;
+type ProfileGroup = (typeof profileGroupKeys)[number];
+const isProfileGroup = (group: VisibleConfigGroup): group is ProfileGroup =>
+  profileGroupKeys.includes(group as ProfileGroup);
+
+const profileTabItems = [
+  { key: "job", icon: <ProductOutlined />, label: "岗位筛选" },
+  { key: "resume", icon: <FilePdfOutlined />, label: "简历配置" },
+  { key: "greet", icon: <CommentOutlined />, label: "打招呼" },
+  { key: "reply", icon: <CommentOutlined />, label: "自动回复" },
 ];
 
 export function ConfigPage(props: ConfigPageProps) {
@@ -224,6 +248,58 @@ export function ConfigPage(props: ConfigPageProps) {
     useState<BrowserEnvStatus | null>(null);
   const [ruleRequirement, setRuleRequirement] = useState("");
   const [generatingRules, setGeneratingRules] = useState(false);
+  const [profileModalMode, setProfileModalMode] = useState<"create" | "edit" | null>(null);
+  const [profileDraft, setProfileDraft] = useState({ name: "", description: "" });
+  const profiles = getJobProfiles(props.config);
+  const activeProfile = profiles.find((profile) => profile.id === props.activeProfileId)
+    ?? profiles[0];
+  const defaultProfileId = props.config.default_job_profile_id || profiles[0]?.id;
+  const canArchive = activeProfile.id !== defaultProfileId && !activeProfile.archived;
+  const canDelete = profiles.length > 1 && activeProfile.id !== defaultProfileId;
+
+  const openProfileModal = (mode: "create" | "edit") => {
+    setProfileModalMode(mode);
+    setProfileDraft(mode === "edit"
+      ? { name: activeProfile.name, description: activeProfile.description ?? "" }
+      : { name: "", description: "" });
+  };
+
+  const saveProfileMeta = () => {
+    const name = profileDraft.name.trim();
+    if (!name) {
+      antdMessage.warning("请输入方案名称");
+      return;
+    }
+    const meta = { name, description: profileDraft.description.trim() || null };
+    if (profileModalMode === "create") props.onCreateProfile(meta);
+    if (profileModalMode === "edit") props.onUpdateProfileMeta(meta);
+    setProfileModalMode(null);
+  };
+
+  const handleProfileAction = ({ key }: { key: string }) => {
+    if (key === "edit") openProfileModal("edit");
+    if (key === "duplicate") props.onDuplicateProfile();
+    if (key === "default") props.onSetDefaultProfile();
+    if (key === "archive") {
+      Modal.confirm({
+        title: "归档这张求职方案？",
+        content: "归档后不会出现在新任务的方案列表中，历史任务和会话仍可继续使用。",
+        okText: "确认归档",
+        cancelText: "取消",
+        onOk: props.onArchiveProfile,
+      });
+    }
+    if (key === "delete") {
+      Modal.confirm({
+        title: "删除这张求职方案？",
+        content: "删除后无法恢复；已入队任务仍会使用原有执行快照。",
+        okText: "删除",
+        cancelText: "取消",
+        okButtonProps: { danger: true },
+        onOk: props.onDeleteProfile,
+      });
+    }
+  };
 
   useEffect(() => {
     setActiveGroup(toVisibleConfigGroup(props.initialGroup));
@@ -1641,8 +1717,8 @@ export function ConfigPage(props: ConfigPageProps) {
   };
 
   return (
-    <div className="flex h-full w-full flex-col md:flex-row gap-6 animate-in">
-      <aside className="w-full md:w-[260px] flex-shrink-0 flex flex-col gap-4">
+    <div className="flex h-full w-full flex-col gap-5 md:flex-row animate-in">
+      <aside className="flex w-full flex-shrink-0 flex-col gap-3 md:w-[220px]">
         <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
           {props.status === "loading" ? (
             <><LoadingOutlined className="mr-2 text-sky-500" />正在自动保存…</>
@@ -1656,44 +1732,134 @@ export function ConfigPage(props: ConfigPageProps) {
         </div>
         <Menu
           mode="vertical"
-          selectedKeys={[activeGroup]}
-          onSelect={({ key }) => setActiveGroup(key as VisibleConfigGroup)}
+          selectedKeys={[isProfileGroup(activeGroup) ? "profile" : activeGroup]}
+          onSelect={({ key }) => setActiveGroup(key === "profile"
+            ? (isProfileGroup(activeGroup) ? activeGroup : "job")
+            : key as VisibleConfigGroup)}
           items={menuItems}
-          className="rounded-3xl p-2 bg-white/85! border border-slate-200/80 shadow-[0_18px_40px_rgba(15,23,42,0.06)]"
+          className="rounded-2xl border border-slate-200/80 bg-white/90! p-2 shadow-[0_12px_32px_rgba(15,23,42,0.05)]"
         />
-        <Button
-          icon={<UploadOutlined />}
-          onClick={selectConfigFile}
-          className="w-full rounded-xl! h-11! border-sky-200 bg-sky-50 font-bold text-sky-700! hover:border-sky-300! hover:text-sky-800!"
-          disabled={props.status === "loading"}
-        >
-          导入配置模板
-        </Button>
-
-        <Button
-          icon={<DownloadOutlined />}
-          onClick={selectExportConfigFile}
-          className="w-full rounded-xl! h-11! border-emerald-200 bg-emerald-50 font-bold text-emerald-700! hover:border-emerald-300! hover:text-emerald-800!"
-          disabled={props.status === "loading"}
-        >
-          导出配置模板
-        </Button>
-
+        <Dropdown menu={{ items: [
+          { key: "import", icon: <UploadOutlined />, label: "导入配置模板", onClick: selectConfigFile },
+          { key: "export", icon: <DownloadOutlined />, label: "导出配置模板", onClick: selectExportConfigFile },
+        ] }} trigger={["click"]}>
+          <Button disabled={props.status === "loading"} className="h-10! w-full justify-start! text-slate-600!">
+            配置文件 <MoreOutlined className="ml-auto" />
+          </Button>
+        </Dropdown>
       </aside>
 
       <Form
         form={form}
         layout="vertical"
         requiredMark={false}
-        className="flex-1 min-w-0 h-full overflow-hidden flex flex-col"
+        className="flex h-full min-w-0 flex-1 flex-col overflow-hidden"
         onSubmitCapture={(e) => {
           e.preventDefault();
         }}
       >
-        <div className="flex-1 h-full overflow-y-auto overflow-x-hidden rounded-3xl border border-slate-200/80 bg-white/82 px-6 py-6 md:px-12 md:py-10 backdrop-blur-3xl shadow-[0_24px_60px_rgba(15,23,42,0.06)]">
-          {renderContent()}
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-3xl border border-slate-200/80 bg-white/90 shadow-[0_24px_60px_rgba(15,23,42,0.06)] backdrop-blur-3xl">
+          {isProfileGroup(activeGroup) && (
+            <div className="flex-shrink-0 border-b border-slate-200 bg-white px-5 pt-5 md:px-8 md:pt-6">
+              <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                <div className="min-w-0">
+                  <Text className="mb-1 block text-[11px] font-bold uppercase tracking-[0.18em] text-sky-600">
+                    当前求职方案
+                  </Text>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Select
+                      aria-label="当前求职方案"
+                      size="large"
+                      popupMatchSelectWidth={false}
+                      className="min-w-[240px] max-w-full md:min-w-[320px]"
+                      value={activeProfile.id}
+                      onChange={props.onSelectProfile}
+                      options={profiles.map((profile) => ({
+                        value: profile.id,
+                        label: `${profile.name}${profile.id === defaultProfileId ? " · 默认" : ""}${profile.archived ? " · 已归档" : ""}`,
+                      }))}
+                    />
+                    {activeProfile.id === defaultProfileId && <Tag color="blue">默认使用</Tag>}
+                    {activeProfile.archived && <Tag>已归档</Tag>}
+                  </div>
+                  <Text type="secondary" className="mt-2 block max-w-2xl text-xs!">
+                    {activeProfile.description || "这张方案统一管理岗位筛选、简历、打招呼和自动回复。"}
+                  </Text>
+                </div>
+                <Space wrap size={8}>
+                  <Button type="primary" icon={<PlusOutlined />} onClick={() => openProfileModal("create")}>
+                    新建方案
+                  </Button>
+                  <Dropdown
+                    trigger={["click"]}
+                    menu={{
+                      onClick: handleProfileAction,
+                      items: [
+                        { key: "edit", icon: <EditOutlined />, label: "编辑名称与说明" },
+                        { key: "duplicate", icon: <CopyOutlined />, label: "复制当前方案" },
+                        { type: "divider" },
+                        { key: "default", icon: <StarOutlined />, label: activeProfile.id === defaultProfileId ? "当前已是默认方案" : "设为默认方案", disabled: activeProfile.id === defaultProfileId || activeProfile.archived },
+                        { key: "archive", icon: <InboxOutlined />, label: "归档当前方案", disabled: !canArchive },
+                        { key: "delete", icon: <DeleteOutlined />, label: "删除当前方案", danger: true, disabled: !canDelete },
+                      ],
+                    }}
+                  >
+                    <Button icon={<MoreOutlined />}>方案管理</Button>
+                  </Dropdown>
+                </Space>
+              </div>
+              <Tabs
+                className="mt-4 [&_.ant-tabs-nav]:mb-0!"
+                activeKey={activeGroup}
+                onChange={(key) => setActiveGroup(key as ProfileGroup)}
+                items={profileTabItems}
+              />
+            </div>
+          )}
+          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-6 py-6 md:px-10 md:py-8">
+            {renderContent()}
+          </div>
         </div>
       </Form>
+      <Modal
+        title={profileModalMode === "create" ? "新建求职方案" : "编辑方案信息"}
+        open={profileModalMode !== null}
+        okText={profileModalMode === "create" ? "创建并切换" : "保存"}
+        cancelText="取消"
+        onCancel={() => setProfileModalMode(null)}
+        onOk={saveProfileMeta}
+        destroyOnHidden
+      >
+        <Space direction="vertical" size={14} className="mt-3 w-full">
+          <div className="w-full">
+            <Text strong>方案名称</Text>
+            <Input
+              autoFocus
+              className="mt-2"
+              maxLength={40}
+              placeholder="例如：新加坡 AI 应用工程师"
+              value={profileDraft.name}
+              onChange={(event) => setProfileDraft((draft) => ({ ...draft, name: event.target.value }))}
+              onPressEnter={saveProfileMeta}
+            />
+          </div>
+          <div className="w-full">
+            <Text strong>方案说明</Text>
+            <Input.TextArea
+              className="mt-2"
+              autoSize={{ minRows: 3, maxRows: 5 }}
+              maxLength={160}
+              showCount
+              placeholder="说明目标岗位、地区或这张方案的使用场景"
+              value={profileDraft.description}
+              onChange={(event) => setProfileDraft((draft) => ({ ...draft, description: event.target.value }))}
+            />
+          </div>
+          {profileModalMode === "create" && (
+            <Alert type="info" showIcon message="新方案会复制默认方案的当前配置，你可以创建后分别调整。" />
+          )}
+        </Space>
+      </Modal>
     </div>
   );
 }
