@@ -45,114 +45,118 @@ const OPEN_DRAWER_RETRIES: usize = 3;
 pub async fn reply_unread(config: &AppRuntimeConfig) -> Result<Vec<ChatMessage>, anyhow::Error> {
     let config = config.clone();
 
-    browser::with_new_tab(|page| {
-        Box::pin(async move {
-            logger::info("正在打开猎聘沟通面板")?;
-            page.get(LIEPIN_USER_HOME_URL)?;
+    browser::with_new_tab(|page| Box::pin(async move { reply_unread_on_page(page, &config).await }))
+        .await
+}
 
-            // 会话列表是抽屉打开那一刻才拉的，记录器必须赶在那次点击之前挂上
-            let mut since = open_chat_drawer(page)?;
+/// Process Liepin unread conversations on a caller-owned task tab.
+pub async fn reply_unread_on_page(
+    page: &Page,
+    config: &AppRuntimeConfig,
+) -> Result<Vec<ChatMessage>, anyhow::Error> {
+    let config = config.clone();
+    logger::info("正在打开猎聘沟通面板")?;
+    page.get(LIEPIN_USER_HOME_URL)?;
 
-            let replay_config = config.replay_config.clone();
-            // 处理完的会话未读角标会消失，但列表会随新消息重排，
-            // 用会话 id 去重才不会漏处理或重复处理
-            let mut handled: HashSet<String> = HashSet::new();
-            let mut scrolled = 0usize;
+    // 会话列表是抽屉打开那一刻才拉的，记录器必须赶在那次点击之前挂上
+    let mut since = open_chat_drawer(page)?;
 
-            loop {
-                if is_job_task_stop_requested() {
-                    logger::info("猎聘沟通任务已结束")?;
-                    return Ok(Vec::new());
-                }
+    let replay_config = config.replay_config.clone();
+    // 处理完的会话未读角标会消失，但列表会随新消息重排，
+    // 用会话 id 去重才不会漏处理或重复处理
+    let mut handled: HashSet<String> = HashSet::new();
+    let mut scrolled = 0usize;
 
-                let (contacts, source) = collect_unread_contacts(page, since)?;
-                let pending: Vec<UnreadContact> = contacts
-                    .into_iter()
-                    .filter(|contact| !handled.contains(&contact.imid))
-                    .collect();
+    loop {
+        if is_job_task_stop_requested() {
+            logger::info("猎聘沟通任务已结束")?;
+            return Ok(Vec::new());
+        }
 
-                if pending.is_empty() {
-                    if scrolled >= MAX_SCROLL_ROUNDS {
-                        logger::info("猎聘会话列表已翻到上限，停止查找")?;
-                        return Ok(Vec::new());
-                    }
-                    // 滚动会触发下一页会话列表，时间基准要往前推，免得读到上一次的响应
-                    since = install_request_recorder(page)?;
-                    if !scroll_contact_list(page)? {
-                        if handled.is_empty() {
-                            logger::info("猎聘没有未读消息")?;
-                        } else {
-                            logger::info(format!(
-                                "猎聘未读消息已处理完成，共 {} 个会话",
-                                handled.len()
-                            ))?;
-                        }
-                        return Ok(Vec::new());
-                    }
-                    scrolled += 1;
-                    continue;
-                }
+        let (contacts, source) = collect_unread_contacts(page, since)?;
+        let pending: Vec<UnreadContact> = contacts
+            .into_iter()
+            .filter(|contact| !handled.contains(&contact.imid))
+            .collect();
 
-                logger::info(format!(
-                    "猎聘当前未读会话数: {}（取自{}）",
-                    pending.len(),
-                    source.label()
-                ))?;
-                let total = pending.len();
-                for (index, contact) in pending.into_iter().enumerate() {
-                    if is_job_task_stop_requested() {
-                        logger::info("猎聘沟通任务已结束")?;
-                        return Ok(Vec::new());
-                    }
-
-                    // 先记账再点击：这一轮无论成功失败都不再重试同一个会话，避免死循环
-                    handled.insert(contact.imid.clone());
-
-                    // 点开会话时页面会拉历史消息，时间基准同样要抢在点击之前取
-                    let chat_since = install_request_recorder(page)?;
-                    if !open_contact(page, &contact.imid)? {
-                        logger::warning(format!(
-                            "猎聘会话「{}」已从列表消失，跳过",
-                            truncate_str(&contact.display_name(), 20)
-                        ))?;
-                        continue;
-                    }
-
-                    let chat_messages = collect_chat_messages(page, chat_since)?;
-
-                    // 对方来要简历就同意，和 Boss 侧"别人请求、我们确认发送"是同一条规则。
-                    // 放在取完消息之后，这条请求本身也会进上下文，回复时 LLM 知道刚同意过
-                    if accept_resume_request(page)? {
-                        logger::info("猎聘对方索要简历，已点同意")?;
-                    }
-                    let latest = chat_messages
-                        .last()
-                        .map(|m| m.text.as_str())
-                        .unwrap_or("(空)");
-                    logger::info(format!(
-                        "处理猎聘第 {}/{} 个会话「{}」，最近消息: {}",
-                        index + 1,
-                        total,
-                        truncate_str(&contact.display_name(), 20),
-                        truncate_str(latest, 30)
-                    ))?;
-
-                    if let Some(resources) =
-                        resolve_reply_resources(&config, &replay_config.templates, &chat_messages)
-                            .await?
-                    {
-                        send_resources(page, resources)?;
-                        logger::info("猎聘回复消息已发送")?;
-                    } else {
-                        logger::info("猎聘未匹配到回复模板，跳过")?;
-                    }
-
-                    sleep_random_ms(2500, 4500);
-                }
+        if pending.is_empty() {
+            if scrolled >= MAX_SCROLL_ROUNDS {
+                logger::info("猎聘会话列表已翻到上限，停止查找")?;
+                return Ok(Vec::new());
             }
-        })
-    })
-    .await
+            // 滚动会触发下一页会话列表，时间基准要往前推，免得读到上一次的响应
+            since = install_request_recorder(page)?;
+            if !scroll_contact_list(page)? {
+                if handled.is_empty() {
+                    logger::info("猎聘没有未读消息")?;
+                } else {
+                    logger::info(format!(
+                        "猎聘未读消息已处理完成，共 {} 个会话",
+                        handled.len()
+                    ))?;
+                }
+                return Ok(Vec::new());
+            }
+            scrolled += 1;
+            continue;
+        }
+
+        logger::info(format!(
+            "猎聘当前未读会话数: {}（取自{}）",
+            pending.len(),
+            source.label()
+        ))?;
+        let total = pending.len();
+        for (index, contact) in pending.into_iter().enumerate() {
+            if is_job_task_stop_requested() {
+                logger::info("猎聘沟通任务已结束")?;
+                return Ok(Vec::new());
+            }
+
+            // 先记账再点击：这一轮无论成功失败都不再重试同一个会话，避免死循环
+            handled.insert(contact.imid.clone());
+
+            // 点开会话时页面会拉历史消息，时间基准同样要抢在点击之前取
+            let chat_since = install_request_recorder(page)?;
+            if !open_contact(page, &contact.imid)? {
+                logger::warning(format!(
+                    "猎聘会话「{}」已从列表消失，跳过",
+                    truncate_str(&contact.display_name(), 20)
+                ))?;
+                continue;
+            }
+
+            let chat_messages = collect_chat_messages(page, chat_since)?;
+
+            // 对方来要简历就同意，和 Boss 侧"别人请求、我们确认发送"是同一条规则。
+            // 放在取完消息之后，这条请求本身也会进上下文，回复时 LLM 知道刚同意过
+            if accept_resume_request(page)? {
+                logger::info("猎聘对方索要简历，已点同意")?;
+            }
+            let latest = chat_messages
+                .last()
+                .map(|m| m.text.as_str())
+                .unwrap_or("(空)");
+            logger::info(format!(
+                "处理猎聘第 {}/{} 个会话「{}」，最近消息: {}",
+                index + 1,
+                total,
+                truncate_str(&contact.display_name(), 20),
+                truncate_str(latest, 30)
+            ))?;
+
+            if let Some(resources) =
+                resolve_reply_resources(&config, &replay_config.templates, &chat_messages).await?
+            {
+                send_resources(page, resources)?;
+                logger::info("猎聘回复消息已发送")?;
+            } else {
+                logger::info("猎聘未匹配到回复模板，跳过")?;
+            }
+
+            sleep_random_ms(2500, 4500);
+        }
+    }
 }
 
 /// 打开右侧会话抽屉，返回抓包的时间基准。
@@ -231,10 +235,9 @@ fn collect_unread_contacts(
     if let Some(body) = read_api_body(page, CONTACT_LIST_API, since)? {
         match parse_unread_contacts(&body) {
             Ok(contacts) => return Ok((contacts, Source::Api)),
-            Err(error) => logger::warning(format!(
-                "猎聘会话列表接口解析失败，改用页面元素: {}",
-                error
-            ))?,
+            Err(error) => {
+                logger::warning(format!("猎聘会话列表接口解析失败，改用页面元素: {}", error))?
+            }
         }
     }
 
@@ -286,8 +289,7 @@ fn collect_unread_contacts_from_dom(page: &Page) -> Result<Vec<UnreadContact>, a
         .context("读取猎聘未读会话失败")?;
 
     let raw = value.get("value").cloned().unwrap_or(value);
-    let contacts: Vec<DomContact> =
-        serde_json::from_value(raw).context("解析猎聘未读会话失败")?;
+    let contacts: Vec<DomContact> = serde_json::from_value(raw).context("解析猎聘未读会话失败")?;
 
     Ok(contacts
         .into_iter()
@@ -437,11 +439,19 @@ fn payload_text(payload: &MessagePayload) -> Option<String> {
                 return None;
             }
             let mut text = format!("[职位] {}", title);
-            if let Some(company) = job.job_company.as_deref().map(str::trim).filter(|v| !v.is_empty())
+            if let Some(company) = job
+                .job_company
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
             {
                 text.push_str(&format!("｜{}", company));
             }
-            if let Some(salary) = job.job_salary.as_deref().map(str::trim).filter(|v| !v.is_empty())
+            if let Some(salary) = job
+                .job_salary
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
             {
                 text.push_str(&format!("｜{}", salary));
             }
@@ -824,7 +834,10 @@ mod tests {
 
         assert_eq!(
             texts,
-            vec!["[图片] 简历图片.png", "[职位] AI应用工程师｜宏远科创｜8-14k"]
+            vec![
+                "[图片] 简历图片.png",
+                "[职位] AI应用工程师｜宏远科创｜8-14k"
+            ]
         );
     }
 

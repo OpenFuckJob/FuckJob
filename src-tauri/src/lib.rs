@@ -8,6 +8,7 @@ pub mod llm;
 pub mod logger;
 pub mod rpa;
 pub mod storage;
+pub mod task;
 pub mod utils;
 pub mod verify;
 use tauri::Manager;
@@ -47,6 +48,7 @@ pub fn run() {
             command::rpa::run_flow::preflight_job_task,
             command::rpa::run_flow::boss_flow,
             command::rpa::run_flow::rpa_flow,
+            command::rpa::run_flow::start_job_task,
             command::rpa::run_flow::get_job_task_status,
             command::rpa::run_flow::stop_job_task,
             command::rpa::run_flow::read_log_file,

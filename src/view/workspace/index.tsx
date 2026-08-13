@@ -25,7 +25,6 @@ import {
   PlayCircleOutlined,
   RocketOutlined,
   SendOutlined,
-  StopOutlined,
   WarningOutlined,
 } from "@ant-design/icons";
 import { invoke } from "@tauri-apps/api/core";
@@ -36,10 +35,13 @@ import type {
   EnvCheckStep,
   EnvCheckStatus,
   FlowMode,
-  JobTaskStatus,
+  JobTaskInfo,
+  JobTaskOverview,
   PlatformKind,
-  ReadinessItem,
-  ReadinessReport,
+} from "../../types/rpa";
+import {
+  countJobTasks,
+  isActiveJobTask,
 } from "../../types/rpa";
 import type { JobDetail } from "../../types/job-detail";
 
@@ -50,7 +52,13 @@ interface StepInfo {
   status: EnvCheckStep;
 }
 
-type LogFilter = "all" | PlatformKind;
+interface PlatformEnvState {
+  phase: CheckPhase;
+  result: EnvCheckResult | null;
+  message: string;
+}
+
+type QueueFilter = "all" | PlatformKind;
 
 interface PlatformMeta {
   label: string;
@@ -133,29 +141,88 @@ const FLOW_MODE_OPTIONS: FlowModeOption[] = [
   },
 ];
 
-const LOG_FILTER_OPTIONS: { value: LogFilter; label: string }[] = [
-  { value: "all", label: "全部" },
-  { value: "boss", label: "BOSS" },
-  { value: "liepin", label: "猎聘" },
-];
-
 function getFlowModeLabel(mode: FlowMode): string {
   return FLOW_MODE_OPTIONS.find((option) => option.key === mode)?.label ?? "自动求职";
 }
 
-function lineMatchesPlatform(line: string, target: PlatformKind): boolean {
-  return target === "liepin" ? line.includes("[猎聘]") : line.includes("[BOSS]");
-}
-
-function filterLogContent(content: string, filter: LogFilter): string {
-  if (!content.trim() || filter === "all") {
+export function filterTaskLogContent(
+  content: string,
+  taskId: string | null,
+): string {
+  if (!content.trim() || !taskId) {
     return content;
   }
 
   return content
     .split("\n")
-    .filter((line) => lineMatchesPlatform(line, filter))
+    .filter((line) => line.includes(`[task=${taskId}]`))
     .join("\n");
+}
+
+const TASK_STATE_ORDER: Record<JobTaskInfo["status"], number> = {
+  running: 0,
+  starting: 0,
+  stopping: 0,
+  queued: 1,
+  failed: 2,
+  cancelled: 2,
+  succeeded: 2,
+};
+
+const PLATFORM_ORDER: PlatformKind[] = ["boss", "liepin"];
+
+export function sortTasksForQueue(tasks: JobTaskInfo[]): JobTaskInfo[] {
+  return [...tasks].sort((left, right) => {
+    const stateOrder = TASK_STATE_ORDER[left.status] - TASK_STATE_ORDER[right.status];
+    if (stateOrder !== 0) return stateOrder;
+    if (left.status === "queued" && right.status === "queued") {
+      return left.created_at.localeCompare(right.created_at);
+    }
+    return right.created_at.localeCompare(left.created_at);
+  });
+}
+
+export function sortTasksNewestFirst(tasks: JobTaskInfo[]): JobTaskInfo[] {
+  return [...tasks].sort((left, right) =>
+    right.created_at.localeCompare(left.created_at),
+  );
+}
+
+export function filterTasksByPlatform(
+  tasks: JobTaskInfo[],
+  filter: QueueFilter,
+): JobTaskInfo[] {
+  return filter === "all"
+    ? tasks
+    : tasks.filter((task) => task.platform === filter);
+}
+
+function taskStateLabel(status: JobTaskInfo["status"]): string {
+  return {
+    queued: "排队中",
+    starting: "启动中",
+    running: "运行中",
+    stopping: "停止中",
+    succeeded: "已完成",
+    failed: "失败",
+    cancelled: "已取消",
+  }[status];
+}
+
+function taskStateColor(status: JobTaskInfo["status"]): string {
+  return {
+    queued: "default",
+    starting: "processing",
+    running: "processing",
+    stopping: "warning",
+    succeeded: "success",
+    failed: "error",
+    cancelled: "default",
+  }[status];
+}
+
+export function requestStopJobTask(taskId: string): Promise<CommandResult<void>> {
+  return invoke<CommandResult<void>>("stop_job_task", { taskId });
 }
 
 /* ────────── Stat tile helper ────────── */
@@ -172,32 +239,38 @@ interface StatTile {
 /* ────────── Component ────────── */
 
 const WorkspacePage = ({
-  onOpenConfig,
 }: {
   onNavigate?: (tab: "job-data") => void;
   onOpenConfig?: (group: "resume" | "llm" | "job" | "greet" | "reply" | "browser") => void;
 }) => {
-  const [checkPhase, setCheckPhase] = useState<CheckPhase>("idle");
-  const [envResult, setEnvResult] = useState<EnvCheckResult | null>(null);
-  const [taskRunning, setTaskRunning] = useState(false);
-  const [taskStopping, setTaskStopping] = useState(false);
-  const [runningPlatform, setRunningPlatform] = useState<PlatformKind | null>(null);
+  const [environmentStates, setEnvironmentStates] = useState<
+    Record<PlatformKind, PlatformEnvState>
+  >({
+    boss: { phase: "idle", result: null, message: "" },
+    liepin: { phase: "idle", result: null, message: "" },
+  });
+  const [taskOverview, setTaskOverview] = useState<JobTaskOverview>({
+    tasks: [],
+    running_count: 0,
+    queued_count: 0,
+    max_parallel_tasks: 2,
+  });
   const [logContent, setLogContent] = useState("");
-  const [checkMsg, setCheckMsg] = useState("");
   const [startModalOpen, setStartModalOpen] = useState(false);
   const [selectedMode, setSelectedMode] = useState<FlowMode>("job_hunting");
   const [intervalMinutes, setIntervalMinutes] = useState<number>(30);
   const [platform, setPlatform] = useState<PlatformKind>("boss");
-  const [logFilter, setLogFilter] = useState<LogFilter>("boss");
-  const [readiness, setReadiness] = useState<ReadinessReport | null>(null);
-  // 弹窗打开时的预检加载态，与确认按钮的 confirmLoading 分开，避免互相干扰
-  const [readinessLoading, setReadinessLoading] = useState(false);
-  // 是否展开「已就绪」的检查明细
-  const [readyDetailsOpen, setReadyDetailsOpen] = useState(false);
-  const [preflightLoading, setPreflightLoading] = useState(false);
+  const [modalPlatform, setModalPlatform] = useState<PlatformKind>("boss");
+  const [pendingStartPlatforms, setPendingStartPlatforms] = useState<
+    Partial<Record<PlatformKind, boolean>>
+  >({});
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [queueFilter, setQueueFilter] = useState<QueueFilter>("all");
   const [jobs, setJobs] = useState<JobDetail[]>([]);
   const [logCollapsed, setLogCollapsed] = useState(true);
   const logRef = useRef<HTMLPreElement>(null);
+  const previousActiveTaskIdsRef = useRef<Set<string>>(new Set());
+  const taskRefreshPromiseRef = useRef<Promise<void> | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
 
   const loadJobs = useCallback(async () => {
@@ -211,26 +284,38 @@ const WorkspacePage = ({
     }
   }, []);
 
-  const refreshTaskStatus = useCallback(async () => {
-    try {
-      const result = await invoke<CommandResult<JobTaskStatus>>(
-        "get_job_task_status",
-      );
-      if (result.success && result.data) {
-        const running = result.data.running;
-        const stopping = result.data.stopping;
-        setTaskRunning((wasRunning) => {
-          // Reload jobs whenever task state flips (stat stale remediation).
-          if (wasRunning !== running) void loadJobs();
-          return running;
-        });
-        setTaskStopping(running && stopping);
-        setRunningPlatform((current) => running ? current ?? platform : null);
+  const refreshTaskStatus = useCallback((): Promise<void> => {
+    if (taskRefreshPromiseRef.current) return taskRefreshPromiseRef.current;
+
+    const request = (async () => {
+      try {
+        const result = await invoke<CommandResult<JobTaskOverview>>(
+          "get_job_task_status",
+        );
+        if (result.success && result.data) {
+          const nextActiveIds = new Set(
+            result.data.tasks.filter(isActiveJobTask).map((task) => task.task_id),
+          );
+          const taskFinished = [...previousActiveTaskIdsRef.current].some(
+            (taskId) => !nextActiveIds.has(taskId),
+          );
+          previousActiveTaskIdsRef.current = nextActiveIds;
+          setTaskOverview(result.data);
+          if (taskFinished) await loadJobs();
+        }
+      } catch {
+        // A transient poll failure must not tear down the dashboard polling loop.
       }
-    } catch {
-      // ignore
-    }
-  }, [loadJobs, platform]);
+    })();
+
+    taskRefreshPromiseRef.current = request;
+    void request.then(() => {
+      if (taskRefreshPromiseRef.current === request) {
+        taskRefreshPromiseRef.current = null;
+      }
+    });
+    return request;
+  }, [loadJobs]);
 
   const refreshLog = useCallback(async () => {
     try {
@@ -247,18 +332,18 @@ const WorkspacePage = ({
 
   useEffect(() => {
     void loadJobs();
-    void refreshLog();
-    void refreshTaskStatus();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      void refreshLog();
-      void refreshTaskStatus();
-    }, 2000);
-    return () => clearInterval(timer);
-  }, [refreshLog, refreshTaskStatus]);
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      await Promise.all([refreshLog(), refreshTaskStatus()]);
+      if (!disposed) timer = setTimeout(() => void poll(), 2000);
+    };
+    void poll();
+    return () => {
+      disposed = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [loadJobs, refreshLog, refreshTaskStatus]);
 
   useEffect(() => {
     if (logRef.current) {
@@ -266,254 +351,173 @@ const WorkspacePage = ({
     }
   }, [logContent]);
 
-  const handleCheckEnv = useCallback(async () => {
-    setCheckPhase("checking");
-    setEnvResult(null);
-    setCheckMsg("");
+  const handleCheckEnv = useCallback(async (targetPlatform: PlatformKind) => {
+    setEnvironmentStates((current) => ({
+      ...current,
+      [targetPlatform]: { phase: "checking", result: null, message: "" },
+    }));
     try {
       const result = await invoke<CommandResult<EnvCheckResult>>("check_env", {
-        platform,
+        platform: targetPlatform,
       });
       if (!result.success || result.data === null) {
-        setCheckPhase("done");
         const errorMessage = commandErrorMessage(result.error, "环境检查失败");
-        setCheckMsg(errorMessage);
+        setEnvironmentStates((current) => ({
+          ...current,
+          [targetPlatform]: { phase: "done", result: null, message: errorMessage },
+        }));
         messageApi.error(errorMessage);
         return;
       }
-      setEnvResult(result.data);
-      setCheckPhase("done");
+      setEnvironmentStates((current) => ({
+        ...current,
+        [targetPlatform]: { phase: "done", result: result.data, message: "" },
+      }));
       if (result.data.status === "completed") {
-        messageApi.success(`${PLATFORM_META[platform].label} 环境检查通过`);
+        messageApi.success(`${PLATFORM_META[targetPlatform].label} 环境检查通过`);
       }
     } catch (error: unknown) {
-      const msg =
-        error instanceof Error ? error.message : "环境检查异常";
-      setCheckPhase("done");
-      setCheckMsg(msg);
+      const msg = error instanceof Error ? error.message : "环境检查异常";
+      setEnvironmentStates((current) => ({
+        ...current,
+        [targetPlatform]: { phase: "done", result: null, message: msg },
+      }));
       messageApi.error(msg);
     }
-  }, [messageApi, platform]);
+  }, [messageApi]);
 
   const handleRpaFlow = useCallback(
-    async (mode: FlowMode, intervalMinutes?: number) => {
-      const startedPlatform = platform;
-      setTaskRunning(true);
-      setTaskStopping(false);
-      setRunningPlatform(startedPlatform);
+    async (
+      startedPlatform: PlatformKind,
+      mode: FlowMode,
+      intervalMinutes?: number,
+    ) => {
+      setPendingStartPlatforms((current) => ({
+        ...current,
+        [startedPlatform]: true,
+      }));
       try {
-        const result = await invoke<CommandResult<void>>("rpa_flow", {
+        const result = await invoke<CommandResult<JobTaskInfo>>("start_job_task", {
           platform: startedPlatform,
           mode,
           intervalMinutes: mode === "periodic_job_hunting" ? intervalMinutes : undefined,
         });
-        if (!result.success) {
+        if (!result.success || !result.data) {
           messageApi.error(commandErrorMessage(result.error, "启动失败"));
-          setTaskRunning(false);
-          setTaskStopping(false);
-          setRunningPlatform(null);
           return;
         }
-        setTaskRunning(false);
-        setTaskStopping(false);
-        setRunningPlatform(null);
-        void loadJobs();
-        messageApi.success(`${PLATFORM_META[startedPlatform].label} ${getFlowModeLabel(mode)}已完成`);
+        await refreshTaskStatus();
+        messageApi.success(
+          `${PLATFORM_META[startedPlatform].label} ${getFlowModeLabel(mode)}已加入任务队列`,
+        );
       } catch (error: unknown) {
-        setTaskRunning(false);
-        setRunningPlatform(null);
         messageApi.error(
           error instanceof Error ? error.message : "启动失败",
         );
+      } finally {
+        setPendingStartPlatforms((current) => ({
+          ...current,
+          [startedPlatform]: false,
+        }));
       }
     },
-    [loadJobs, messageApi, platform],
+    [messageApi, refreshTaskStatus],
   );
 
-  /** 执行一次启动前预检，失败时给出提示并返回 null */
-  const runPreflight = useCallback(
-    async (
-      targetPlatform: PlatformKind,
-      targetMode: FlowMode,
-    ): Promise<ReadinessReport | null> => {
-      try {
-        const result = await invoke<CommandResult<ReadinessReport>>("preflight_job_task", {
-          platform: targetPlatform,
-          mode: targetMode,
-        });
-        if (!result.success || !result.data) {
-          messageApi.error(commandErrorMessage(result.error, "启动前检查失败"));
-          return null;
-        }
-        return result.data;
-      } catch (error) {
-        messageApi.error(error instanceof Error ? error.message : "启动前检查失败");
-        return null;
-      }
-    },
-    [messageApi],
-  );
-
-  /** 打开启动弹窗：只负责清空上一次的过期结果，预检交由下方 useEffect 统一触发 */
-  const openStartModal = useCallback(() => {
-    setReadiness(null);
-    setReadyDetailsOpen(false);
+  /** 打开启动弹窗。环境状态由左侧按钮显式检查，不在弹窗重复请求。 */
+  const openStartModal = useCallback((targetPlatform: PlatformKind) => {
+    setModalPlatform(targetPlatform);
+    setSelectedMode("job_hunting");
     setStartModalOpen(true);
   }, []);
 
-  /** 关闭启动弹窗并清空预检结果，避免下次打开时展示过期数据 */
   const closeStartModal = useCallback(() => {
     setStartModalOpen(false);
-    setReadiness(null);
-    setReadyDetailsOpen(false);
   }, []);
 
-  // 弹窗打开期间（含打开瞬间、切换模式、切换平台）自动跑预检
-  useEffect(() => {
-    if (!startModalOpen) return;
-    let cancelled = false;
-    setReadinessLoading(true);
-    void (async () => {
-      const report = await runPreflight(platform, selectedMode);
-      if (cancelled) return;
-      setReadiness(report);
-      setReadyDetailsOpen(false);
-      setReadinessLoading(false);
-    })();
-    return () => {
-      // 快速切换模式/平台时丢弃过期响应
-      cancelled = true;
-    };
-  }, [startModalOpen, selectedMode, platform, runPreflight]);
-
   const handleStartConfirm = useCallback(async () => {
-    setPreflightLoading(true);
-    try {
-      // 确认时再跑一次，避免用户在弹窗停留期间修改了配置
-      const report = await runPreflight(platform, selectedMode);
-      if (!report) return;
-      setReadiness(report);
-      setReadyDetailsOpen(false);
-      if (!report.ready) {
-        messageApi.warning("准备工作尚未完成，请处理阻塞项后重试");
-        return;
-      }
-      closeStartModal();
-      await handleRpaFlow(
-        selectedMode,
-        selectedMode === "periodic_job_hunting" ? intervalMinutes : undefined,
-      );
-    } finally {
-      setPreflightLoading(false);
-    }
+    closeStartModal();
+    await handleRpaFlow(
+      modalPlatform,
+      selectedMode,
+      selectedMode === "periodic_job_hunting" ? intervalMinutes : undefined,
+    );
   }, [
     closeStartModal,
     handleRpaFlow,
     intervalMinutes,
-    messageApi,
-    platform,
-    runPreflight,
+    modalPlatform,
     selectedMode,
   ]);
 
-  const handleStopTask = useCallback(async () => {
+  const handleStopTask = useCallback(async (taskId: string) => {
     try {
-      const result = await invoke<CommandResult<void>>("stop_job_task");
+      const result = await requestStopJobTask(taskId);
       if (!result.success) {
         messageApi.error(commandErrorMessage(result.error, "停止失败"));
         return;
       }
-      setTaskStopping(true);
+      await refreshTaskStatus();
       messageApi.success("已发送停止请求");
     } catch (error: unknown) {
       messageApi.error(
         error instanceof Error ? error.message : "停止失败",
       );
     }
-  }, [messageApi]);
+  }, [messageApi, refreshTaskStatus]);
 
   const handleCopyLog = useCallback(() => {
     if (!logContent) return;
-    void navigator.clipboard.writeText(filterLogContent(logContent, logFilter));
+    void navigator.clipboard.writeText(
+      filterTaskLogContent(logContent, selectedTaskId),
+    );
     messageApi.success("日志已复制到剪贴板");
-  }, [logContent, logFilter, messageApi]);
+  }, [logContent, messageApi, selectedTaskId]);
 
-  const currentStepIndex = envResult
-    ? getStepIndex(envResult.current_step)
-    : 0;
-
-  const qrSrc = envResult?.qr_code_base64
-    ? `data:image/png;base64,${envResult.qr_code_base64}`
-    : null;
-
-  const showSteps = checkPhase !== "idle";
-  const currentPlatform = PLATFORM_META[platform];
-  const runningPlatformLabel = runningPlatform
-    ? PLATFORM_META[runningPlatform].label
-    : "当前";
-  const filteredLogContent = filterLogContent(logContent, logFilter);
-
-  /* 预检明细：默认只展示需要处理的项，已就绪项折叠 */
-  const pendingReadinessItems =
-    readiness?.items.filter((item) => item.level !== "ready") ?? [];
-  const readyReadinessItems =
-    readiness?.items.filter((item) => item.level === "ready") ?? [];
-
-  const renderReadinessItem = (item: ReadinessItem) => (
-    <div
-      key={item.key}
-      style={{ display: "flex", justifyContent: "space-between", gap: 12 }}
-    >
-      <Typography.Text
-        type={
-          item.level === "blocked"
-            ? "danger"
-            : item.level === "warning"
-              ? "warning"
-              : "success"
-        }
-      >
-        {item.label}：{item.message}
-      </Typography.Text>
-      {item.level !== "ready" && item.config_group && onOpenConfig && (
-        <Button
-          size="small"
-          type="link"
-          onClick={() =>
-            onOpenConfig(
-              item.config_group as
-                | "resume"
-                | "llm"
-                | "job"
-                | "greet"
-                | "reply"
-                | "browser",
-            )
-          }
-        >
-          前往配置
-        </Button>
-      )}
-    </div>
+  const activeTasks = taskOverview.tasks.filter(isActiveJobTask);
+  const taskCounts = countJobTasks(taskOverview.tasks);
+  const modalTaskStartPending = pendingStartPlatforms[modalPlatform] === true;
+  const queueTasks = sortTasksNewestFirst(taskOverview.tasks);
+  const visibleQueueTasks = filterTasksByPlatform(queueTasks, queueFilter);
+  const queuedTasksInExecutionOrder = sortTasksForQueue(taskOverview.tasks).filter(
+    (task) => task.status === "queued",
   );
+  const currentPlatformMeta = PLATFORM_META[platform];
+  const currentEnvironment = environmentStates[platform];
+  const currentPlatformHasActiveTask = activeTasks.some(
+    (task) => task.platform === platform,
+  );
+  const currentStartPending = pendingStartPlatforms[platform] === true;
+  const currentStepIndex = currentEnvironment.result
+    ? getStepIndex(currentEnvironment.result.current_step)
+    : 0;
+  const currentQrSrc = currentEnvironment.result?.qr_code_base64
+    ? `data:image/png;base64,${currentEnvironment.result.qr_code_base64}`
+    : null;
+  const selectedTask = selectedTaskId
+    ? taskOverview.tasks.find((task) => task.task_id === selectedTaskId) ?? null
+    : null;
+  const filteredLogContent = filterTaskLogContent(logContent, selectedTaskId);
 
   /* derived stats */
   const totalJobs = jobs.length;
   const sentCount = jobs.filter((j) => j.is_send_resume).length;
   const repliedCount = jobs.filter((j) => j.is_reply).length;
   const replyRate = totalJobs > 0 ? `${((repliedCount / totalJobs) * 100).toFixed(0)}%` : "—";
-  const runningModeLabel = taskRunning && runningPlatform
-    ? `${PLATFORM_META[runningPlatform].shortLabel} ${taskStopping ? "停止中" : "运行中"}`
-    : "空闲";
+  const runningModeLabel = `${taskCounts.running} / ${taskOverview.max_parallel_tasks}`;
 
   const statTiles: StatTile[] = [
     {
       label: "运行状态",
       value: runningModeLabel,
-      subtitle: taskRunning ? (taskStopping ? "正在安全结束当前步骤" : "任务进行中") : "等待启动",
+      subtitle: taskCounts.queued > 0
+        ? `${taskCounts.queued} 个任务排队中`
+        : taskCounts.active > 0
+          ? `${taskCounts.active} 个活动任务`
+          : "等待启动",
       icon: <RocketOutlined style={{ fontSize: 18 }} />,
-      color: taskRunning ? "#1677ff" : "#64748b",
-      bg: taskRunning ? "rgba(22,119,255,0.1)" : "rgba(148,163,184,0.1)",
+      color: activeTasks.length > 0 ? "#1677ff" : "#64748b",
+      bg: activeTasks.length > 0 ? "rgba(22,119,255,0.1)" : "rgba(148,163,184,0.1)",
     },
     {
       label: "已建联岗位",
@@ -568,282 +572,233 @@ const WorkspacePage = ({
         ))}
       </section>
 
-      {/* ── Platform + environment check ── */}
+      {/* ── Platform card + task queue ── */}
       <section
         style={{
-          flex: "0 0 auto",
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+          gridTemplateColumns: "minmax(380px, 1fr) minmax(440px, 1.15fr)",
           gap: 16,
-          alignItems: "stretch",
+          alignItems: "start",
         }}
       >
-        <Card styles={{ body: { padding: 18 } }}>
-          <Space direction="vertical" size={12} style={{ width: "100%" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <Typography.Text strong style={{ fontSize: 15 }}>平台选择</Typography.Text>
-              {taskRunning ? (
-                <Tag color={taskStopping ? "warning" : "processing"}>{runningPlatformLabel} {taskStopping ? "停止中" : "运行中"}</Tag>
-              ) : (
-                <Tag color="success">就绪</Tag>
-              )}
-            </div>
+        <Card
+          styles={{ body: { padding: 20, height: "100%" } }}
+          style={{
+            borderTop: `4px solid ${currentPlatformMeta.accent}`,
+            background: "linear-gradient(180deg, #ffffff 0%, #fbfdff 100%)",
+          }}
+        >
+          <Space direction="vertical" size={16} style={{ width: "100%" }}>
             <Segmented<PlatformKind>
               block
               value={platform}
-              disabled={taskRunning || checkPhase === "checking"}
-              options={[
-                { value: "boss", label: "BOSS 直聘" },
-                { value: "liepin", label: "猎聘" },
-              ]}
-              onChange={(nextPlatform) => {
-                setPlatform(nextPlatform);
-                if (nextPlatform !== "boss" && selectedMode === "sync_chat_history") {
-                  setSelectedMode("job_hunting");
-                }
-                setLogFilter(nextPlatform);
-                setCheckPhase("idle");
-                setEnvResult(null);
-                setCheckMsg("");
-              }}
+              options={PLATFORM_ORDER.map((value) => ({
+                value,
+                label: PLATFORM_META[value].label,
+              }))}
+              onChange={setPlatform}
             />
-            <div
-              style={{
-                borderLeft: `4px solid ${currentPlatform.accent}`,
-                paddingLeft: 12,
-                marginTop: 4,
-                background: "rgba(248, 250, 252, 0.8)",
-                padding: "10px 12px",
-                borderRadius: "0 8px 8px 0",
-              }}
-            >
-              <Typography.Title level={5} style={{ margin: 0, color: currentPlatform.accent }}>
-                {currentPlatform.label}
+
+            <div>
+              <Typography.Title level={4} style={{ margin: 0, color: currentPlatformMeta.accent }}>
+                {currentPlatformMeta.label}
               </Typography.Title>
               <Typography.Text type="secondary" style={{ fontSize: 12.5 }}>
-                {currentPlatform.description}
+                {currentPlatformMeta.description}
               </Typography.Text>
             </div>
+
+            <div style={{ padding: 14, border: "1px solid #e8edf3", borderRadius: 12, background: "#fff" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 12 }}>
+                <div>
+                  <Typography.Text strong>环境状态</Typography.Text>
+                  <Typography.Text type="secondary" style={{ display: "block", fontSize: 12 }}>浏览器与平台登录状态</Typography.Text>
+                </div>
+                <Button
+                  size="small"
+                  icon={currentEnvironment.phase === "checking" ? <LoadingOutlined /> : <CheckCircleOutlined />}
+                  loading={currentEnvironment.phase === "checking"}
+                  disabled={currentStartPending || currentPlatformHasActiveTask}
+                  onClick={() => void handleCheckEnv(platform)}
+                >检查环境</Button>
+              </div>
+
+              {currentEnvironment.phase === "idle" ? (
+                <Typography.Text type="secondary" style={{ fontSize: 12.5 }}>尚未检查。需要确认登录状态时点击右侧按钮，本次结果会保留在当前平台卡片中。</Typography.Text>
+              ) : (
+                <Steps
+                  size="small"
+                  responsive={false}
+                  current={currentEnvironment.phase === "checking" ? currentStepIndex : ENV_STEPS.length - 1}
+                  items={ENV_STEPS.map((step, index) => ({
+                    title: step.title,
+                    status: resolveStepStatus(currentEnvironment.phase, currentEnvironment.result?.status ?? null, index, currentStepIndex),
+                    icon:
+                      currentEnvironment.phase === "checking" && index === currentStepIndex ? <LoadingOutlined />
+                        : currentEnvironment.phase === "done" && index === currentStepIndex && currentEnvironment.result?.status === "login_required" ? <WarningOutlined />
+                          : undefined,
+                  }))}
+                />
+              )}
+              {currentEnvironment.message && <Alert style={{ marginTop: 12 }} type="warning" showIcon message={currentEnvironment.message} />}
+              {currentEnvironment.result?.message && !currentEnvironment.message && (
+                <Typography.Text type="secondary" style={{ display: "block", marginTop: 10, fontSize: 12.5 }}>{currentEnvironment.result.message}</Typography.Text>
+              )}
+              {currentQrSrc && (
+                <div style={{ marginTop: 12, padding: 12, display: "flex", alignItems: "center", gap: 14, background: "#f8fafc", borderRadius: 10 }}>
+                  <Image src={currentQrSrc} width={112} height={112} preview={false} alt={`${currentPlatformMeta.label}登录二维码`} />
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>请使用 {currentPlatformMeta.label} App 扫码登录，完成后重新检查环境。</Typography.Text>
+                </div>
+              )}
+            </div>
+
+            <Button
+              block
+              type="primary"
+              size="large"
+              icon={<PlayCircleOutlined />}
+              loading={currentStartPending}
+              disabled={currentStartPending}
+              style={{ background: currentPlatformMeta.accent }}
+              onClick={() => openStartModal(platform)}
+            >
+              {currentStartPending ? "正在加入队列..." : `添加 ${currentPlatformMeta.shortLabel} 任务`}
+            </Button>
           </Space>
         </Card>
 
-        <Card styles={{ body: { padding: 18 } }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
-              <div>
-                <Typography.Title level={5} style={{ margin: 0 }}>
-                  {currentPlatform.shortLabel} 环境状态
-                </Typography.Title>
-                <Typography.Text type="secondary" style={{ fontSize: 12.5 }}>
-                  确认浏览器驱动与平台登录凭证。
-                </Typography.Text>
-              </div>
-              <Button
-                type="primary"
-                icon={checkPhase === "checking" ? <LoadingOutlined /> : <CheckCircleOutlined />}
-                loading={checkPhase === "checking"}
-                onClick={handleCheckEnv}
-                disabled={taskRunning}
-              >
-                {checkPhase === "checking" ? "检查中..." : `检查${currentPlatform.shortLabel}环境`}
-              </Button>
-            </div>
-
-            {showSteps ? (
-              <Steps
-                size="small"
-                current={
-                  checkPhase === "checking"
-                    ? currentStepIndex
-                    : checkPhase === "done"
-                      ? ENV_STEPS.length - 1
-                      : -1
-                }
-                items={ENV_STEPS.map((step, idx) => ({
-                  title: step.title,
-                  status: resolveStepStatus(
-                    checkPhase,
-                    envResult?.status ?? null,
-                    idx,
-                    currentStepIndex,
-                  ),
-                  icon:
-                    checkPhase === "checking" && idx === currentStepIndex ? (
-                      <LoadingOutlined />
-                    ) : checkPhase === "done" &&
-                      idx === currentStepIndex &&
-                      envResult?.status === "login_required" ? (
-                      <WarningOutlined />
-                    ) : undefined,
-                }))}
-              />
-            ) : (
-              <Alert
-                type="info"
-                showIcon
-                message={`当前选择 ${currentPlatform.label}`}
-                description="准备就绪，点击右侧按钮测试环境联通性。"
-              />
-            )}
-
-            {checkMsg && <Alert type="warning" showIcon message={checkMsg} />}
-
-            {envResult?.message && !checkMsg && showSteps && (
-              <Typography.Text type="secondary" style={{ fontSize: 13 }}>{envResult.message}</Typography.Text>
-            )}
-
-            {qrSrc && (
-              <div
-                style={{
-                  padding: 14,
-                  background: "#f8fafc",
-                  borderRadius: 12,
-                  display: "inline-flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  gap: 8,
-                  border: "1px solid #e2e8f0",
-                }}
-              >
-                <Image
-                  src={qrSrc}
-                  width={180}
-                  height={180}
-                  preview={false}
-                  alt="平台登录二维码"
-                  style={{ borderRadius: 8 }}
-                />
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {envResult?.message ?? `请使用 ${currentPlatform.label} App 扫码登录`}
-                </Typography.Text>
-              </div>
-            )}
+        <Card styles={{ body: { padding: 18, display: "flex", flexDirection: "column" } }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
+          <div>
+            <Typography.Title level={5} style={{ margin: 0 }}>任务队列</Typography.Title>
+            <Typography.Text type="secondary" style={{ fontSize: 12.5 }}>
+              最新任务在上 · 运行中 {taskCounts.running} · 排队 {taskCounts.queued}
+            </Typography.Text>
           </div>
+          <Space wrap>
+            <Segmented<QueueFilter>
+              size="small"
+              value={queueFilter}
+              options={[
+                { value: "all", label: "全部" },
+                { value: "boss", label: "BOSS" },
+                { value: "liepin", label: "猎聘" },
+              ]}
+              onChange={setQueueFilter}
+            />
+            <Button
+              size="small"
+              type={selectedTaskId === null ? "primary" : "default"}
+              onClick={() => {
+                setSelectedTaskId(null);
+                setLogCollapsed(false);
+              }}
+            >
+              查看全部日志
+            </Button>
+          </Space>
+        </div>
+
+        {visibleQueueTasks.length === 0 ? (
+          <Alert
+            type="info"
+            showIcon
+            message={queueTasks.length === 0 ? "任务队列为空" : "当前筛选下没有任务"}
+            description={queueTasks.length === 0 ? "从左侧添加任务后，会在这里显示执行状态和顺序。" : "可切换为全部或另一个平台查看任务。"}
+          />
+        ) : (
+          <div
+            style={{
+              display: "grid",
+              gap: 8,
+              maxHeight: 296,
+              overflowY: "auto",
+              paddingRight: 4,
+            }}
+          >
+            {visibleQueueTasks.map((task) => {
+              const selected = selectedTaskId === task.task_id;
+              const queuePosition = task.status === "queued"
+                ? queuedTasksInExecutionOrder.findIndex((candidate) => candidate.task_id === task.task_id) + 1
+                : null;
+              return (
+                <div
+                  key={task.task_id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => {
+                    setSelectedTaskId(task.task_id);
+                    setLogCollapsed(false);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      setSelectedTaskId(task.task_id);
+                      setLogCollapsed(false);
+                    }
+                  }}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "minmax(170px, 1.3fr) minmax(100px, .7fr) auto",
+                    alignItems: "center",
+                    gap: 12,
+                    padding: "11px 12px",
+                    border: `1px solid ${selected ? PLATFORM_META[task.platform].accent : "#e8edf3"}`,
+                    borderRadius: 10,
+                    background: selected ? "rgba(22, 119, 255, 0.04)" : "#fff",
+                    cursor: "pointer",
+                  }}
+                >
+                  <div>
+                    <Space size={6}>
+                      <Tag color={task.platform === "boss" ? "blue" : "purple"}>{PLATFORM_META[task.platform].shortLabel}</Tag>
+                      <Typography.Text strong>{getFlowModeLabel(task.mode)}</Typography.Text>
+                    </Space>
+                    <Typography.Text type="secondary" style={{ display: "block", marginTop: 3, fontSize: 11.5 }}>
+                      {task.task_id.slice(0, 8)} · {new Date(task.created_at).toLocaleString()}
+                    </Typography.Text>
+                  </div>
+                  <Tag color={taskStateColor(task.status)} style={{ width: "fit-content" }}>
+                    {taskStateLabel(task.status)}{queuePosition ? ` · 第 ${queuePosition} 位` : ""}
+                  </Tag>
+                  {isActiveJobTask(task) ? (
+                    <Button
+                      size="small"
+                      danger
+                      loading={task.status === "stopping"}
+                      disabled={task.status === "stopping"}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void handleStopTask(task.task_id);
+                      }}
+                    >停止</Button>
+                  ) : <span />}
+                </div>
+              );
+            })}
+          </div>
+        )}
         </Card>
       </section>
 
-      {/* ── Automation control bar ── */}
-      <Card styles={{ body: { padding: 18 } }}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            gap: 16,
-            alignItems: "center",
-            flexWrap: "wrap",
-          }}
-        >
-          <div>
-            <Typography.Title level={5} style={{ margin: 0 }}>
-              {currentPlatform.shortLabel} 自动化控制台
-            </Typography.Title>
-            <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-              根据预设筛选条件、简历与回复策略，安全发起求职流。
-            </Typography.Text>
-            {currentPlatform.limitation && (
-              <Typography.Text type="warning" style={{ display: "block", marginTop: 4, fontSize: 12 }}>
-                {currentPlatform.limitation}
-              </Typography.Text>
-            )}
-          </div>
-          <Space wrap>
-            <Button
-              type="primary"
-              danger={taskRunning && !taskStopping}
-              size="large"
-              icon={taskStopping ? <LoadingOutlined /> : taskRunning ? <StopOutlined /> : <PlayCircleOutlined />}
-              loading={taskStopping}
-              disabled={taskStopping}
-              onClick={taskRunning ? () => void handleStopTask() : openStartModal}
-            >
-              {taskStopping ? `${runningPlatformLabel} 任务停止中...` : taskRunning ? `停止 ${runningPlatformLabel} 任务` : `启动 ${currentPlatform.shortLabel} 任务`}
-            </Button>
-            {taskRunning && (
-              <Typography.Text type="warning" style={{ alignSelf: "center", fontWeight: 500 }}>
-                {taskStopping ? `${runningPlatformLabel} 任务正在安全停止...` : `${runningPlatformLabel} 任务运行中...`}
-              </Typography.Text>
-            )}
-          </Space>
-        </div>
-      </Card>
-
       {/* ── Start modal ── */}
       <Modal
-        title={`启动 ${currentPlatform.label} 任务`}
+        title={`添加 ${PLATFORM_META[modalPlatform].label} 任务`}
         open={startModalOpen}
         centered
         width={640}
         styles={{ body: { maxHeight: "60vh", overflowY: "auto", paddingRight: 4 } }}
         onOk={() => void handleStartConfirm()}
-        confirmLoading={preflightLoading}
         onCancel={closeStartModal}
         okText="确认启动"
         cancelText="取消"
         okButtonProps={{
           disabled:
-            taskRunning ||
+            modalTaskStartPending ||
             (selectedMode === "periodic_job_hunting" &&
               (!intervalMinutes || intervalMinutes <= 0)),
         }}
       >
         <Space direction="vertical" size={16} style={{ width: "100%", paddingTop: 8 }}>
-          {readinessLoading ? (
-            // 加载占位，保证弹窗高度不会在预检前后剧烈跳变
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                minHeight: 88,
-                padding: "12px 14px",
-                background: "#f8fafc",
-                border: "1px solid #e2e8f0",
-                borderRadius: 8,
-              }}
-            >
-              <LoadingOutlined style={{ color: "#1677ff" }} />
-              <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-                正在检查运行前置条件…
-              </Typography.Text>
-            </div>
-          ) : readiness ? (
-            <Alert
-              type={readiness.ready ? "success" : "warning"}
-              showIcon
-              message={readiness.ready ? "环境与配置预检通过" : "尚有配置未完善"}
-              description={
-                <Space direction="vertical" size={6} style={{ width: "100%", marginTop: 4 }}>
-                  {readiness.summary.map((line) => <Typography.Text key={line}>{line}</Typography.Text>)}
-                  {/* 默认只展示需要处理的阻塞/警告项 */}
-                  {pendingReadinessItems.map((item) => renderReadinessItem(item))}
-                  {readyReadinessItems.length > 0 ? (
-                    <div>
-                      <Button
-                        type="link"
-                        size="small"
-                        style={{ padding: 0, height: "auto", fontSize: 12 }}
-                        onClick={() => setReadyDetailsOpen((open) => !open)}
-                      >
-                        {readyDetailsOpen
-                          ? "收起已就绪的检查项"
-                          : pendingReadinessItems.length === 0
-                            ? `${readyReadinessItems.length} 项检查全部通过，查看明细`
-                            : `其余 ${readyReadinessItems.length} 项检查已就绪，查看明细`}
-                      </Button>
-                    </div>
-                  ) : null}
-                  {readyDetailsOpen ? readyReadinessItems.map((item) => renderReadinessItem(item)) : null}
-                </Space>
-              }
-            />
-          ) : (
-            <Alert
-              type="info"
-              showIcon
-              message="暂未获取到预检结果"
-              description="可切换运行模式或点击「确认启动」重新检查运行前置条件。"
-            />
-          )}
           <Radio.Group
             value={selectedMode}
             onChange={(event) => setSelectedMode(event.target.value)}
@@ -851,7 +806,7 @@ const WorkspacePage = ({
           >
             <Space direction="vertical" style={{ width: "100%" }} size={12}>
               {FLOW_MODE_OPTIONS.filter(
-                (option) => platform === "boss" || option.key !== "sync_chat_history",
+                (option) => modalPlatform === "boss" || option.key !== "sync_chat_history",
               ).map((option) => (
                 <Card
                   key={option.key}
@@ -906,8 +861,10 @@ const WorkspacePage = ({
             <Typography.Title level={5} style={{ margin: 0 }}>
               运行日志
             </Typography.Title>
-            <Tag color={logFilter === "all" ? "default" : "processing"}>
-              {logFilter === "all" ? "全部平台" : `${PLATFORM_META[logFilter].shortLabel}视图`}
+            <Tag color={selectedTask ? "processing" : "default"}>
+              {selectedTask
+                ? `${PLATFORM_META[selectedTask.platform].shortLabel} · ${selectedTask.task_id.slice(0, 8)}`
+                : "全部任务"}
             </Tag>
           </Space>
           <Space>
@@ -917,12 +874,11 @@ const WorkspacePage = ({
             {!logCollapsed && (
               <>
                 <Button size="small" icon={<CopyOutlined />} onClick={handleCopyLog}>复制</Button>
-                <Segmented<LogFilter>
-                  size="small"
-                  value={logFilter}
-                  options={LOG_FILTER_OPTIONS}
-                  onChange={setLogFilter}
-                />
+                {selectedTaskId && (
+                  <Button size="small" onClick={() => setSelectedTaskId(null)}>
+                    退出任务日志
+                  </Button>
+                )}
               </>
             )}
           </Space>

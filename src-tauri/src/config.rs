@@ -13,6 +13,8 @@ use crate::{
 
 const CONFIG_FILE_NAME: &str = "app_config.yaml";
 pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const MIN_PARALLEL_TASKS: usize = 1;
+pub const MAX_PARALLEL_TASKS: usize = 2;
 
 const DEFAULT_CONFIG_YAML: &str = include_str!("resource/app_config.yaml");
 
@@ -68,6 +70,7 @@ pub fn default_app_config() -> AppRuntimeConfig {
         browser_config: BrowserConfig {
             user_data_dir: "".to_string(),
             chrome_exe_path: None,
+            max_parallel_tasks: default_max_parallel_tasks(),
         },
         resume_config: ResumeConfig {
             inject_llm_context: false,
@@ -345,6 +348,10 @@ pub fn validate_and_normalize(config: &mut AppRuntimeConfig) -> Result<(), Strin
     normalize_llm_retry_config(&mut config.llm_retry_config);
     normalize_llm_fallbacks(&mut config.llm_fallbacks)?;
     validate_greet_template(&config.greet_config)?;
+    config.browser_config.max_parallel_tasks = config
+        .browser_config
+        .max_parallel_tasks
+        .clamp(MIN_PARALLEL_TASKS, MAX_PARALLEL_TASKS);
 
     let Some(llm_config) = config.llm_config.as_mut() else {
         return Ok(());
@@ -992,6 +999,13 @@ pub struct BrowserConfig {
     /// 浏览器执行路径
     #[serde(default)]
     pub chrome_exe_path: Option<String>,
+    /// 同时执行的自动化任务上限。当前仅开放跨平台双任务并行。
+    #[serde(default = "default_max_parallel_tasks")]
+    pub max_parallel_tasks: usize,
+}
+
+fn default_max_parallel_tasks() -> usize {
+    2
 }
 
 // ================================
@@ -1494,6 +1508,24 @@ greet_config:
             config.llm_retry_config.retry_base_delay_ms,
             MAX_RETRY_BASE_DELAY_MS
         );
+    }
+
+    #[test]
+    fn browser_parallelism_defaults_to_two_and_is_clamped_to_supported_range() {
+        let legacy = parse_config_content(
+            "schema_version: 2\nbrowser_config:\n  user_data_dir: profile\n  chrome_exe_path: null\n",
+        )
+        .unwrap();
+        assert_eq!(legacy.browser_config.max_parallel_tasks, 2);
+
+        let mut config = default_app_config();
+        config.browser_config.max_parallel_tasks = 99;
+        validate_and_normalize(&mut config).unwrap();
+        assert_eq!(config.browser_config.max_parallel_tasks, MAX_PARALLEL_TASKS);
+
+        config.browser_config.max_parallel_tasks = 0;
+        validate_and_normalize(&mut config).unwrap();
+        assert_eq!(config.browser_config.max_parallel_tasks, MIN_PARALLEL_TASKS);
     }
 
     #[test]

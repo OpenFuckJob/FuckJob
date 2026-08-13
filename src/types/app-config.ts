@@ -144,6 +144,7 @@ export interface ReplayConfig {
 export interface BrowserConfig {
   user_data_dir: string;
   chrome_exe_path: string | null;
+  max_parallel_tasks: number;
 }
 
 export interface ResumeConfig {

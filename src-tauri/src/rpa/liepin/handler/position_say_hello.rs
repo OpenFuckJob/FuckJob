@@ -23,124 +23,129 @@ use urlencoding::encode;
 
 pub async fn position_say_hello(config: &AppRuntimeConfig) -> Result<(), anyhow::Error> {
     let config = config.clone();
-    let search_url = build_job_search_url(&config);
-
-    browser::with_browser(|page| {
-        Box::pin(async move {
-            let mut processed_job_ids: HashSet<String> = job_detail_dao::list()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|j| j.id)
-                .collect();
-            logger::info(format!(
-                "猎聘本地已存储 {} 条岗位记录",
-                processed_job_ids.len()
-            ))?;
-
-            let mut seen_job_ids: HashSet<String> = HashSet::new();
-
-            logger::info(format!("正在打开猎聘职位搜索页: {}", search_url))?;
-            page.get(&search_url)?;
-            sleep_random_ms(1200, 2000);
-            apply_liepin_filters(page, &config)?;
-            sleep_random_ms(1200, 1800);
-
-            loop {
-                if is_job_task_stop_requested() {
-                    logger::info("猎聘求职任务已结束")?;
-                    return Ok(());
-                }
-
-                let jobs = collect_jobs(page)?;
-                if jobs.is_empty() {
-                    logger::info("猎聘暂无可处理岗位")?;
-                    return Ok(());
-                }
-
-                logger::info(format!("猎聘当前加载到{}条岗位", jobs.len()))?;
-                let mut stats = RoundStats::default();
-                for job in jobs {
-                    if is_job_task_stop_requested() {
-                        logger::info("猎聘求职任务已结束")?;
-                        return Ok(());
-                    }
-
-                    stats.scanned += 1;
-                    let db_id = format!("liepin:{}", job.platform_job_id);
-                    if processed_job_ids.contains(&db_id)
-                        || processed_job_ids.contains(&job.platform_job_id)
-                        || seen_job_ids.contains(&job.platform_job_id)
-                    {
-                        // 逐条打会把日志刷满，这里只计数，本页结束时汇总
-                        stats.skipped_processed += 1;
-                        continue;
-                    }
-                    seen_job_ids.insert(job.platform_job_id.clone());
-
-                    let filter_decision = verify::filter_decision(&job, &config);
-                    if !filter_decision.matched {
-                        stats.skipped_rule += 1;
-                        continue;
-                    }
-
-                    logger::info(format!(
-                        "猎聘处理岗位：{} - {}",
-                        job.title, job.company_name
-                    ))?;
-                    if config.job_filter_config.enable_semantic_filter {
-                        match crate::llm::evaluate_job_match(&config, &job).await {
-                            Ok(decision) if decision.matched => logger::info(format!(
-                                "猎聘 AI 岗位复核通过（{}分）：{}",
-                                decision.score, decision.reason
-                            ))?,
-                            Ok(decision) => {
-                                stats.skipped_ai += 1;
-                                logger::info(format!(
-                                    "猎聘 AI 岗位复核未通过，跳过（{}分）：{}",
-                                    decision.score, decision.reason
-                                ))?;
-                                continue;
-                            }
-                            Err(error) => {
-                                stats.skipped_ai += 1;
-                                logger::warning(format!(
-                                    "猎聘 AI 岗位复核失败，为避免误投已跳过：{}",
-                                    error
-                                ))?;
-                                continue;
-                            }
-                        }
-                    }
-
-                    match greet_job(page, job.clone(), config.clone()).await {
-                        Ok(()) => {
-                            stats.greeted += 1;
-                            processed_job_ids.insert(format!("liepin:{}", job.platform_job_id));
-                            processed_job_ids.insert(job.platform_job_id.clone());
-                        }
-                        Err(error) => {
-                            stats.greet_failed += 1;
-                            logger::warning(greet_failure_message(
-                                &job.title,
-                                &job.company_name,
-                                &error,
-                            ))?;
-                            continue;
-                        }
-                    }
-                    sleep_random_ms(2500, 4500);
-                }
-
-                logger::info(stats.summary())?;
-
-                if !scroll_next(page)? {
-                    logger::info("猎聘岗位列表已触底")?;
-                    return Ok(());
-                }
-            }
-        })
+    browser::with_browser(|connection| {
+        Box::pin(
+            async move { position_say_hello_on_page(connection, connection.tab(), &config).await },
+        )
     })
     .await
+}
+
+/// Run the Liepin job-hunting flow on the task-owned main tab.
+pub async fn position_say_hello_on_page(
+    connection: &ChromiumPage,
+    page: &Page,
+    config: &AppRuntimeConfig,
+) -> Result<(), anyhow::Error> {
+    let config = config.clone();
+    let search_url = build_job_search_url(&config);
+    let mut processed_job_ids: HashSet<String> = job_detail_dao::list()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|j| j.id)
+        .collect();
+    logger::info(format!(
+        "猎聘本地已存储 {} 条岗位记录",
+        processed_job_ids.len()
+    ))?;
+
+    let mut seen_job_ids: HashSet<String> = HashSet::new();
+
+    logger::info(format!("正在打开猎聘职位搜索页: {}", search_url))?;
+    page.get(&search_url)?;
+    sleep_random_ms(1200, 2000);
+    apply_liepin_filters(page, &config)?;
+    sleep_random_ms(1200, 1800);
+
+    loop {
+        if is_job_task_stop_requested() {
+            logger::info("猎聘求职任务已结束")?;
+            return Ok(());
+        }
+
+        let jobs = collect_jobs(page)?;
+        if jobs.is_empty() {
+            logger::info("猎聘暂无可处理岗位")?;
+            return Ok(());
+        }
+
+        logger::info(format!("猎聘当前加载到{}条岗位", jobs.len()))?;
+        let mut stats = RoundStats::default();
+        for job in jobs {
+            if is_job_task_stop_requested() {
+                logger::info("猎聘求职任务已结束")?;
+                return Ok(());
+            }
+
+            stats.scanned += 1;
+            let db_id = format!("liepin:{}", job.platform_job_id);
+            if processed_job_ids.contains(&db_id)
+                || processed_job_ids.contains(&job.platform_job_id)
+                || seen_job_ids.contains(&job.platform_job_id)
+            {
+                // 逐条打会把日志刷满，这里只计数，本页结束时汇总
+                stats.skipped_processed += 1;
+                continue;
+            }
+            seen_job_ids.insert(job.platform_job_id.clone());
+
+            let filter_decision = verify::filter_decision(&job, &config);
+            if !filter_decision.matched {
+                stats.skipped_rule += 1;
+                continue;
+            }
+
+            logger::info(format!(
+                "猎聘处理岗位：{} - {}",
+                job.title, job.company_name
+            ))?;
+            if config.job_filter_config.enable_semantic_filter {
+                match crate::llm::evaluate_job_match(&config, &job).await {
+                    Ok(decision) if decision.matched => logger::info(format!(
+                        "猎聘 AI 岗位复核通过（{}分）：{}",
+                        decision.score, decision.reason
+                    ))?,
+                    Ok(decision) => {
+                        stats.skipped_ai += 1;
+                        logger::info(format!(
+                            "猎聘 AI 岗位复核未通过，跳过（{}分）：{}",
+                            decision.score, decision.reason
+                        ))?;
+                        continue;
+                    }
+                    Err(error) => {
+                        stats.skipped_ai += 1;
+                        logger::warning(format!(
+                            "猎聘 AI 岗位复核失败，为避免误投已跳过：{}",
+                            error
+                        ))?;
+                        continue;
+                    }
+                }
+            }
+
+            match greet_job(connection, job.clone(), config.clone()).await {
+                Ok(()) => {
+                    stats.greeted += 1;
+                    processed_job_ids.insert(format!("liepin:{}", job.platform_job_id));
+                    processed_job_ids.insert(job.platform_job_id.clone());
+                }
+                Err(error) => {
+                    stats.greet_failed += 1;
+                    logger::warning(greet_failure_message(&job.title, &job.company_name, &error))?;
+                    continue;
+                }
+            }
+            sleep_random_ms(2500, 4500);
+        }
+
+        logger::info(stats.summary())?;
+
+        if !scroll_next(page)? {
+            logger::info("猎聘岗位列表已触底")?;
+            return Ok(());
+        }
+    }
 }
 
 /// 本页岗位处理统计。跳过类逐条打日志会把有效信息淹掉，改为汇总一条。
@@ -310,10 +315,7 @@ fn push_vec_param(params: &mut Vec<String>, key: &str, values: &[String]) {
     }
 }
 
-fn apply_liepin_filters(
-    page: &ChromiumPage,
-    config: &AppRuntimeConfig,
-) -> Result<(), anyhow::Error> {
+fn apply_liepin_filters(page: &Page, config: &AppRuntimeConfig) -> Result<(), anyhow::Error> {
     let value = page.run_js_await(&build_apply_liepin_filter_script(config))?;
     let result = value.get("value").cloned().unwrap_or(value);
 
@@ -427,7 +429,7 @@ fn job_card_selectors() -> &'static [&'static str] {
     ]
 }
 
-fn collect_jobs(page: &ChromiumPage) -> Result<Vec<RpaJob>, anyhow::Error> {
+fn collect_jobs(page: &Page) -> Result<Vec<RpaJob>, anyhow::Error> {
     let value = page.run_js_await(&build_collect_jobs_script())?;
     let raw = value.get("value").cloned().unwrap_or(value);
     let candidates = serde_json::from_value::<Vec<LiepinJobCandidate>>(raw)?;
@@ -545,7 +547,7 @@ async fn greet_job(
         return Ok(());
     }
 
-    let page = browser_page.new_tab(None)?;
+    let page = browser::new_stealth_tab(browser_page)?;
     let result = async {
         page.get(&job.detail_url)?;
         sleep_random_ms(1200, 2000);
@@ -926,7 +928,6 @@ fn build_wait_image_delivery_script(since: f64) -> String {
     )
 }
 
-
 /// 聊天窗可能还在加载，这些超时只是异常上限，元素一就绪就立刻继续
 const INPUT_READY_TIMEOUT_MS: u32 = 15000;
 const SEND_BUTTON_READY_TIMEOUT_MS: u32 = 15000;
@@ -1102,7 +1103,7 @@ fn save_job_detail(job: &RpaJob) {
     }
 }
 
-fn scroll_next(page: &ChromiumPage) -> Result<bool, anyhow::Error> {
+fn scroll_next(page: &Page) -> Result<bool, anyhow::Error> {
     let before =
         page.run_js_await("document.documentElement.scrollTop || document.body.scrollTop")?;
     page.run_js_await(

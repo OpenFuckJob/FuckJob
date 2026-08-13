@@ -6,7 +6,10 @@ use std::{
     path::PathBuf,
     pin::Pin,
     process::{Command, Stdio},
-    sync::RwLock,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex, RwLock,
+    },
     time::Duration,
 };
 
@@ -136,6 +139,11 @@ static BROWSER_SESSION: Lazy<RwLock<BrowserSession>> =
     Lazy::new(|| RwLock::new(BrowserSession::Empty));
 static APP_HANDLE: Lazy<RwLock<Option<tauri::AppHandle>>> = Lazy::new(|| RwLock::new(None));
 static ACTIVE_DEBUG_PORT: Lazy<RwLock<Option<u16>>> = Lazy::new(|| RwLock::new(None));
+/// Serializes the check-and-launch sequence. `BROWSER_SESSION` also protects its
+/// own state, but this lock additionally closes the race between ensuring the
+/// managed process and establishing a task-scoped CDP connection.
+static MANAGED_BROWSER_START_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+static ACTIVE_TASK_BROWSER_LEASES: AtomicUsize = AtomicUsize::new(0);
 
 const DEFAULT_RPA_DEBUG_PORT: u16 = 9876;
 const BROWSER_START_ATTEMPTS: usize = 3;
@@ -151,6 +159,91 @@ enum BrowserSession {
     Empty,
     Ready(ChromiumPage),
     InUse { close_requested: bool },
+}
+
+/// Tabs created through a task lease. Keeping ownership explicit is important:
+/// taking a before/after snapshot of all Chrome tabs is racy when two tasks
+/// create tabs at the same time.
+struct TaskOwnedTabs<T> {
+    tabs: Vec<T>,
+}
+
+impl<T> Default for TaskOwnedTabs<T> {
+    fn default() -> Self {
+        Self { tabs: Vec::new() }
+    }
+}
+
+impl<T> TaskOwnedTabs<T> {
+    fn register(&mut self, tab: T) {
+        self.tabs.push(tab);
+    }
+
+    fn drain(&mut self) -> Vec<T> {
+        std::mem::take(&mut self.tabs)
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.tabs.len()
+    }
+}
+
+/// A task-isolated CDP connection and the tabs created through it.
+///
+/// The underlying `ChromiumPage` is deliberately only exposed by shared
+/// reference. This prevents task code from calling `close_browser()`, while
+/// still allowing it to create listeners and use browser-level read APIs.
+pub struct TaskBrowserLease {
+    browser: ChromiumPage,
+    main_tab: Page,
+    owned_tabs: Mutex<TaskOwnedTabs<Page>>,
+    counted_active: bool,
+}
+
+impl TaskBrowserLease {
+    /// The task's dedicated initial tab.
+    pub fn tab(&self) -> &Page {
+        &self.main_tab
+    }
+
+    /// The task's independent CDP connection. Only a shared reference is
+    /// returned, so this lease cannot terminate the managed Chrome process.
+    pub fn browser(&self) -> &ChromiumPage {
+        &self.browser
+    }
+
+    /// Create another stealth tab owned by this task. It will be closed along
+    /// with the main tab when the lease finishes.
+    pub fn new_stealth_tab(&self) -> Result<Page> {
+        let tab = new_stealth_tab(&self.browser)?;
+        self.owned_tabs
+            .lock()
+            .map_err(|e| anyhow!("获取任务标签页锁失败: {}", e))?
+            .register(tab.clone());
+        Ok(tab)
+    }
+
+    fn close_owned_tabs(&self) -> Result<()> {
+        let tabs = self
+            .owned_tabs
+            .lock()
+            .map_err(|e| anyhow!("获取任务标签页锁失败: {}", e))?
+            .drain();
+        close_task_owned_tabs(tabs)
+    }
+}
+
+impl Drop for TaskBrowserLease {
+    fn drop(&mut self) {
+        // Best-effort fallback for cancellation/panic paths. `with_task_browser`
+        // performs the same cleanup explicitly so it can report an error.
+        let _ = self.close_owned_tabs();
+        if self.counted_active {
+            ACTIVE_TASK_BROWSER_LEASES.fetch_sub(1, Ordering::AcqRel);
+            self.counted_active = false;
+        }
+    }
 }
 
 pub fn init_app_handle(app_handle: tauri::AppHandle) -> Result<()> {
@@ -191,13 +284,19 @@ pub fn init_browser_session(config: &BrowserConfig) -> Result<()> {
             }
         }
         BrowserSession::InUse { .. } => {
-            // 如果任务已经不在运行了，说明 InUse 是残留的卡死状态，
-            // 强制清理为 Empty 以便重新初始化浏览器。
-            if !crate::rpa::run_flow::is_job_task_running() {
-                *session = BrowserSession::Empty;
-            } else {
+            // A legacy `with_browser` caller currently owns the anchor
+            // connection. Task-scoped callers can still attach through CDP;
+            // never reset the anchor here because that would race its later
+            // restore and could launch/attach a second session unnecessarily.
+            let active_port = ACTIVE_DEBUG_PORT
+                .read()
+                .ok()
+                .and_then(|port| *port)
+                .is_some_and(is_cdp_port_active);
+            if active_port {
                 return Ok(());
             }
+            return Err(anyhow!("浏览器会话正在初始化或使用中，请稍后重试"));
         }
         BrowserSession::Empty => {}
     }
@@ -299,6 +398,18 @@ fn connect_to_browser(port: u16) -> Result<ChromiumPage> {
         Ok(browser)
     } else {
         Err(anyhow!("浏览器调试端口 {port} 的会话不可用"))
+    }
+}
+
+/// Establish a connection for one task without touching the tab selected by
+/// `ChromiumPage::connect`. The caller immediately creates its own tab below.
+fn connect_task_browser(port: u16) -> Result<ChromiumPage> {
+    let endpoint = format!("127.0.0.1:{port}");
+    let browser = ChromiumPage::connect(&endpoint)?;
+    if is_browser_session_usable(&browser) {
+        Ok(browser)
+    } else {
+        Err(anyhow!("浏览器调试端口 {port} 的任务连接不可用"))
     }
 }
 
@@ -440,6 +551,96 @@ where
     result
 }
 
+/// Run one RPA task on an independent CDP connection and an independently
+/// owned main tab.
+///
+/// Calls may run concurrently. Chrome/profile startup is serialized, but the
+/// lock is released before the task begins. Cleanup closes only tabs registered
+/// to this lease; it never closes Chrome or tabs belonging to another task.
+pub async fn with_task_browser<T, F>(op: F) -> Result<T>
+where
+    F: for<'a> FnOnce(&'a ChromiumPage, &'a Page) -> Pin<Box<dyn Future<Output = Result<T>> + 'a>>,
+{
+    let config = load_browser_config()?;
+    let start_guard = MANAGED_BROWSER_START_LOCK
+        .lock()
+        .map_err(|e| anyhow!("获取浏览器启动锁失败: {}", e))?;
+    let port = ensure_managed_browser_for_task(&config)?;
+    // Count the task while still holding the lifecycle lock. This closes the
+    // gap in which an explicit browser-close request could otherwise arrive
+    // after startup but before the lease became visible.
+    ACTIVE_TASK_BROWSER_LEASES.fetch_add(1, Ordering::AcqRel);
+    drop(start_guard);
+
+    let browser = match connect_task_browser(port) {
+        Ok(browser) => browser,
+        Err(error) => {
+            ACTIVE_TASK_BROWSER_LEASES.fetch_sub(1, Ordering::AcqRel);
+            return Err(error);
+        }
+    };
+    let main_tab = match new_stealth_tab(&browser) {
+        Ok(tab) => tab,
+        Err(error) => {
+            ACTIVE_TASK_BROWSER_LEASES.fetch_sub(1, Ordering::AcqRel);
+            return Err(error);
+        }
+    };
+    let mut owned_tabs = TaskOwnedTabs::default();
+    owned_tabs.register(main_tab.clone());
+
+    let lease = TaskBrowserLease {
+        browser,
+        main_tab,
+        owned_tabs: Mutex::new(owned_tabs),
+        counted_active: true,
+    };
+    let result = op(lease.browser(), lease.tab()).await;
+    // Closing a tab after its renderer/browser has already exited is benign
+    // for task cleanup. Never turn an otherwise successful RPA task into a
+    // failure solely because best-effort teardown could not close a dead tab.
+    let _ = lease.close_owned_tabs();
+
+    result
+}
+
+fn ensure_managed_browser_for_task(config: &BrowserConfig) -> Result<u16> {
+    // The legacy session owns no task connection. It remains as the process
+    // health anchor for environment/login APIs and also serializes launch with
+    // callers that have not migrated to task leases yet.
+    init_browser_session(config)?;
+
+    let port = ACTIVE_DEBUG_PORT
+        .read()
+        .map_err(|e| anyhow!("获取浏览器调试端口读锁失败: {}", e))?
+        .ok_or_else(|| anyhow!("浏览器已初始化但调试端口未知"))?;
+    if !is_cdp_port_active(port) {
+        return Err(anyhow!("浏览器调试端口 {port} 不可用"));
+    }
+    Ok(port)
+}
+
+fn close_task_owned_tabs(tabs: Vec<Page>) -> Result<()> {
+    close_owned_items(tabs, |tab| tab.close().map_err(anyhow::Error::from))
+}
+
+/// Close every owned resource even when one close fails. Returning the first
+/// error preserves useful diagnostics without leaking the remaining tabs.
+fn close_owned_items<T, F>(items: Vec<T>, mut close: F) -> Result<()>
+where
+    F: FnMut(T) -> Result<()>,
+{
+    let mut first_error = None;
+    for item in items {
+        if let Err(error) = close(item) {
+            if first_error.is_none() {
+                first_error = Some(error);
+            }
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
 fn take_browser_session() -> Result<ChromiumPage> {
     let mut session = BROWSER_SESSION
         .write()
@@ -474,18 +675,29 @@ fn restore_browser_session(mut browser: ChromiumPage, error: Option<&anyhow::Err
             close_requested: true
         }
     );
-    *session =
-        if close_requested || error.is_some_and(|err| !reuse_browser_session_after_error(err)) {
-            browser.close_browser();
-            BrowserSession::Empty
-        } else {
-            BrowserSession::Ready(browser)
-        };
+    let task_leases_active = ACTIVE_TASK_BROWSER_LEASES.load(Ordering::Acquire) > 0;
+    *session = if !task_leases_active && close_requested {
+        browser.close_browser();
+        BrowserSession::Empty
+    } else if error.is_some_and(|err| !reuse_browser_session_after_error(err)) {
+        // Discard the broken CDP connection, but do not terminate the managed
+        // Chrome process: another task may be between connection setup and
+        // lease publication. The next initialization can reconnect by port.
+        BrowserSession::Empty
+    } else {
+        BrowserSession::Ready(browser)
+    };
 
     Ok(())
 }
 
 pub fn close_browser_session() -> Result<()> {
+    let _lifecycle_guard = MANAGED_BROWSER_START_LOCK
+        .lock()
+        .map_err(|e| anyhow!("获取浏览器生命周期锁失败: {}", e))?;
+    if ACTIVE_TASK_BROWSER_LEASES.load(Ordering::Acquire) > 0 {
+        return Err(anyhow!("仍有自动化任务正在使用浏览器，暂不能关闭"));
+    }
     let mut session = BROWSER_SESSION
         .write()
         .map_err(|e| anyhow!("获取浏览器会话写锁失败: {}", e))?;
@@ -618,6 +830,7 @@ mod tests {
         let config = BrowserConfig {
             user_data_dir: "/tmp/offer-flow-profile".to_string(),
             chrome_exe_path: None,
+            max_parallel_tasks: 2,
         };
         let record = ManagedBrowserRecord {
             pid: 123,
@@ -632,5 +845,45 @@ mod tests {
     #[test]
     fn cdp_connections_install_stealth_before_the_next_navigation() {
         assert!(cdp_connection_requires_stealth_injection());
+    }
+
+    #[test]
+    fn task_owned_tabs_track_only_explicitly_registered_tabs() {
+        let mut owned = TaskOwnedTabs::default();
+        owned.register("task-main");
+        owned.register("task-child");
+
+        assert_eq!(owned.len(), 2);
+        assert_eq!(owned.drain(), vec!["task-main", "task-child"]);
+        assert_eq!(owned.len(), 0);
+    }
+
+    #[test]
+    fn task_cleanup_attempts_every_owned_tab_and_reports_first_error() {
+        let mut closed = Vec::new();
+        let result = close_owned_items(vec![1, 2, 3], |tab_id| {
+            closed.push(tab_id);
+            if tab_id == 2 {
+                Err(anyhow!("tab 2 close failed"))
+            } else {
+                Ok(())
+            }
+        });
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "tab 2 close failed");
+        assert_eq!(closed, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn task_cleanup_with_no_owned_tabs_is_a_noop() {
+        let mut close_called = false;
+        let result = close_owned_items(Vec::<u8>::new(), |_| {
+            close_called = true;
+            Ok(())
+        });
+
+        assert!(result.is_ok());
+        assert!(!close_called);
     }
 }

@@ -105,6 +105,7 @@ replay_config:
 browser_config:
   user_data_dir: ""
   chrome_exe_path: ""
+  max_parallel_tasks: 2
 resume_config:
   inject_llm_context: true
   resume_path: ""

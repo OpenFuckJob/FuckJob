@@ -25,221 +25,221 @@ pub async fn position_say_hello(
     app_runtime_config: &AppRuntimeConfig,
 ) -> Result<(), anyhow::Error> {
     let app_runtime_config = app_runtime_config.clone();
-    let search_url = build_job_search_url(&app_runtime_config.job_filter_config);
-    browser::with_browser(|page| {
+    browser::with_browser(|connection| {
         Box::pin(async move {
-            // 加载本地已处理的岗位ID，用于去重
-            let mut processed_job_ids: HashSet<String> = job_detail_dao::list()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|j| j.id)
-                .collect();
-            logger::info(format!("本地已存储 {} 条岗位记录", processed_job_ids.len()))?;
+            position_say_hello_on_page(connection, connection.tab(), &app_runtime_config).await
+        })
+    })
+    .await
+}
 
-            // 在 page.get 之前开始监听，捕获首次加载触发的 joblist 请求
-            let joblist_listener = page.listen_url("wapi/zpgeek/search/joblist.json")?;
+/// Run the BOSS job-hunting flow on the task-owned main tab.
+pub async fn position_say_hello_on_page(
+    connection: &ChromiumPage,
+    page: &Page,
+    app_runtime_config: &AppRuntimeConfig,
+) -> Result<(), anyhow::Error> {
+    let app_runtime_config = app_runtime_config.clone();
+    let search_url = build_job_search_url(&app_runtime_config.job_filter_config);
+    // 加载本地已处理的岗位ID，用于去重
+    let mut processed_job_ids: HashSet<String> = job_detail_dao::list()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|j| j.id)
+        .collect();
+    logger::info(format!("本地已存储 {} 条岗位记录", processed_job_ids.len()))?;
 
-            page.get(&search_url)?;
-            if let Err(error) = page.wait(".rec-job-list", JOB_LIST_WAIT_TIMEOUT) {
-                // 直接把 CDP 超时抛给用户没有任何可操作性，这里补齐当前页面上下文再给中文提示
-                let current_url = page.url().unwrap_or_else(|_| "未知 URL".to_string());
-                let page_text = page_text_snippet(page);
-                return Err(anyhow::anyhow!(job_list_wait_error(
-                    &current_url,
-                    &page_text,
-                    &error.to_string(),
-                )));
+    // 在 page.get 之前开始监听，捕获首次加载触发的 joblist 请求
+    let joblist_listener = page.listen_url("wapi/zpgeek/search/joblist.json")?;
+
+    page.get(&search_url)?;
+    if let Err(error) = page.wait(".rec-job-list", JOB_LIST_WAIT_TIMEOUT) {
+        // 直接把 CDP 超时抛给用户没有任何可操作性，这里补齐当前页面上下文再给中文提示
+        let current_url = page.url().unwrap_or_else(|_| "未知 URL".to_string());
+        let page_text = page_text_snippet(page);
+        return Err(anyhow::anyhow!(job_list_wait_error(
+            &current_url,
+            &page_text,
+            &error.to_string(),
+        )));
+    }
+
+    // 消费首次 page.get 触发的 joblist 响应，初始化 seen_job_ids
+    let mut seen_job_ids: HashSet<String> = HashSet::new();
+    if let Ok(Some(packet)) = joblist_listener.wait(Duration::from_secs(10)) {
+        let (first_ids, _) = parse_joblist_response(&packet);
+        seen_job_ids.extend(first_ids);
+    }
+    let mut no_new_count = 0u32;
+    let mut stats = RoundStats::default();
+
+    let stop_reason = 'outer: loop {
+        if is_job_task_stop_requested() {
+            break 'outer StopReason::UserStopped;
+        }
+
+        let jeb_card_area_eles = page.eles(".card-area")?;
+        logger::info(format!("页面加载到{}条岗位卡片", jeb_card_area_eles.len()))?;
+        if jeb_card_area_eles.is_empty() {
+            break 'outer StopReason::EmptyList;
+        }
+
+        // 记录进入本页时的累计值，页末据此算出“本页”增量
+        let round_base = stats.clone();
+
+        for job_card_area_ele in jeb_card_area_eles {
+            if is_job_task_stop_requested() {
+                break 'outer StopReason::UserStopped;
             }
-
-            // 消费首次 page.get 触发的 joblist 响应，初始化 seen_job_ids
-            let mut seen_job_ids: HashSet<String> = HashSet::new();
-            if let Ok(Some(packet)) = joblist_listener.wait(Duration::from_secs(10)) {
-                let (first_ids, _) = parse_joblist_response(&packet);
-                seen_job_ids.extend(first_ids);
-            }
-            let mut no_new_count = 0u32;
-            let mut stats = RoundStats::default();
-
-            let stop_reason = 'outer: loop {
-                if is_job_task_stop_requested() {
-                    break 'outer StopReason::UserStopped;
+            stats.scanned += 1;
+            let greet_job = match read_job_card(page, &job_card_area_ele, &processed_job_ids) {
+                Ok(CardOutcome::Ready(greet_job)) => *greet_job,
+                Ok(CardOutcome::Skipped(reason)) => {
+                    stats.record_skip(reason);
+                    // 全静默会让用户以为程序卡死，这里按批次给出进度提示
+                    let skipped = stats.skipped_known() - round_base.skipped_known();
+                    if should_log_skip_progress(skipped) {
+                        logger::info(format!("已跳过 {} 条已浏览/已投递岗位，继续扫描", skipped))?;
+                    }
+                    continue;
                 }
-
-                let jeb_card_area_eles = page.eles(".card-area")?;
-                logger::info(format!("页面加载到{}条岗位卡片", jeb_card_area_eles.len()))?;
-                if jeb_card_area_eles.is_empty() {
-                    break 'outer StopReason::EmptyList;
-                }
-
-                // 记录进入本页时的累计值，页末据此算出“本页”增量
-                let round_base = stats.clone();
-
-                for job_card_area_ele in jeb_card_area_eles {
-                    if is_job_task_stop_requested() {
-                        break 'outer StopReason::UserStopped;
-                    }
-                    stats.scanned += 1;
-                    let greet_job =
-                        match read_job_card(page, &job_card_area_ele, &processed_job_ids) {
-                            Ok(CardOutcome::Ready(greet_job)) => *greet_job,
-                            Ok(CardOutcome::Skipped(reason)) => {
-                                stats.record_skip(reason);
-                                // 全静默会让用户以为程序卡死，这里按批次给出进度提示
-                                let skipped = stats.skipped_known() - round_base.skipped_known();
-                                if should_log_skip_progress(skipped) {
-                                    logger::info(format!(
-                                        "已跳过 {} 条已浏览/已投递岗位，继续扫描",
-                                        skipped
-                                    ))?;
-                                }
-                                continue;
-                            }
-                            Err(error) => {
-                                stats.read_failed += 1;
-                                logger::warning(card_failure_message(&error))?;
-                                continue;
-                            }
-                        };
-
-                    logger::info(format!(
-                        "当前处理岗位:{} 公司:{}",
-                        greet_job.title, greet_job.company_name
-                    ))?;
-
-                    let filter_decision = verify::filter_decision(&greet_job, &app_runtime_config);
-                    if !filter_decision.matched {
-                        stats.skipped_rule += 1;
-                        logger::info(format!("岗位不匹配，跳过：{}", filter_decision.reason))?;
-                        continue;
-                    }
-                    if app_runtime_config.job_filter_config.enable_semantic_filter {
-                        match crate::llm::evaluate_job_match(&app_runtime_config, &greet_job).await
-                        {
-                            Ok(decision) if decision.matched => logger::info(format!(
-                                "AI 岗位复核通过（{}分）：{}",
-                                decision.score, decision.reason
-                            ))?,
-                            Ok(decision) => {
-                                stats.skipped_ai += 1;
-                                logger::info(format!(
-                                    "AI 岗位复核未通过，跳过（{}分）：{}",
-                                    decision.score, decision.reason
-                                ))?;
-                                continue;
-                            }
-                            Err(error) => {
-                                stats.skipped_ai += 1;
-                                logger::warning(format!(
-                                    "AI 岗位复核失败，为避免误投已跳过：{}",
-                                    error
-                                ))?;
-                                continue;
-                            }
-                        }
-                    }
-                    match handle_greet(page, greet_job.clone(), app_runtime_config.clone()).await {
-                        Ok(()) => {}
-                        Err(error) => {
-                            stats.greet_failed += 1;
-                            logger::warning(greet_failure_message(
-                                &greet_job.title,
-                                &greet_job.company_name,
-                                &error,
-                            ))?;
-                            if should_continue_after_greet_failure() {
-                                continue;
-                            }
-                            // 目前 should_continue_after_greet_failure 恒为 true，
-                            // 这里仅作为“单次失败即终止”策略的兜底出口
-                            break 'outer StopReason::GreetFailureAborted;
-                        }
-                    }
-                    if is_job_task_stop_requested() {
-                        break 'outer StopReason::UserStopped;
-                    }
-
-                    stats.greet_success += 1;
-                    logger::info(format!("{} 初次沟通成功", greet_job.title))?;
-                    processed_job_ids.insert(greet_job.platform_job_id.clone());
-                    sleep_random_ms(3000, 5000);
-                }
-
-                // 本页处理结果汇总：一条都没进入打招呼流程时给出聚合提示，避免界面长时间无输出
-                let round = stats.since(&round_base);
-                if round.scanned > 0 {
-                    if round.engaged() == 0 {
-                        logger::info(format!(
-                            "本页 {} 条岗位均已处理过或不匹配，继续向下加载",
-                            round.scanned
-                        ))?;
-                    } else {
-                        logger::info(format!("本页处理完成：{}", round.summary()))?;
-                    }
-                }
-
-                // 检查是否已触底
-                if page.ele(".loading-wait")?.is_none() {
-                    break 'outer StopReason::ReachedBottom;
-                }
-
-                // 设置监听 → 滚动 → 等待 joblist API 响应，检测是否有新岗位
-                let joblist_listener = page.listen_url("wapi/zpgeek/search/joblist.json")?;
-                let scroll_probe = scroll_bottom_probe(page)?;
-
-                match joblist_listener.wait(Duration::from_secs(10)) {
-                    Ok(Some(packet)) => {
-                        let (api_ids, has_more) = parse_joblist_response(&packet);
-
-                        if !has_more {
-                            break 'outer StopReason::NoMoreFromApi;
-                        }
-
-                        let new_ids: HashSet<String> = api_ids
-                            .into_iter()
-                            .filter(|id| !seen_job_ids.contains(id))
-                            .collect();
-
-                        if new_ids.is_empty() {
-                            no_new_count += 1;
-                            if no_new_count >= MAX_NO_NEW_RETRY {
-                                break 'outer StopReason::NoNewJobs;
-                            }
-                            logger::info(format!(
-                                "第 {}/{} 次滚动未加载到新岗位，重试中",
-                                no_new_count, MAX_NO_NEW_RETRY
-                            ))?;
-                            continue;
-                        }
-
-                        no_new_count = 0;
-                        seen_job_ids.extend(new_ids);
-                    }
-                    _ => {
-                        no_new_count += 1;
-                        if no_new_count >= MAX_NO_NEW_RETRY {
-                            break 'outer StopReason::ApiTimeout;
-                        }
-                        logger::info(format!(
-                            "第 {}/{} 次等待岗位接口响应超时，重试中（{}）",
-                            no_new_count,
-                            MAX_NO_NEW_RETRY,
-                            scroll_probe.describe()
-                        ))?;
-                        continue;
-                    }
+                Err(error) => {
+                    stats.read_failed += 1;
+                    logger::warning(card_failure_message(&error))?;
+                    continue;
                 }
             };
 
             logger::info(format!(
-                "本轮求职任务结束：{}。{}",
-                stop_reason.describe(),
-                stats.total_summary()
+                "当前处理岗位:{} 公司:{}",
+                greet_job.title, greet_job.company_name
             ))?;
 
-            Ok(())
-        })
-    })
-    .await?;
+            let filter_decision = verify::filter_decision(&greet_job, &app_runtime_config);
+            if !filter_decision.matched {
+                stats.skipped_rule += 1;
+                logger::info(format!("岗位不匹配，跳过：{}", filter_decision.reason))?;
+                continue;
+            }
+            if app_runtime_config.job_filter_config.enable_semantic_filter {
+                match crate::llm::evaluate_job_match(&app_runtime_config, &greet_job).await {
+                    Ok(decision) if decision.matched => logger::info(format!(
+                        "AI 岗位复核通过（{}分）：{}",
+                        decision.score, decision.reason
+                    ))?,
+                    Ok(decision) => {
+                        stats.skipped_ai += 1;
+                        logger::info(format!(
+                            "AI 岗位复核未通过，跳过（{}分）：{}",
+                            decision.score, decision.reason
+                        ))?;
+                        continue;
+                    }
+                    Err(error) => {
+                        stats.skipped_ai += 1;
+                        logger::warning(format!("AI 岗位复核失败，为避免误投已跳过：{}", error))?;
+                        continue;
+                    }
+                }
+            }
+            match handle_greet(connection, greet_job.clone(), app_runtime_config.clone()).await {
+                Ok(()) => {}
+                Err(error) => {
+                    stats.greet_failed += 1;
+                    logger::warning(greet_failure_message(
+                        &greet_job.title,
+                        &greet_job.company_name,
+                        &error,
+                    ))?;
+                    if should_continue_after_greet_failure() {
+                        continue;
+                    }
+                    // 目前 should_continue_after_greet_failure 恒为 true，
+                    // 这里仅作为“单次失败即终止”策略的兜底出口
+                    break 'outer StopReason::GreetFailureAborted;
+                }
+            }
+            if is_job_task_stop_requested() {
+                break 'outer StopReason::UserStopped;
+            }
+
+            stats.greet_success += 1;
+            logger::info(format!("{} 初次沟通成功", greet_job.title))?;
+            processed_job_ids.insert(greet_job.platform_job_id.clone());
+            sleep_random_ms(3000, 5000);
+        }
+
+        // 本页处理结果汇总：一条都没进入打招呼流程时给出聚合提示，避免界面长时间无输出
+        let round = stats.since(&round_base);
+        if round.scanned > 0 {
+            if round.engaged() == 0 {
+                logger::info(format!(
+                    "本页 {} 条岗位均已处理过或不匹配，继续向下加载",
+                    round.scanned
+                ))?;
+            } else {
+                logger::info(format!("本页处理完成：{}", round.summary()))?;
+            }
+        }
+
+        // 检查是否已触底
+        if page.ele(".loading-wait")?.is_none() {
+            break 'outer StopReason::ReachedBottom;
+        }
+
+        // 设置监听 → 滚动 → 等待 joblist API 响应，检测是否有新岗位
+        let joblist_listener = page.listen_url("wapi/zpgeek/search/joblist.json")?;
+        let scroll_probe = scroll_bottom_probe(page)?;
+
+        match joblist_listener.wait(Duration::from_secs(10)) {
+            Ok(Some(packet)) => {
+                let (api_ids, has_more) = parse_joblist_response(&packet);
+
+                if !has_more {
+                    break 'outer StopReason::NoMoreFromApi;
+                }
+
+                let new_ids: HashSet<String> = api_ids
+                    .into_iter()
+                    .filter(|id| !seen_job_ids.contains(id))
+                    .collect();
+
+                if new_ids.is_empty() {
+                    no_new_count += 1;
+                    if no_new_count >= MAX_NO_NEW_RETRY {
+                        break 'outer StopReason::NoNewJobs;
+                    }
+                    logger::info(format!(
+                        "第 {}/{} 次滚动未加载到新岗位，重试中",
+                        no_new_count, MAX_NO_NEW_RETRY
+                    ))?;
+                    continue;
+                }
+
+                no_new_count = 0;
+                seen_job_ids.extend(new_ids);
+            }
+            _ => {
+                no_new_count += 1;
+                if no_new_count >= MAX_NO_NEW_RETRY {
+                    break 'outer StopReason::ApiTimeout;
+                }
+                logger::info(format!(
+                    "第 {}/{} 次等待岗位接口响应超时，重试中（{}）",
+                    no_new_count,
+                    MAX_NO_NEW_RETRY,
+                    scroll_probe.describe()
+                ))?;
+                continue;
+            }
+        }
+    };
+
+    logger::info(format!(
+        "本轮求职任务结束：{}。{}",
+        stop_reason.describe(),
+        stats.total_summary()
+    ))?;
 
     Ok(())
 }
@@ -428,7 +428,7 @@ fn job_list_wait_error(url: &str, page_text: &str, source: &str) -> String {
 }
 
 /// 抓取页面可见文本片段，仅用于超时诊断，失败时返回空串
-fn page_text_snippet(page: &ChromiumPage) -> String {
+fn page_text_snippet(page: &Page) -> String {
     page.ele("body")
         .ok()
         .flatten()
@@ -445,7 +445,7 @@ fn card_failure_message(error: &anyhow::Error) -> String {
 }
 
 fn read_job_card(
-    page: &ChromiumPage,
+    page: &Page,
     job_card_area_ele: &Element,
     processed_job_ids: &HashSet<String>,
 ) -> Result<CardOutcome, anyhow::Error> {
@@ -1038,14 +1038,14 @@ fn scroll_height_from_value(value: &Value) -> Option<f64> {
 
 // 滚动到底部（兼容旧签名的包装，忽略高度探测结果）
 #[allow(dead_code)]
-pub fn scroll_bottom(page: &ChromiumPage) -> Result<(), anyhow::Error> {
+pub fn scroll_bottom(page: &Page) -> Result<(), anyhow::Error> {
     scroll_bottom_probe(page).map(|_| ())
 }
 
 /// 滚动到底部并返回滚动前后的页面高度。
 /// 分两步执行 JS（先上滚、再下滚），中间用 `sleep_random_ms` 留出真实间隔，
 /// 比在 JS 里写 setTimeout 更可控，也更贴近真人操作。
-fn scroll_bottom_probe(page: &ChromiumPage) -> Result<ScrollProbe, anyhow::Error> {
+fn scroll_bottom_probe(page: &Page) -> Result<ScrollProbe, anyhow::Error> {
     let nudged = page.run_js_await(SCROLL_NUDGE_UP_SCRIPT)?;
     let height_before = scroll_height_from_value(&nudged).unwrap_or_default();
 
@@ -1072,7 +1072,7 @@ fn _is_bottom_value(value: &Value) -> Result<bool, anyhow::Error> {
 }
 
 // 判断是否到底部
-pub fn _is_bottom(page: &ChromiumPage) -> Result<bool, anyhow::Error> {
+pub fn _is_bottom(page: &Page) -> Result<bool, anyhow::Error> {
     let script: &str = r#"
 (()=>{
 const html = document.documentElement;

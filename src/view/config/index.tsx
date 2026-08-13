@@ -1538,6 +1538,31 @@ export function ConfigPage(props: ConfigPageProps) {
                 }
               />
             </Form.Item>
+            <Form.Item
+              label="最大并行任务数"
+              name={["browser_config", "max_parallel_tasks"]}
+              extra="默认为 2, BOSS 与猎聘可各运行一个任务、同一平台的后续任务会排队。"
+            >
+              <InputNumber
+                min={1}
+                max={2}
+                precision={0}
+                style={{ width: "100%" }}
+                onChange={(value) =>
+                  props.updateBrowser({ max_parallel_tasks: value ?? 2 })
+                }
+              />
+            </Form.Item>
+            <Alert
+              type="info"
+              showIcon
+              message={
+                props.config.browser_config.max_parallel_tasks === 1
+                  ? "单任务模式：预计浏览器占用约 550～900 MB"
+                  : "双任务模式：预计浏览器占用约 750 MB～1.3 GB"
+              }
+              description="任务共享一个受管 Chrome，但使用独立连接和标签页；实际占用取决于页面、图片和聊天记录数量。"
+            />
           </Space>
         );
       case "resume":
