@@ -712,7 +712,7 @@ fn format_seen_requests(seen: &[String]) -> String {
 ///
 /// 重复注入是安全的（第二次直接复用），标签页关闭后自然消失，
 /// 不像 CDP 监听那样会留下后台线程和连接。
-fn install_request_recorder(page: &Page) -> Result<f64, anyhow::Error> {
+pub(crate) fn install_request_recorder(page: &Page) -> Result<f64, anyhow::Error> {
     let value = page.run_js_await(INSTALL_REQUEST_RECORDER_SCRIPT)?;
     let result = value.get("value").cloned().unwrap_or(value);
     Ok(result
@@ -727,10 +727,14 @@ const INSTALL_REQUEST_RECORDER_SCRIPT: &str = r#"
             window.__fjRequestRecords = [];
         }
         const push = (url, status, body) => {
+            const address = String(url || "");
+            // 判断发送成败只要个开头就够；但 IM 的会话列表和聊天记录要整段留下来给解析用，
+            // 截断会直接把 JSON 弄坏
+            const limit = /com\.liepin\.im\./.test(address) ? 400000 : 4000;
             window.__fjRequestRecords.push({
-                url: String(url || ""),
+                url: address,
                 status: Number(status) || 0,
-                body: String(body || "").slice(0, 4000),
+                body: String(body || "").slice(0, limit),
                 at: performance.now()
             });
             // 只留最近的记录，避免长会话里无限增长
@@ -1446,6 +1450,14 @@ mod tests {
         // 同一标签页发多张图会重复注入，必须幂等
         assert!(INSTALL_REQUEST_RECORDER_SCRIPT.contains("if (!window.__fjRecorderInstalled)"));
         assert!(INSTALL_REQUEST_RECORDER_SCRIPT.contains("return { now: performance.now() }"));
+    }
+
+    /// 会话列表实测 30KB、聊天记录 6KB，按 4000 截断会直接把 JSON 弄坏，
+    /// 沟通那边就只能退回刮 DOM
+    #[test]
+    fn im_responses_are_recorded_in_full_while_others_stay_truncated() {
+        assert!(INSTALL_REQUEST_RECORDER_SCRIPT
+            .contains(r#"/com\.liepin\.im\./.test(address) ? 400000 : 4000"#));
     }
 
     #[test]
