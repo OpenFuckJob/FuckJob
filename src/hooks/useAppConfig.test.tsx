@@ -22,7 +22,7 @@ const config: AppRuntimeConfig = {
   platform_filter_config: { liepin: { dq: null, salary_code: null, pub_time: null, work_year_code: null, comp_tag: [] } },
   greet_config: { enable_llm: false, reply_prompt: null, default_template: [] },
   replay_config: { enable_auto_replay: false, templates: [], enable_llm: false, reply_prompt: null, background_context: null },
-  browser_config: { user_data_dir: "profile", chrome_exe_path: null },
+  browser_config: { user_data_dir: "profile", chrome_exe_path: null, max_parallel_tasks: 2 },
   resume_config: { inject_llm_context: false, resume_path: null, resume_content: null },
 };
 

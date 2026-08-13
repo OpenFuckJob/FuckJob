@@ -260,6 +260,10 @@ fn upsert_synced_job(
     job_detail_dao::create(JobDetail {
         id: job_id.to_string(),
         platform: "boss".to_string(),
+        source_task_id: None,
+        profile_id: None,
+        profile_name: None,
+        profile_snapshot_id: None,
         title,
         company_name: company_name
             .map(|value| value.trim().to_string())
@@ -352,127 +356,134 @@ fn collect_current_conversation_keys(
 
 /// 遍历 BOSS 沟通列表并增量同步历史消息。
 pub async fn sync_chat_history() -> Result<ChatHistorySyncResult, anyhow::Error> {
-    browser::with_new_tab(|page| {
-        Box::pin(async move {
-            logger::info("周期间歇：开始同步 BOSS 历史对话")?;
-            page.get(BOSS_CHAT_URL)?;
-            page.wait(".user-list-content", Duration::from_secs(15))?;
-            sleep_random_ms(800, 1200);
+    browser::with_new_tab(|page| Box::pin(async move { sync_chat_history_on_page(page).await }))
+        .await
+}
 
-            // 先在“未读”分类中只扫描标识，绝不点击会话卡片。
-            // 如果无法识别未读分类，为避免误把消息标记为已读，本次同步直接跳过。
-            if !click_label(page, "未读")? {
-                logger::warning("未找到 BOSS 未读分类，为保护未读状态，本次不同步历史对话")?;
-                return Ok(ChatHistorySyncResult::default());
+/// Synchronize BOSS history on a caller-owned task tab.
+pub async fn sync_chat_history_on_page(
+    page: &rust_drission::Page,
+) -> Result<ChatHistorySyncResult, anyhow::Error> {
+    logger::info("周期间歇：开始同步 BOSS 历史对话")?;
+    page.get(BOSS_CHAT_URL)?;
+    page.wait(".user-list-content", Duration::from_secs(15))?;
+    sleep_random_ms(800, 1200);
+
+    // 先在“未读”分类中只扫描标识，绝不点击会话卡片。
+    // 如果无法识别未读分类，为避免误把消息标记为已读，本次同步直接跳过。
+    if !click_label(page, "未读")? {
+        logger::warning("未找到 BOSS 未读分类，为保护未读状态，本次不同步历史对话")?;
+        return Ok(ChatHistorySyncResult::default());
+    }
+    let unread_keys = collect_current_conversation_keys(page)?;
+    logger::info(format!(
+        "检测到未读会话 {} 个，同步时将全部跳过",
+        unread_keys.len()
+    ))?;
+
+    if !click_label(page, "全部")? {
+        logger::warning("未找到 BOSS 全部会话分类，本次不同步历史对话")?;
+        return Ok(ChatHistorySyncResult::default());
+    }
+    scroll_conversation_list(page, true)?;
+
+    let mut result = ChatHistorySyncResult::default();
+    let mut seen = HashSet::new();
+    let mut stagnant_rounds = 0;
+
+    // 会话列表为虚拟滚动列表：不断处理当前已渲染项并向下滚动，
+    // 连续三轮没有新会话时认为到达底部。
+    for _ in 0..50 {
+        if is_job_task_stop_requested() {
+            break;
+        }
+
+        let cards = page.elements(".user-list-content .friend-content")?;
+        let mut discovered = 0;
+        for card in cards {
+            if is_job_task_stop_requested() {
+                break;
             }
-            let unread_keys = collect_current_conversation_keys(page)?;
-            logger::info(format!("检测到未读会话 {} 个，同步时将全部跳过", unread_keys.len()))?;
 
-            if !click_label(page, "全部")? {
-                logger::warning("未找到 BOSS 全部会话分类，本次不同步历史对话")?;
-                return Ok(ChatHistorySyncResult::default());
+            let key = conversation_key(&card.text_content()?);
+            if key.is_empty() || !seen.insert(key.clone()) {
+                continue;
             }
-            scroll_conversation_list(page, true)?;
+            discovered += 1;
+            result.scanned += 1;
 
-            let mut result = ChatHistorySyncResult::default();
-            let mut seen = HashSet::new();
-            let mut stagnant_rounds = 0;
-
-            // 会话列表为虚拟滚动列表：不断处理当前已渲染项并向下滚动，
-            // 连续三轮没有新会话时认为到达底部。
-            for _ in 0..50 {
-                if is_job_task_stop_requested() {
-                    break;
-                }
-
-                let cards = page.elements(".user-list-content .friend-content")?;
-                let mut discovered = 0;
-                for card in cards {
-                    if is_job_task_stop_requested() {
-                        break;
-                    }
-
-                    let key = conversation_key(&card.text_content()?);
-                    if key.is_empty() || !seen.insert(key.clone()) {
-                        continue;
-                    }
-                    discovered += 1;
-                    result.scanned += 1;
-
-                    // 第一层：未读分类快照；第二层：点击前检查常见未读标记。
-                    // 任一命中都跳过，避免同步动作改变未读状态。
-                    let has_unread_marker = card
+            // 第一层：未读分类快照；第二层：点击前检查常见未读标记。
+            // 任一命中都跳过，避免同步动作改变未读状态。
+            let has_unread_marker = card
                         .element(
                             "[class*='unread'], .badge, .badge-count, .unread-count, .red-dot, .notice-badge",
                         )?
                         .is_some();
-                    if unread_keys.contains(&key) || has_unread_marker {
-                        result.skipped_unread += 1;
-                        continue;
-                    }
-
-                    let history_listener = page.listen_url("zpchat/geek/historyMsg")?;
-                    let boss_data_listener = page.listen_url("zpchat/geek/getBossData")?;
-                    card.click()?;
-                    sleep_random_ms(350, 600);
-
-                    let boss_data_body = boss_data_listener
-                        .wait(Duration::from_secs(6))
-                        .ok()
-                        .flatten()
-                        .and_then(|packet| packet.body)
-                        .and_then(|body| String::from_utf8(body).ok());
-                    let job_id = boss_data_body
-                        .as_deref()
-                        .and_then(parse_encrypt_job_id);
-
-                    let history_body = history_listener
-                        .wait(Duration::from_secs(8))
-                        .ok()
-                        .flatten()
-                        .and_then(|packet| packet.body)
-                        .and_then(|body| String::from_utf8(body).ok());
-
-                    let (Some(job_id), Some(history_body)) = (job_id, history_body) else {
-                        logger::warning("同步会话时未获取到 jobId 或 historyMsg，已跳过")?;
-                        continue;
-                    };
-
-                    let messages = parse_chat_messages(&history_body)
-                        .context("解析周期间歇历史对话失败")?;
-                    let dom_snapshot = extract_job_snapshot_from_dom(page);
-                    let api_snapshot = merge_snapshot(
-                        boss_data_body
-                            .as_deref()
-                            .map(parse_job_snapshot)
-                            .unwrap_or_default(),
-                        parse_job_snapshot(&history_body),
-                    );
-                    let snapshot = merge_snapshot(dom_snapshot, api_snapshot);
-                    match upsert_synced_job(&job_id, snapshot, &messages)? {
-                        JobSyncChange::Inserted => result.jobs_inserted += 1,
-                        JobSyncChange::Updated => result.jobs_updated += 1,
-                        JobSyncChange::None => {}
-                    }
-                    let saved = chat_message_dao::upsert_incremental(&job_id, &messages)?;
-                    result.conversations += 1;
-                    result.inserted += saved.inserted;
-                    result.updated += saved.updated;
-                }
-
-                if discovered == 0 {
-                    stagnant_rounds += 1;
-                    if stagnant_rounds >= 3 {
-                        break;
-                    }
-                } else {
-                    stagnant_rounds = 0;
-                }
-
-                scroll_conversation_list(page, false)?;
+            if unread_keys.contains(&key) || has_unread_marker {
+                result.skipped_unread += 1;
+                continue;
             }
 
-            logger::info(format!(
+            let history_listener = page.listen_url("zpchat/geek/historyMsg")?;
+            let boss_data_listener = page.listen_url("zpchat/geek/getBossData")?;
+            card.click()?;
+            sleep_random_ms(350, 600);
+
+            let boss_data_body = boss_data_listener
+                .wait(Duration::from_secs(6))
+                .ok()
+                .flatten()
+                .and_then(|packet| packet.body)
+                .and_then(|body| String::from_utf8(body).ok());
+            let job_id = boss_data_body.as_deref().and_then(parse_encrypt_job_id);
+
+            let history_body = history_listener
+                .wait(Duration::from_secs(8))
+                .ok()
+                .flatten()
+                .and_then(|packet| packet.body)
+                .and_then(|body| String::from_utf8(body).ok());
+
+            let (Some(job_id), Some(history_body)) = (job_id, history_body) else {
+                logger::warning("同步会话时未获取到 jobId 或 historyMsg，已跳过")?;
+                continue;
+            };
+
+            let messages =
+                parse_chat_messages(&history_body).context("解析周期间歇历史对话失败")?;
+            let dom_snapshot = extract_job_snapshot_from_dom(page);
+            let api_snapshot = merge_snapshot(
+                boss_data_body
+                    .as_deref()
+                    .map(parse_job_snapshot)
+                    .unwrap_or_default(),
+                parse_job_snapshot(&history_body),
+            );
+            let snapshot = merge_snapshot(dom_snapshot, api_snapshot);
+            match upsert_synced_job(&job_id, snapshot, &messages)? {
+                JobSyncChange::Inserted => result.jobs_inserted += 1,
+                JobSyncChange::Updated => result.jobs_updated += 1,
+                JobSyncChange::None => {}
+            }
+            let saved = chat_message_dao::upsert_incremental(&job_id, &messages)?;
+            result.conversations += 1;
+            result.inserted += saved.inserted;
+            result.updated += saved.updated;
+        }
+
+        if discovered == 0 {
+            stagnant_rounds += 1;
+            if stagnant_rounds >= 3 {
+                break;
+            }
+        } else {
+            stagnant_rounds = 0;
+        }
+
+        scroll_conversation_list(page, false)?;
+    }
+
+    logger::info(format!(
                 "BOSS 历史对话同步完成：扫描 {} 个，同步 {} 个，跳过未读 {} 个，新增岗位 {} 个，更新岗位 {} 个，新增消息 {} 条，更新消息 {} 条",
                 result.scanned,
                 result.conversations,
@@ -482,10 +493,7 @@ pub async fn sync_chat_history() -> Result<ChatHistorySyncResult, anyhow::Error>
                 result.inserted,
                 result.updated
             ))?;
-            Ok(result)
-        })
-    })
-    .await
+    Ok(result)
 }
 
 #[cfg(test)]

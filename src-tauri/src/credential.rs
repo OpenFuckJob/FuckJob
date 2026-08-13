@@ -295,8 +295,10 @@ mod entry_tests {
 
     #[test]
     fn environment_fallback_only_applies_to_the_primary_entry() {
-        assert!(KeyringCredentialBackend::for_entry(PRIMARY_LLM_ENTRY_ID)
-            == KeyringCredentialBackend::default());
+        assert!(
+            KeyringCredentialBackend::for_entry(PRIMARY_LLM_ENTRY_ID)
+                == KeyringCredentialBackend::default()
+        );
         assert_ne!(
             KeyringCredentialBackend::for_entry("backup-a"),
             KeyringCredentialBackend::default()

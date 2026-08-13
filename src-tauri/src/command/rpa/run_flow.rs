@@ -1,8 +1,10 @@
 use crate::{
     command::base::CommandResult,
-    config::load_app_config,
+    config::{load_app_config, resolve_job_profile},
+    dao::{model::JobProfileSnapshot, profile_snapshot_dao},
     logger,
-    rpa::run_flow::{self, EnvCheckResult, FlowMode, JobTaskStatus, PlatformKind, ReadinessReport},
+    rpa::run_flow::{self, EnvCheckResult, FlowMode, PlatformKind, ReadinessReport},
+    task::{JobTaskInfo, JobTaskOverview, JobTaskProfile, JOB_TASK_MANAGER},
 };
 
 #[tauri::command]
@@ -150,6 +152,10 @@ pub async fn rpa_flow(
 
     let (tx, rx) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
+        // Logger context is thread-local. Legacy callers still execute the
+        // actual flow on a dedicated worker, so install the platform again on
+        // that thread instead of relying on the command thread's context.
+        let _log_context = logger::scoped_context(None, Some(platform));
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build();
@@ -177,6 +183,80 @@ pub async fn rpa_flow(
     command_result
 }
 
+/// Enqueues a browser automation job and returns immediately.
+///
+/// The scheduler applies a global concurrency limit and a capacity-one lock per platform. The
+/// actual flow continues to run on its own OS thread with a current-thread Tokio runtime.
+#[tauri::command]
+pub fn start_job_task(
+    app_handle: tauri::AppHandle,
+    platform: PlatformKind,
+    mode: FlowMode,
+    interval_minutes: Option<u64>,
+    profile_id: Option<String>,
+) -> CommandResult<JobTaskInfo> {
+    if mode == FlowMode::PeriodicJobHunting && interval_minutes.is_none_or(|minutes| minutes == 0) {
+        return CommandResult::err("周期性投递间隔必须大于 0 分钟");
+    }
+
+    let base_config = match crate::config::load_app_config_inner(app_handle) {
+        Ok(config) => config,
+        Err(error) => return CommandResult::err(error),
+    };
+    let (config, task_profile) = match mode {
+        FlowMode::JobHunting | FlowMode::PeriodicJobHunting => {
+            let resolved = match resolve_job_profile(&base_config, profile_id.as_deref()) {
+                Ok(resolved) => resolved,
+                Err(error) => return CommandResult::err(error),
+            };
+            let Some(snapshot) = JobProfileSnapshot::from_resolved(&resolved.config) else {
+                return CommandResult::err("创建求职方案快照失败：缺少活动方案元信息");
+            };
+            if let Err(error) = profile_snapshot_dao::upsert(snapshot) {
+                return CommandResult::err(format!("保存求职方案快照失败：{error}"));
+            }
+            let profile = JobTaskProfile {
+                profile_id: Some(resolved.profile_id),
+                profile_name: Some(resolved.profile_name),
+                profile_snapshot_id: Some(resolved.snapshot_id),
+            };
+            (resolved.config, Some(profile))
+        }
+        FlowMode::ReplyUnread => {
+            // 回复任务会逐会话恢复首次建联快照，不能在整批任务上固定一张方案。
+            let config = match resolve_job_profile(&base_config, None) {
+                Ok(resolved) => resolved.config,
+                Err(error) => return CommandResult::err(error),
+            };
+            (
+                config,
+                Some(JobTaskProfile {
+                    profile_id: None,
+                    profile_name: Some("按会话自动选择".to_string()),
+                    profile_snapshot_id: None,
+                }),
+            )
+        }
+        FlowMode::SyncChatHistory => (base_config, None),
+    };
+    let readiness = run_flow::inspect_readiness(platform, mode, &config);
+    if !readiness.ready {
+        let missing = readiness
+            .items
+            .iter()
+            .filter(|item| item.level == run_flow::ReadinessLevel::Blocked)
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>()
+            .join("、");
+        return CommandResult::err(format!("任务准备未完成：{missing}"));
+    }
+
+    match JOB_TASK_MANAGER.submit(platform, mode, interval_minutes, config, task_profile) {
+        Ok(task) => CommandResult::ok(task),
+        Err(error) => CommandResult::err(error),
+    }
+}
+
 fn flow_error_message(
     result: &Result<Result<(), anyhow::Error>, tokio::sync::oneshot::error::RecvError>,
 ) -> Option<String> {
@@ -202,13 +282,19 @@ fn command_result_for_flow(
 }
 
 #[tauri::command]
-pub fn get_job_task_status() -> CommandResult<JobTaskStatus> {
-    CommandResult::ok(run_flow::get_job_task_status())
+pub fn get_job_task_status() -> CommandResult<JobTaskOverview> {
+    CommandResult::ok(JOB_TASK_MANAGER.overview())
 }
 
 #[tauri::command]
-pub fn stop_job_task() -> CommandResult<()> {
-    match run_flow::stop_job_task() {
+pub fn stop_job_task(task_id: Option<String>) -> CommandResult<()> {
+    let result = match task_id {
+        Some(task_id) => JOB_TASK_MANAGER.stop(&task_id),
+        // Keep the pre-queue command contract working for callers that still
+        // invoke `rpa_flow`/`boss_flow` directly.
+        None => run_flow::stop_job_task(),
+    };
+    match result {
         Ok(()) => CommandResult::ok(()),
         Err(error) => CommandResult::err(error),
     }

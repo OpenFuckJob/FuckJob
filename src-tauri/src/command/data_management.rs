@@ -1,5 +1,5 @@
 use crate::command::base::CommandResult;
-use crate::dao::{analysis_dao, chat_message_dao, job_detail_dao, model::*};
+use crate::dao::{analysis_dao, chat_message_dao, job_detail_dao, model::*, profile_snapshot_dao};
 use anyhow::{Context, Result};
 use chrono::Local;
 use serde::{Deserialize, Serialize};
@@ -16,6 +16,8 @@ pub struct BackupStats {
     pub chat_messages_count: usize,
     pub interview_analyses_count: usize,
     pub user_resumes_count: usize,
+    #[serde(default)]
+    pub job_profile_snapshots_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +38,10 @@ pub struct ImportResultStats {
     pub interview_analyses_updated: usize,
     pub user_resumes_added: usize,
     pub config_imported: bool,
+    #[serde(default)]
+    pub job_profile_snapshots_added: usize,
+    #[serde(default)]
+    pub job_profile_snapshots_updated: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -74,6 +80,7 @@ fn export_data_bundle_inner(
     let jobs = job_detail_dao::list().unwrap_or_default();
     let chats = chat_message_dao::list().unwrap_or_default();
     let analyses = analysis_dao::list().unwrap_or_default();
+    let profile_snapshots = profile_snapshot_dao::list().unwrap_or_default();
 
     let user_resumes_file = user_resumes_path(&data_dir);
     let user_resumes_content = if user_resumes_file.exists() {
@@ -91,6 +98,7 @@ fn export_data_bundle_inner(
         chat_messages_count: chats.len(),
         interview_analyses_count: analyses.len(),
         user_resumes_count,
+        job_profile_snapshots_count: profile_snapshots.len(),
     };
 
     let manifest = ExportManifest {
@@ -116,6 +124,9 @@ fn export_data_bundle_inner(
 
     zip.start_file("data/interview_analyses.json", options)?;
     zip.write_all(serde_json::to_string_pretty(&analyses)?.as_bytes())?;
+
+    zip.start_file("data/job_profile_snapshots.json", options)?;
+    zip.write_all(serde_json::to_string_pretty(&profile_snapshots)?.as_bytes())?;
 
     zip.start_file("data/user_resumes.json", options)?;
     zip.write_all(user_resumes_content.as_bytes())?;
@@ -192,6 +203,8 @@ fn import_data_bundle_inner(
         interview_analyses_updated: 0,
         user_resumes_added: 0,
         config_imported: false,
+        job_profile_snapshots_added: 0,
+        job_profile_snapshots_updated: 0,
     };
 
     // 1. 导入/合并 JobDetails — 批量操作，只读写各一次
@@ -259,7 +272,26 @@ fn import_data_bundle_inner(
         }
     }
 
-    // 4. 导入/合并 UserResumes
+    // 4. 导入不可变求职方案快照。老备份不含此文件，保持向后兼容。
+    if let Ok(mut file) = zip.by_name("data/job_profile_snapshots.json") {
+        let mut content = String::new();
+        file.read_to_string(&mut content)?;
+        if let Ok(incoming) = serde_json::from_str::<Vec<JobProfileSnapshot>>(&content) {
+            match strategy {
+                ImportStrategy::Overwrite => {
+                    result_stats.job_profile_snapshots_added = incoming.len();
+                    profile_snapshot_dao::replace_all(incoming)?;
+                }
+                ImportStrategy::Merge => {
+                    let batch = profile_snapshot_dao::batch_upsert(incoming)?;
+                    result_stats.job_profile_snapshots_added = batch.added;
+                    result_stats.job_profile_snapshots_updated = batch.updated;
+                }
+            }
+        }
+    }
+
+    // 5. 导入/合并 UserResumes
     if let Ok(mut file) = zip.by_name("data/user_resumes.json") {
         let mut content = String::new();
         file.read_to_string(&mut content)?;
@@ -289,15 +321,17 @@ fn import_data_bundle_inner(
         }
     }
 
-    // 5. 可选导入应用配置
+    // 6. 可选导入应用配置
     if import_config {
         if let Ok(mut file) = zip.by_name("config.yaml") {
             let mut content = String::new();
             file.read_to_string(&mut content)?;
-            if let Ok(cfg) = serde_yaml::from_str::<crate::config::AppRuntimeConfig>(&content) {
-                if crate::config::save_app_config_inner(app_handle.clone(), cfg).is_ok() {
-                    result_stats.config_imported = true;
-                }
+            // 统一走应用自己的兼容解析器。直接反序列化 v0-v2 备份会得到空的
+            // job_profiles，随后被 v3 校验拒绝，也无法把旧五块策略迁移为默认方案。
+            if let Ok(cfg) = crate::config::parse_config_content(&content) {
+                crate::config::save_app_config_inner(app_handle.clone(), cfg)
+                    .context("导入应用配置失败")?;
+                result_stats.config_imported = true;
             }
         }
     }

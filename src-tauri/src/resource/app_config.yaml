@@ -1,7 +1,8 @@
-schema_version: 2
+schema_version: 3
 onboarding_completed: false
 llm_config: null
-job_filter_config:
+default_job_profile_id: default
+job_filter_config: &default_job_filter
   query: 大模型应用
   city: 101020100
   job_type: 1901
@@ -24,7 +25,7 @@ job_filter_config:
   enable_semantic_filter: false
   semantic_filter_intent: null
   regex_rules: []
-greet_config:
+greet_config: &default_greet
   enable_llm: true
   reply_prompt: |-
     你是一个求职者，正在BOSS直聘上与招聘方沟通。请根据以下内容生成一段开场的打招呼用语。
@@ -52,7 +53,7 @@ greet_config:
   default_template:
     - resource_type: LLM
       content: ""
-replay_config:
+replay_config: &default_replay
   enable_auto_replay: true
   templates:
     - regex_rule:
@@ -105,7 +106,24 @@ replay_config:
 browser_config:
   user_data_dir: ""
   chrome_exe_path: ""
-resume_config:
+  max_parallel_tasks: 2
+resume_config: &default_resume
   inject_llm_context: true
   resume_path: ""
   resume_content: ""
+job_profiles:
+  - id: default
+    name: 默认求职方案
+    description: null
+    archived: false
+    job_filter_config: *default_job_filter
+    platform_filter_config:
+      liepin:
+        dq: null
+        salary_code: null
+        pub_time: null
+        work_year_code: null
+        comp_tag: []
+    resume_config: *default_resume
+    greet_config: *default_greet
+    replay_config: *default_replay

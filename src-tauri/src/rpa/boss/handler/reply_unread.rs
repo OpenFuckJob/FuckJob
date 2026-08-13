@@ -7,7 +7,7 @@ use rust_drission::utils::sleep_random_ms;
 use crate::{
     browser,
     config::{AppRuntimeConfig, ReplayResourceType, ReplyResource, ReplyTemplate},
-    dao::{chat_message_dao, job_detail_dao},
+    dao::{chat_message_dao, job_detail_dao, profile_snapshot_dao},
     llm, logger,
     rpa::{
         boss::{
@@ -38,144 +38,170 @@ pub async fn reply_unread(
 ) -> Result<Vec<UnreadChat>, anyhow::Error> {
     let app_runtime_config = app_runtime_config.clone();
     browser::with_new_tab(|page| {
-        Box::pin(async move {
-            logger::info("正在打开沟通页面")?;
-            page.get(BOSS_CHAT_URL)?;
-            page.wait(".label-list .label-name", Duration::from_secs(10))?;
+        Box::pin(async move { reply_unread_on_page(page, &app_runtime_config).await })
+    })
+    .await
+}
 
-            let replay_config = app_runtime_config.replay_config.clone();
-            loop {
-                if is_job_task_stop_requested() {
-                    logger::info("沟通任务已结束")?;
-                    return Ok(());
-                }
-                click_label(page, "未读")?;
-                page.wait(".user-list-content", Duration::from_secs(10))?;
-                sleep_random_ms(800, 1000);
-                let user_card_eles = page.elements(".user-list-content .friend-content")?;
-                if user_card_eles.is_empty() {
-                    logger::info("没有未读消息")?;
-                    break;
-                }
-                logger::info(format!("当前未读会话数: {}", user_card_eles.len()))?;
-                for user_card_ele in user_card_eles {
-                    if is_job_task_stop_requested() {
-                        logger::info("沟通任务已结束")?;
-                        return Ok(());
-                    }
+/// Process BOSS unread conversations on a caller-owned task tab.
+pub async fn reply_unread_on_page(
+    page: &rust_drission::Page,
+    app_runtime_config: &AppRuntimeConfig,
+) -> Result<Vec<UnreadChat>, anyhow::Error> {
+    let app_runtime_config = app_runtime_config.clone();
+    logger::info("正在打开沟通页面")?;
+    page.get(BOSS_CHAT_URL)?;
+    page.wait(".label-list .label-name", Duration::from_secs(10))?;
 
-                    let history_listener = page.listen_url("zpchat/geek/historyMsg")?;
-                    let boss_data_listener = page.listen_url("zpchat/geek/getBossData")?;
-                    user_card_ele.click()?;
+    loop {
+        if is_job_task_stop_requested() {
+            logger::info("沟通任务已结束")?;
+            return Ok(Vec::new());
+        }
+        click_label(page, "未读")?;
+        page.wait(".user-list-content", Duration::from_secs(10))?;
+        sleep_random_ms(800, 1000);
+        let user_card_eles = page.elements(".user-list-content .friend-content")?;
+        if user_card_eles.is_empty() {
+            logger::info("没有未读消息")?;
+            break;
+        }
+        logger::info(format!("当前未读会话数: {}", user_card_eles.len()))?;
+        for user_card_ele in user_card_eles {
+            if is_job_task_stop_requested() {
+                logger::info("沟通任务已结束")?;
+                return Ok(Vec::new());
+            }
 
-                    // 检查发送简历 是否被禁用 回复阶段 若对方没有回复 则无法发送简历
-                    let btn = page.element(".toolbar-btn.unable")?;
-                    if let Some(btn) = btn {
-                        let aria_label = btn.attr("aria-label")?;
-                        if aria_label.contains("等待对方回复") {
-                            logger::info("简历已投递，跳过后续处理")?;
-                            continue;
-                        }
-                    }
+            let history_listener = page.listen_url("zpchat/geek/historyMsg")?;
+            let boss_data_listener = page.listen_url("zpchat/geek/getBossData")?;
+            user_card_ele.click()?;
 
-                    sleep_random_ms(500, 800);
-
-                    let job_id = match boss_data_listener.wait(Duration::from_secs(10)) {
-                        Ok(Some(packet)) => match packet.body {
-                            Some(b) => {
-                                let body_str = String::from_utf8(b).unwrap_or_default();
-                                parse_encrypt_job_id(&body_str)
-                            }
-                            None => None,
-                        },
-                        _ => None,
-                    };
-                    // 别人请求给我们 我们确认并发送简历
-                    if page.ele(".toolbar-btn")?.is_some() {
-                        // 点击确认
-                        page.click(".toolbar-btn")?;
-                        // 同意
-                        sleep_random_ms(500, 800);
-                        if page.ele(".panel-resume")?.is_some() {
-                            page.click(".panel-resume .btns .btn-sure-v2")?;
-                            continue;
-                        }
-                    } else {
-                        // 主动发送简历投递请求
-                        send_resume(page)?;
-                        logger::info("主动发起简历投递请求成功")?;
-                        continue;
-                    }
-
-                    if let Some(ref jid) = job_id {
-                        logger::info(format!("获取到 jobId: {}", jid))?;
-                        mark_resume_sent(jid);
-                    }
-
-                    let packet = match history_listener.wait(Duration::from_secs(10)) {
-                        Ok(Some(p)) => p,
-                        Ok(None) => {
-                            logger::warning("等待 historyMsg 响应超时，跳过")?;
-                            continue;
-                        }
-                        Err(e) => {
-                            logger::warning(format!("监听 historyMsg 失败: {e}，跳过"))?;
-                            continue;
-                        }
-                    };
-
-                    let body_bytes = match packet.body {
-                        Some(b) => b,
-                        None => {
-                            logger::warning("historyMsg 响应 body 为空，跳过")?;
-                            continue;
-                        }
-                    };
-                    let body_str =
-                        String::from_utf8(body_bytes).context("historyMsg 响应非 UTF-8 编码")?;
-
-                    let chat_messages = parse_chat_messages(&body_str)?;
-                    let last_msg = chat_messages
-                        .last()
-                        .map(|m| m.text.as_str())
-                        .unwrap_or("(空)");
-                    logger::info(format!(
-                        "处理第会话，最近消息: {}",
-                        truncate_str(last_msg, 30)
-                    ))?;
-
-                    // 增量保存聊天记录
-                    if let Some(ref jid) = job_id {
-                        if let Err(e) = chat_message_dao::save_incremental(jid, &chat_messages) {
-                            let _ = logger::warning(format!("保存聊天记录失败: {}", e));
-                        }
-                    }
-
-                    if let Some(resources) = resolve_reply_resources(
-                        &app_runtime_config,
-                        &replay_config,
-                        &chat_messages,
-                        job_id,
-                    )
-                    .await?
-                    {
-                        send_messages(page, resources)?;
-                        logger::info("回复消息已发送")?;
-                    } else {
-                        logger::info("未匹配到回复模板，跳过")?;
-                    }
-
-                    sleep_random_ms(3000, 5000);
-                }
-                if is_job_task_stop_requested() {
-                    break;
+            // 检查发送简历 是否被禁用 回复阶段 若对方没有回复 则无法发送简历
+            let btn = page.element(".toolbar-btn.unable")?;
+            if let Some(btn) = btn {
+                let aria_label = btn.attr("aria-label")?;
+                if aria_label.contains("等待对方回复") {
+                    logger::info("简历已投递，跳过后续处理")?;
+                    continue;
                 }
             }
-            Ok(())
-        })
-    })
-    .await?;
 
+            sleep_random_ms(500, 800);
+
+            let job_id = match boss_data_listener.wait(Duration::from_secs(10)) {
+                Ok(Some(packet)) => match packet.body {
+                    Some(b) => {
+                        let body_str = String::from_utf8(b).unwrap_or_default();
+                        parse_encrypt_job_id(&body_str)
+                    }
+                    None => None,
+                },
+                _ => None,
+            };
+            // 别人请求给我们 我们确认并发送简历
+            if page.ele(".toolbar-btn")?.is_some() {
+                // 点击确认
+                page.click(".toolbar-btn")?;
+                // 同意
+                sleep_random_ms(500, 800);
+                if page.ele(".panel-resume")?.is_some() {
+                    page.click(".panel-resume .btns .btn-sure-v2")?;
+                    continue;
+                }
+            } else {
+                // 主动发送简历投递请求
+                send_resume(page)?;
+                logger::info("主动发起简历投递请求成功")?;
+                continue;
+            }
+
+            if let Some(ref jid) = job_id {
+                logger::info(format!("获取到 jobId: {}", jid))?;
+                mark_resume_sent(jid);
+            }
+
+            let packet = match history_listener.wait(Duration::from_secs(10)) {
+                Ok(Some(p)) => p,
+                Ok(None) => {
+                    logger::warning("等待 historyMsg 响应超时，跳过")?;
+                    continue;
+                }
+                Err(e) => {
+                    logger::warning(format!("监听 historyMsg 失败: {e}，跳过"))?;
+                    continue;
+                }
+            };
+
+            let body_bytes = match packet.body {
+                Some(b) => b,
+                None => {
+                    logger::warning("historyMsg 响应 body 为空，跳过")?;
+                    continue;
+                }
+            };
+            let body_str = String::from_utf8(body_bytes).context("historyMsg 响应非 UTF-8 编码")?;
+
+            let chat_messages = parse_chat_messages(&body_str)?;
+            let last_msg = chat_messages
+                .last()
+                .map(|m| m.text.as_str())
+                .unwrap_or("(空)");
+            logger::info(format!(
+                "处理第会话，最近消息: {}",
+                truncate_str(last_msg, 30)
+            ))?;
+
+            // 增量保存聊天记录
+            if let Some(ref jid) = job_id {
+                if let Err(e) = chat_message_dao::save_incremental(jid, &chat_messages) {
+                    let _ = logger::warning(format!("保存聊天记录失败: {}", e));
+                }
+            }
+
+            let job = job_id.as_deref().and_then(|id| {
+                job_detail_dao::find_by_platform_job_id("boss", id)
+                    .ok()
+                    .flatten()
+            });
+            let (conversation_config, source) =
+                profile_snapshot_dao::resolve_for_job(&app_runtime_config, job.as_ref())
+                    .map_err(anyhow::Error::msg)?;
+            match source {
+                profile_snapshot_dao::ResolutionSource::Snapshot => {}
+                profile_snapshot_dao::ResolutionSource::CurrentProfile => {
+                    logger::warning("岗位方案快照缺失，按当前同名方案回复")?;
+                }
+                profile_snapshot_dao::ResolutionSource::DefaultProfile => {
+                    logger::warning("会话没有可恢复的求职方案归属，按默认方案回复")?;
+                }
+            }
+
+            if !conversation_config.replay_config.enable_auto_replay {
+                logger::info("该会话所属求职方案未启用自动回复，跳过")?;
+                continue;
+            }
+
+            if let Some(resources) = resolve_reply_resources(
+                &conversation_config,
+                &conversation_config.replay_config,
+                &chat_messages,
+                job_id,
+            )
+            .await?
+            {
+                send_messages(page, resources)?;
+                logger::info("回复消息已发送")?;
+            } else {
+                logger::info("未匹配到回复模板，跳过")?;
+            }
+
+            sleep_random_ms(3000, 5000);
+        }
+        if is_job_task_stop_requested() {
+            break;
+        }
+    }
     Ok(Vec::new())
 }
 

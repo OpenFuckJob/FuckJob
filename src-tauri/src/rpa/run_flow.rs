@@ -1,8 +1,11 @@
 use std::{
+    cell::RefCell,
     sync::atomic::{AtomicBool, Ordering},
+    sync::Arc,
     time::Duration,
 };
 
+use rust_drission::{ChromiumPage, Page};
 use serde::{Deserialize, Serialize};
 
 use super::{boss, liepin};
@@ -10,6 +13,12 @@ use crate::{config::AppRuntimeConfig, logger};
 
 static JOB_TASK_RUNNING: AtomicBool = AtomicBool::new(false);
 static JOB_TASK_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+    /// Cancellation is scoped to the dedicated worker thread. Existing handler call sites can
+    /// keep using `is_job_task_stop_requested` without sharing a process-wide stop flag.
+    static CURRENT_JOB_TASK: RefCell<Option<(String, Arc<AtomicBool>)>> = const { RefCell::new(None) };
+}
 
 // --- Types ---
 
@@ -65,7 +74,7 @@ impl EnvCheckResult {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum PlatformKind {
     Boss,
@@ -210,14 +219,26 @@ pub fn inspect_readiness(
     });
 
     let needs_reply_config = matches!(mode, FlowMode::ReplyUnread);
+    let replay_configs = config
+        .job_profiles
+        .iter()
+        .map(|profile| &profile.replay_config)
+        .collect::<Vec<_>>();
+    let auto_reply_configs = replay_configs
+        .iter()
+        .copied()
+        .filter(|replay| replay.enable_auto_replay)
+        .collect::<Vec<_>>();
+    let any_auto_reply = !auto_reply_configs.is_empty();
     let reply_ready = !needs_reply_config
-        || !config.replay_config.enable_auto_replay
-        || config.replay_config.enable_llm
-        || config.replay_config.templates.iter().any(|template| {
-            template
-                .content
-                .iter()
-                .any(|resource| !resource.content.trim().is_empty())
+        || auto_reply_configs.iter().all(|replay| {
+            replay.enable_llm
+                || replay.templates.iter().any(|template| {
+                    template
+                        .content
+                        .iter()
+                        .any(|resource| !resource.content.trim().is_empty())
+                })
         });
     items.push(ReadinessItem {
         key: "reply".to_string(),
@@ -229,8 +250,8 @@ pub fn inspect_readiness(
         },
         message: if !needs_reply_config {
             "当前模式不使用自动回复".to_string()
-        } else if !config.replay_config.enable_auto_replay {
-            "自动回复未启用".to_string()
+        } else if !any_auto_reply {
+            "所有求职方案均未启用自动回复".to_string()
         } else if reply_ready {
             "自动回复资源已配置".to_string()
         } else {
@@ -266,10 +287,14 @@ pub fn inspect_readiness(
         config_group: Some("job".to_string()),
     });
 
-    let llm_needed = !matches!(mode, FlowMode::SyncChatHistory)
-        && (config.replay_config.enable_llm
-            || config.job_filter_config.enable_semantic_filter
-            || config.greet_config.llm_resource_ready());
+    let llm_needed = match mode {
+        FlowMode::ReplyUnread => auto_reply_configs.iter().any(|replay| replay.enable_llm),
+        FlowMode::JobHunting | FlowMode::PeriodicJobHunting => {
+            config.job_filter_config.enable_semantic_filter
+                || config.greet_config.llm_resource_ready()
+        }
+        FlowMode::SyncChatHistory => false,
+    };
     items.push(ReadinessItem {
         key: "llm".to_string(),
         label: "大模型".to_string(),
@@ -356,7 +381,45 @@ pub fn stop_job_task() -> Result<(), String> {
 }
 
 pub fn is_job_task_stop_requested() -> bool {
-    JOB_TASK_STOP_REQUESTED.load(Ordering::SeqCst)
+    CURRENT_JOB_TASK
+        .with(|current| {
+            current
+                .borrow()
+                .as_ref()
+                .map(|(_, cancelled)| cancelled.load(Ordering::SeqCst))
+        })
+        .unwrap_or_else(|| JOB_TASK_STOP_REQUESTED.load(Ordering::SeqCst))
+}
+
+/// Installs the cancellation state for one dedicated task worker.
+///
+/// The guard deliberately is not `Send`: it must be dropped on the worker thread that installed
+/// it, at which point the thread-local context is cleared.
+pub struct JobTaskContextGuard;
+
+impl Drop for JobTaskContextGuard {
+    fn drop(&mut self) {
+        CURRENT_JOB_TASK.with(|current| *current.borrow_mut() = None);
+    }
+}
+
+pub fn enter_job_task_context(task_id: String, cancelled: Arc<AtomicBool>) -> JobTaskContextGuard {
+    CURRENT_JOB_TASK.with(|current| *current.borrow_mut() = Some((task_id, cancelled)));
+    JobTaskContextGuard
+}
+
+/// 当前队列 worker 的任务标识。非队列兼容入口返回 None。
+pub fn current_job_task_id() -> Option<String> {
+    CURRENT_JOB_TASK.with(|current| {
+        current
+            .borrow()
+            .as_ref()
+            .map(|(task_id, _)| task_id.clone())
+    })
+}
+
+fn has_managed_job_task_context() -> bool {
+    CURRENT_JOB_TASK.with(|current| current.borrow().is_some())
 }
 
 pub fn try_start_job_task() -> Result<JobTaskRunningGuard, String> {
@@ -402,6 +465,24 @@ pub async fn execute_rpa_flow(
     interval_minutes: Option<u64>,
     config: &AppRuntimeConfig,
 ) -> Result<(), anyhow::Error> {
+    if has_managed_job_task_context() {
+        let config = config.clone();
+        return crate::browser::with_task_browser(|connection, main_tab| {
+            Box::pin(async move {
+                execute_rpa_flow_with_browser(
+                    connection,
+                    main_tab,
+                    platform,
+                    mode,
+                    interval_minutes,
+                    &config,
+                )
+                .await
+            })
+        })
+        .await;
+    }
+
     match mode {
         FlowMode::JobHunting => execute_job_hunting(platform, config).await,
         FlowMode::ReplyUnread => {
@@ -419,6 +500,36 @@ pub async fn execute_rpa_flow(
             let interval = resolve_periodic_interval_minutes(interval_minutes)
                 .map_err(|e| anyhow::anyhow!(e))?;
             periodic_position_say_hello(platform, config, interval).await
+        }
+    }
+}
+
+/// Execute a queued task on its independent CDP connection and owned main tab.
+pub async fn execute_rpa_flow_with_browser(
+    connection: &ChromiumPage,
+    main_tab: &Page,
+    platform: PlatformKind,
+    mode: FlowMode,
+    interval_minutes: Option<u64>,
+    config: &AppRuntimeConfig,
+) -> Result<(), anyhow::Error> {
+    match mode {
+        FlowMode::JobHunting => {
+            execute_job_hunting_on_page(connection, main_tab, platform, config).await
+        }
+        FlowMode::ReplyUnread => execute_reply_unread_on_page(main_tab, platform, config).await,
+        FlowMode::SyncChatHistory => {
+            if platform != PlatformKind::Boss {
+                return Err(anyhow::anyhow!("读取聊天消息任务目前仅支持 BOSS 直聘"));
+            }
+            boss::handler::sync_chat_history_on_page(main_tab).await?;
+            Ok(())
+        }
+        FlowMode::PeriodicJobHunting => {
+            let interval = resolve_periodic_interval_minutes(interval_minutes)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            periodic_position_say_hello_on_page(connection, main_tab, platform, config, interval)
+                .await
         }
     }
 }
@@ -457,6 +568,38 @@ async fn execute_reply_unread(
     }
 }
 
+async fn execute_job_hunting_on_page(
+    connection: &ChromiumPage,
+    main_tab: &Page,
+    platform: PlatformKind,
+    config: &AppRuntimeConfig,
+) -> Result<(), anyhow::Error> {
+    match platform {
+        PlatformKind::Boss => {
+            boss::handler::position_say_hello_on_page(connection, main_tab, config).await
+        }
+        PlatformKind::Liepin => {
+            liepin::handler::position_say_hello_on_page(connection, main_tab, config).await
+        }
+    }
+}
+
+async fn execute_reply_unread_on_page(
+    main_tab: &Page,
+    platform: PlatformKind,
+    config: &AppRuntimeConfig,
+) -> Result<(), anyhow::Error> {
+    match platform {
+        PlatformKind::Boss => {
+            boss::handler::reply_unread_on_page(main_tab, config).await?;
+        }
+        PlatformKind::Liepin => {
+            liepin::handler::reply_unread_on_page(main_tab, config).await?;
+        }
+    }
+    Ok(())
+}
+
 fn resolve_periodic_interval_minutes(interval_minutes: Option<u64>) -> Result<u64, String> {
     match interval_minutes {
         Some(value) if value > 0 => Ok(value),
@@ -487,6 +630,39 @@ async fn periodic_position_say_hello(
         logger::info(format!("本轮投递完成，等待{}分钟后继续", interval_minutes))?;
         if platform == PlatformKind::Boss {
             if let Err(error) = boss::handler::sync_chat_history().await {
+                logger::warning(format!(
+                    "周期间歇同步 BOSS 历史对话失败，本轮继续等待: {error}"
+                ))?;
+            }
+        }
+        wait_periodic_interval(interval_minutes).await?;
+    }
+}
+
+async fn periodic_position_say_hello_on_page(
+    connection: &ChromiumPage,
+    main_tab: &Page,
+    platform: PlatformKind,
+    config: &AppRuntimeConfig,
+    interval_minutes: u64,
+) -> Result<(), anyhow::Error> {
+    loop {
+        if is_job_task_stop_requested() {
+            logger::info("周期性投递任务已结束")?;
+            return Ok(());
+        }
+
+        logger::info("开始执行本轮周期性投递")?;
+        execute_job_hunting_on_page(connection, main_tab, platform, config).await?;
+
+        if is_job_task_stop_requested() {
+            logger::info("周期性投递任务已结束")?;
+            return Ok(());
+        }
+
+        logger::info(format!("本轮投递完成，等待{}分钟后继续", interval_minutes))?;
+        if platform == PlatformKind::Boss {
+            if let Err(error) = boss::handler::sync_chat_history_on_page(main_tab).await {
                 logger::warning(format!(
                     "周期间歇同步 BOSS 历史对话失败，本轮继续等待: {error}"
                 ))?;
@@ -618,6 +794,38 @@ mod tests {
 
         assert_eq!(llm.level, ReadinessLevel::Ready);
         assert_eq!(llm.message, "当前模式不依赖大模型");
+    }
+
+    #[test]
+    fn reply_readiness_checks_all_profile_routes_instead_of_only_default() {
+        let mut config = default_app_config();
+        config.job_profiles[0].replay_config.enable_auto_replay = false;
+        let mut routed = config.job_profiles[0].clone();
+        routed.id = "routed".to_string();
+        routed.name = "需要 AI 的历史方案".to_string();
+        routed.replay_config.enable_auto_replay = true;
+        routed.replay_config.enable_llm = true;
+        config.job_profiles.push(routed);
+
+        let report = inspect_readiness(PlatformKind::Boss, FlowMode::ReplyUnread, &config);
+
+        assert_eq!(find_item(&report, "reply").level, ReadinessLevel::Ready);
+        assert_eq!(find_item(&report, "llm").level, ReadinessLevel::Blocked);
+    }
+
+    #[test]
+    fn reply_readiness_allows_a_sync_run_when_every_profile_disables_auto_reply() {
+        let mut config = default_app_config();
+        config.job_profiles[0].replay_config.enable_auto_replay = false;
+
+        let report = inspect_readiness(PlatformKind::Boss, FlowMode::ReplyUnread, &config);
+
+        assert_eq!(find_item(&report, "reply").level, ReadinessLevel::Ready);
+        assert_eq!(
+            find_item(&report, "reply").message,
+            "所有求职方案均未启用自动回复"
+        );
+        assert_eq!(find_item(&report, "llm").level, ReadinessLevel::Ready);
     }
 
     #[test]

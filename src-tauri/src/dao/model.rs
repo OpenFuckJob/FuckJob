@@ -1,5 +1,56 @@
 use serde::{Deserialize, Serialize};
 
+use crate::config::{
+    AppRuntimeConfig, GreetConfig, JobFilterConfig, PlatformFilterConfig, ReplayConfig,
+    ResumeConfig,
+};
+
+/// 一次求职任务实际使用的不可变方案内容。
+///
+/// 这里只保存方案拥有的五块策略，不复制浏览器、模型提供商等全局配置。
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct JobProfileSnapshot {
+    pub snapshot_id: String,
+    pub profile_id: String,
+    pub profile_name: String,
+    pub job_filter_config: JobFilterConfig,
+    pub platform_filter_config: PlatformFilterConfig,
+    pub greet_config: GreetConfig,
+    pub replay_config: ReplayConfig,
+    pub resume_config: ResumeConfig,
+}
+
+impl JobProfileSnapshot {
+    pub fn from_resolved(config: &AppRuntimeConfig) -> Option<Self> {
+        let active = config.active_job_profile.as_ref()?;
+        Some(Self {
+            snapshot_id: active.snapshot_id.clone(),
+            profile_id: active.id.clone(),
+            profile_name: active.name.clone(),
+            job_filter_config: config.job_filter_config.clone(),
+            platform_filter_config: config.platform_filter_config.clone(),
+            greet_config: config.greet_config.clone(),
+            replay_config: config.replay_config.clone(),
+            resume_config: config.resume_config.clone(),
+        })
+    }
+
+    pub fn apply_to(&self, base: &AppRuntimeConfig) -> AppRuntimeConfig {
+        let mut config = base.clone();
+        config.job_filter_config = self.job_filter_config.clone();
+        config.platform_filter_config = self.platform_filter_config.clone();
+        config.greet_config = self.greet_config.clone();
+        config.replay_config = self.replay_config.clone();
+        config.resume_config = self.resume_config.clone();
+        config.active_job_profile = Some(crate::config::ActiveJobProfile {
+            id: self.profile_id.clone(),
+            name: self.profile_name.clone(),
+            snapshot_id: self.snapshot_id.clone(),
+        });
+        config
+    }
+}
+
 /// 岗位详情表
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct JobDetail {
@@ -9,6 +60,22 @@ pub struct JobDetail {
     /// 岗位来源平台: boss / liepin
     #[serde(default)]
     pub platform: String,
+
+    /// 首次建联任务。旧数据没有该字段时保持为空。
+    #[serde(default)]
+    pub source_task_id: Option<String>,
+
+    /// 首次建联使用的求职方案。
+    #[serde(default)]
+    pub profile_id: Option<String>,
+
+    /// 冗余保存方案名称，便于历史任务和岗位直接展示。
+    #[serde(default)]
+    pub profile_name: Option<String>,
+
+    /// 首次建联时不可变方案快照的标识。
+    #[serde(default)]
+    pub profile_snapshot_id: Option<String>,
 
     /// 岗位标题
     pub title: String,
@@ -148,4 +215,34 @@ pub struct ChatMessageRecord {
     /// 发送时间戳（毫秒）
     pub time: i64,
     pub from_name: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{default_app_config, resolve_job_profile};
+
+    #[test]
+    fn snapshot_restores_original_profile_strategy_after_base_changes() {
+        let base = default_app_config();
+        let resolved = resolve_job_profile(&base, None).unwrap();
+        let snapshot = JobProfileSnapshot::from_resolved(&resolved.config).unwrap();
+        let original_query = snapshot.job_filter_config.query.clone();
+        let original_prompt = snapshot.greet_config.reply_prompt.clone();
+
+        let mut edited = base;
+        edited.job_filter_config.query = Some("完全不同的岗位".into());
+        edited.greet_config.reply_prompt = Some("已经修改的新提示词".into());
+        let restored = snapshot.apply_to(&edited);
+
+        assert_eq!(restored.job_filter_config.query, original_query);
+        assert_eq!(restored.greet_config.reply_prompt, original_prompt);
+        assert_eq!(
+            restored
+                .active_job_profile
+                .as_ref()
+                .map(|value| value.snapshot_id.as_str()),
+            Some(snapshot.snapshot_id.as_str())
+        );
+    }
 }

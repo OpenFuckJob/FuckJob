@@ -144,12 +144,26 @@ export interface ReplayConfig {
 export interface BrowserConfig {
   user_data_dir: string;
   chrome_exe_path: string | null;
+  max_parallel_tasks: number;
 }
 
 export interface ResumeConfig {
   inject_llm_context: boolean;
   resume_path: string | null;
   resume_content: string | null;
+}
+
+/** 一套可独立执行的求职方向、简历与沟通策略。 */
+export interface JobProfile {
+  id: string;
+  name: string;
+  description?: string | null;
+  archived: boolean;
+  job_filter_config: JobFilterConfig;
+  platform_filter_config: PlatformFilterConfig;
+  resume_config: ResumeConfig;
+  greet_config: GreetConfig;
+  replay_config: ReplayConfig;
 }
 
 export interface AppRuntimeConfig {
@@ -164,6 +178,47 @@ export interface AppRuntimeConfig {
   replay_config: ReplayConfig;
   browser_config: BrowserConfig;
   resume_config: ResumeConfig;
+  /** 旧配置/测试 mock 可能暂时不包含这两个字段，读取时请使用 getJobProfiles。 */
+  job_profiles?: JobProfile[];
+  default_job_profile_id?: string;
+}
+
+/** 把旧版顶层求职配置投影为默认方案，供迁移期 UI 安全读取。 */
+export function getJobProfiles(config: AppRuntimeConfig): JobProfile[] {
+  if (config.job_profiles?.length) return config.job_profiles;
+  return [{
+    id: config.default_job_profile_id || "default",
+    name: "默认求职方案",
+    description: "由原有求职配置自动生成",
+    archived: false,
+    job_filter_config: config.job_filter_config,
+    platform_filter_config: config.platform_filter_config,
+    resume_config: config.resume_config,
+    greet_config: config.greet_config,
+    replay_config: config.replay_config,
+  }];
+}
+
+export function getDefaultJobProfile(config: AppRuntimeConfig): JobProfile {
+  const profiles = getJobProfiles(config);
+  return profiles.find((profile) => profile.id === config.default_job_profile_id && !profile.archived)
+    ?? profiles.find((profile) => !profile.archived)
+    ?? profiles[0];
+}
+
+export function copyJobProfile(source: JobProfile, id: string, suffix: string): JobProfile {
+  return {
+    ...structuredClone(source),
+    id,
+    name: `${source.name} · ${suffix}`,
+    archived: false,
+  };
+}
+
+export function selectProfileAfterRemoval(profiles: JobProfile[], removedId: string): JobProfile | null {
+  return profiles.find((profile) => profile.id !== removedId && !profile.archived)
+    ?? profiles.find((profile) => profile.id !== removedId)
+    ?? null;
 }
 
 export type StatusKind = "idle" | "loading" | "saved" | "error";
