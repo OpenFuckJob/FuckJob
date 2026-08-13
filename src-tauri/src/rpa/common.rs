@@ -107,13 +107,11 @@ pub fn upload_image_to_file_input(
     })
 }
 
-fn build_upload_image_script(
-    input_selectors: &[&str],
-    data_url: &str,
-    filename: &str,
-) -> String {
-    let selectors_json = serde_json::to_string(input_selectors).unwrap_or_else(|_| "[]".to_string());
-    let filename_json = serde_json::to_string(filename).unwrap_or_else(|_| "\"upload.png\"".to_string());
+fn build_upload_image_script(input_selectors: &[&str], data_url: &str, filename: &str) -> String {
+    let selectors_json =
+        serde_json::to_string(input_selectors).unwrap_or_else(|_| "[]".to_string());
+    let filename_json =
+        serde_json::to_string(filename).unwrap_or_else(|_| "\"upload.png\"".to_string());
 
     format!(
         r#"
@@ -184,7 +182,11 @@ mod tests {
 
     #[test]
     fn upload_script_escapes_filename_with_quotes() {
-        let script = build_upload_image_script(&["input[type='file']"], "data:image/png;base64,AA", "a\"b.png");
+        let script = build_upload_image_script(
+            &["input[type='file']"],
+            "data:image/png;base64,AA",
+            "a\"b.png",
+        );
 
         assert!(script.contains(r#"const filename = "a\"b.png""#));
     }

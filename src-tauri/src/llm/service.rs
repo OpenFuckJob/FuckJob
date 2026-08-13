@@ -1187,7 +1187,10 @@ mod tests {
 
         // 120 秒已经等满，任何一次重试前都不该再等
         for attempt in 0..5 {
-            assert_eq!(super::retry_plan(&AttemptFailure::Timeout, attempt, &retry), None);
+            assert_eq!(
+                super::retry_plan(&AttemptFailure::Timeout, attempt, &retry),
+                None
+            );
         }
         assert_eq!(
             AttemptFailure::Timeout.into_error(),
@@ -1197,9 +1200,18 @@ mod tests {
 
     #[test]
     fn backoff_doubles_from_the_base_delay() {
-        assert_eq!(super::retry_backoff_delay(500, 0), Duration::from_millis(500));
-        assert_eq!(super::retry_backoff_delay(500, 1), Duration::from_millis(1_000));
-        assert_eq!(super::retry_backoff_delay(500, 2), Duration::from_millis(2_000));
+        assert_eq!(
+            super::retry_backoff_delay(500, 0),
+            Duration::from_millis(500)
+        );
+        assert_eq!(
+            super::retry_backoff_delay(500, 1),
+            Duration::from_millis(1_000)
+        );
+        assert_eq!(
+            super::retry_backoff_delay(500, 2),
+            Duration::from_millis(2_000)
+        );
 
         let retry = retry_config(3, 500);
         let delays: Vec<_> = (0..3)
@@ -1326,7 +1338,9 @@ mod tests {
                     // 密钥缺失同样降级：链存在的意义就是主用服务不可用时兜底
                     0 => Err(AppError::credential("请先配置该大模型服务的 API Key")),
                     // 额度受限也降级
-                    1 => Err(AppError::provider("大模型服务返回 HTTP 429：请求受限或账户额度不足")),
+                    1 => Err(AppError::provider(
+                        "大模型服务返回 HTTP 429：请求受限或账户额度不足",
+                    )),
                     _ => Ok(ok_response("最后一环成功")),
                 }
             }

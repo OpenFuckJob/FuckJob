@@ -139,7 +139,9 @@ fn find_chain_link<'a>(
         .iter()
         .find(|link| link.id == entry_id)
         .ok_or_else(|| {
-            AppError::configuration("未找到该大模型服务，请先保存配置后再测试；未保存或已停用的服务无法测试")
+            AppError::configuration(
+                "未找到该大模型服务，请先保存配置后再测试；未保存或已停用的服务无法测试",
+            )
         })
 }
 
@@ -498,7 +500,10 @@ mod tests {
 
         assert_eq!(statuses.len(), entry_ids.len());
         assert_eq!(
-            statuses.iter().map(|s| s.entry_id.as_str()).collect::<Vec<_>>(),
+            statuses
+                .iter()
+                .map(|s| s.entry_id.as_str())
+                .collect::<Vec<_>>(),
             vec![PRIMARY_LLM_ENTRY_ID, "backup-b", "backup-a"]
         );
         assert_eq!(
