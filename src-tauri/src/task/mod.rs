@@ -410,6 +410,15 @@ fn spawn_worker(inner: Arc<TaskManagerInner>, worker: WorkerInput) {
                 }
             };
 
+            // 失败原因此前只进任务状态给前端看，日志里一点痕迹没有，
+            // 事后回看日志只能看到任务戛然而止，查不出停在哪一步。
+            // `{error:#}` 带上整条 context 链，CDP 那类报错才定位得到具体动作。
+            if let Err(error) = &result {
+                if !worker.cancelled.load(Ordering::SeqCst) {
+                    let _ = crate::logger::error(format!("任务执行失败：{error:#}"));
+                }
+            }
+
             let mut state = inner.state.lock().unwrap_or_else(|e| e.into_inner());
             state.finish(&worker.task_id, result);
             inner.wake_scheduler.notify_one();
