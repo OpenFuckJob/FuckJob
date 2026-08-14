@@ -6,20 +6,14 @@
 //! （最典型的是变量按条件注入导致渲染必然失败，却表现为「模型没生成内容」）。
 
 use crate::agent;
-use crate::agent::tasks::{GreetTask, JobMatchTask};
+use crate::agent::tasks::JobMatchTask;
 use crate::config::AppRuntimeConfig;
 use crate::rpa::common::RpaJob;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 pub mod service;
 pub mod template;
 pub mod types;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LlmGenerateResult {
-    pub success: bool,
-    pub data: String,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct JobSemanticMatch {
@@ -35,27 +29,4 @@ pub async fn evaluate_job_match(
 ) -> Result<JobSemanticMatch, anyhow::Error> {
     let outcome = agent::run(&JobMatchTask::new(config, job), config).await?;
     Ok(outcome.output)
-}
-
-/// 生成岗位打招呼文本。
-///
-/// 提示词没配时返回空内容而不是报错：打招呼序列里可以只有固定文案，
-/// 模型这一条缺席不该让整个岗位打招呼失败。
-pub async fn generate_greet_text(
-    config: AppRuntimeConfig,
-    job: &RpaJob,
-) -> Result<LlmGenerateResult, anyhow::Error> {
-    if !config.greet_config.prompt_ready() {
-        crate::logger::warning("打招呼提示词未配置，默认生成空内容")?;
-        return Ok(LlmGenerateResult {
-            success: true,
-            data: String::new(),
-        });
-    }
-
-    let outcome = agent::run(&GreetTask::new(&config, job), &config).await?;
-    Ok(LlmGenerateResult {
-        success: true,
-        data: outcome.output,
-    })
 }

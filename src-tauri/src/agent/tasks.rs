@@ -14,7 +14,9 @@ use crate::error::AppError;
 use crate::llm::template;
 use crate::llm::JobSemanticMatch;
 use crate::rpa::common::RpaJob;
-use crate::rpa::conversation::{ConversationContext, ReplyDecision, ResumeState};
+use crate::rpa::conversation::{
+    ConversationContext, GreetAction, GreetDecision, ReplyDecision, ResumeState,
+};
 
 /// 上下文缺失时的统一占位。写成人话而不是空串，模型才分得清
 /// 「这一项没有」和「这一项被刻意留白」
@@ -183,10 +185,10 @@ impl<'a> GreetTask<'a> {
 }
 
 impl AgentTask for GreetTask<'_> {
-    type Output = String;
+    type Output = GreetDecision;
 
     fn name(&self) -> &'static str {
-        "打招呼生成"
+        "打招呼决策"
     }
 
     fn prompt_template(&self) -> Result<String, AppError> {
@@ -212,20 +214,44 @@ impl AgentTask for GreetTask<'_> {
         Ok(params)
     }
 
-    fn parse(&self, raw: &str) -> Result<Self::Output, String> {
-        Ok(raw.trim().to_string())
+    fn build_prompt(&self) -> Result<String, AppError> {
+        // 用户模板先单独渲染完再拼外壳，理由同回复决策
+        let body = template::render(&self.prompt_template()?, &self.params()?)?;
+        let frame = prompts::with_shared(prompts::GREET_DECISION_FRAME);
+        Ok(format!("{body}{frame}"))
     }
 
-    fn validate(&self, text: &Self::Output) -> Result<(), String> {
-        if text.is_empty() {
-            return Err("没有生成任何内容".to_string());
+    fn parse(&self, raw: &str) -> Result<Self::Output, String> {
+        let json = output::extract_json(raw).ok_or("输出里没有找到 JSON 对象")?;
+        serde_json::from_str::<GreetDecision>(json)
+            .map_err(|error| format!("JSON 结构不符合要求：{error}"))
+    }
+
+    fn validate(&self, decision: &Self::Output) -> Result<(), String> {
+        if decision.confidence > 100 {
+            return Err("confidence 必须在 0 到 100 之间".to_string());
         }
-        if output::looks_like_refusal(text) {
-            return Err("生成的是拒答话术，请直接写出可发送的打招呼正文".to_string());
+        if decision.action == GreetAction::Skip {
+            return Ok(());
         }
-        if output::has_placeholder(text) {
+
+        let greeting = decision.greeting.trim();
+        if greeting.is_empty() {
+            return Err("action 为 send，但 greeting 是空的".to_string());
+        }
+        if output::looks_like_refusal(greeting) {
+            return Err("greeting 是拒答话术，请直接写出可发送的开场白正文".to_string());
+        }
+        // 模型判断不该投时必须选 skip，而不是把婉拒写进要发出去的正文
+        if output::declines_opportunity(greeting) {
             return Err(
-                "内容里残留了未填充的占位符。简历信息不足时请用「有相关经验」这类模糊但自然的说法，不要写 X 年、XX 公司".to_string(),
+                "greeting 里写了婉拒的话，那会被原样发给对方。不想投就把 action 改成 skip 并留空 greeting"
+                    .to_string(),
+            );
+        }
+        if output::has_placeholder(greeting) {
+            return Err(
+                "greeting 里残留了未填充的占位符。简历信息不足时请用「有相关经验」这类模糊但自然的说法，不要写 X 年、XX 公司".to_string(),
             );
         }
         Ok(())

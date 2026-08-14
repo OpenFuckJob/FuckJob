@@ -26,6 +26,7 @@ pub const JOB_FILTER_RULES: &str = include_str!("job_filter_rules.md");
 pub const RESUME_QUESTIONS: &str = include_str!("resume_questions.md");
 pub const RESUME_OPTIMIZE: &str = include_str!("resume_optimize.md");
 pub const REPLY_DECISION_FRAME: &str = include_str!("reply_decision_frame.md");
+pub const GREET_DECISION_FRAME: &str = include_str!("greet_decision_frame.md");
 pub const JOB_ANALYSIS: &str = include_str!("job_analysis.md");
 pub const INTERVIEW_QUESTION: &str = include_str!("interview_question.md");
 pub const INTERVIEW_SUMMARY: &str = include_str!("interview_summary.md");
@@ -85,6 +86,7 @@ mod tests {
             RESUME_QUESTIONS,
             RESUME_OPTIMIZE,
             REPLY_DECISION_FRAME,
+            GREET_DECISION_FRAME,
             JOB_ANALYSIS,
             INTERVIEW_QUESTION,
             INTERVIEW_SUMMARY,
@@ -105,6 +107,7 @@ mod tests {
             ("resume_questions", RESUME_QUESTIONS),
             ("resume_optimize", RESUME_OPTIMIZE),
             ("reply_decision_frame", REPLY_DECISION_FRAME),
+            ("greet_decision_frame", GREET_DECISION_FRAME),
             ("job_analysis", JOB_ANALYSIS),
             ("interview_question", INTERVIEW_QUESTION),
             ("interview_summary", INTERVIEW_SUMMARY),

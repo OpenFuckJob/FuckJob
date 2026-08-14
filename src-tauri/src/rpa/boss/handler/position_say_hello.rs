@@ -8,6 +8,7 @@ use crate::{
     logger,
     rpa::{
         boss::{handler::send_messages, model::GreetJob},
+        conversation::SendVerdict,
         greet::build_greet_resources,
         run_flow::is_job_task_stop_requested,
         run_flow::PlatformKind,
@@ -987,8 +988,19 @@ async fn handle_send_message_on_chat_page(
         .map_err(|error| chat_wait_error(page, error))?;
 
     // 构建招呼资源：优先 LLM 生成，否则使用默认模板
-    let resources = build_greet_resources(&config, &greet_job).await?;
-    send_if_any(resources, |resources| send_messages(page, resources))?;
+    match build_greet_resources(&config, &greet_job).await? {
+        // 整轮取消：既不发文本也不发图片，也不记为已沟通——我们并没有联系过对方
+        SendVerdict::Hold(reason) => {
+            logger::info(format!(
+                "跳过 {}，未发送任何内容：{reason}",
+                greet_job.title
+            ))?;
+            return Ok(());
+        }
+        SendVerdict::Send(resources) => {
+            send_if_any(resources, |resources| send_messages(page, resources))?;
+        }
+    }
 
     // 保存该岗位至本地数据库
     save_job_detail(&greet_job.platform_job_id, &greet_job, &config);

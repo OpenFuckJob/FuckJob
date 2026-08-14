@@ -5,7 +5,7 @@ use crate::command::base::CommandResult;
 use crate::config::RegexRule;
 use crate::error::AppError;
 use crate::rpa::common::{ChatMessage, RpaJob};
-use crate::rpa::conversation::{ConversationContext, ReplyDecision, ResumeState};
+use crate::rpa::conversation::{ConversationContext, GreetAction, ReplyDecision, ResumeState};
 use crate::rpa::run_flow::PlatformKind;
 use serde::{Deserialize, Serialize};
 
@@ -168,7 +168,17 @@ pub async fn debug_generate_greet(
     };
 
     match crate::agent::run(&GreetTask::new(&config, &job), &config).await {
-        Ok(outcome) => CommandResult::ok(outcome.output),
+        Ok(outcome) => {
+            let decision = outcome.output;
+            // 「不该投」也要让用户在调试页看见，否则只看到空白会以为是生成失败
+            if decision.action == GreetAction::Skip {
+                return CommandResult::ok(format!(
+                    "（AI 判断该岗位不适合投递，实际运行时整轮都不会发送。理由：{}）",
+                    decision.reason
+                ));
+            }
+            CommandResult::ok(decision.greeting)
+        }
         Err(err) => CommandResult::err(err),
     }
 }

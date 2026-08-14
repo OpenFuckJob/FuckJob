@@ -108,6 +108,32 @@ impl ReplyAction {
     }
 }
 
+/// 模型对一个岗位是否该打招呼给出的决定。
+///
+/// 和 [`ReplyDecision`] 对称。此前打招呼任务只返回纯文本，模型判断出「这岗位不该投」
+/// 时没有渠道表达，只能把结论写进正文——于是那句话被当成开场白发给了对方。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GreetDecision {
+    pub action: GreetAction,
+    /// 开场白正文。`Skip` 时允许为空
+    #[serde(default)]
+    pub greeting: String,
+    /// 判断理由，落日志供复盘，不发给对方
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub confidence: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GreetAction {
+    /// 发送开场白
+    Send,
+    /// 不投这个岗位。整轮发送序列都取消，包括后面的固定文本和图片
+    Skip,
+}
+
 /// 平台需要提供的动作能力。
 ///
 /// 只放「读状态」和「做动作」，不含任何判断逻辑——判断全在平台无关的这一层，
@@ -300,7 +326,62 @@ fn latest_chat_history(context: &ConversationContext, limit: i32) -> String {
         .join("\n")
 }
 
-/// 发送前的正文体检。通过则返回可发送的文本（必要时已截断）。
+/// 一整轮对外发送的最终裁决。
+#[derive(Debug, Clone, PartialEq)]
+pub enum SendVerdict {
+    /// 按序发送这些资源
+    Send(Vec<ReplyResource>),
+    /// 整轮都不发，附原因
+    Hold(String),
+}
+
+/// 所有对外发送的最后一道门。打招呼和自动回复共用。
+///
+/// **任何一条内容不合格，整轮都不发**，而不是只丢掉那一条。这是实测教训：
+/// 模型写出「注意到您是猎头顾问，我暂时不考虑猎头渠道」被当成开场白发了出去，
+/// 而发送序列里紧跟着的那条固定简历图片照发不误——对方收到的是
+/// 「我不考虑你」外加一张简历截图。逐条过滤在这种场景下比不过滤更糟：
+/// 它让一段本该整体取消的动作，退化成一段语义残缺的动作。
+///
+/// 图片这类非文本资源无法体检，但它们的去留跟着整轮走，不会单独发出去。
+pub fn vet_outbound(resources: Vec<ReplyResource>, max_chars: usize) -> SendVerdict {
+    let mut checked: Vec<ReplyResource> = Vec::with_capacity(resources.len());
+
+    for mut resource in resources {
+        if resource.resource_type == ReplayResourceType::Image {
+            checked.push(resource);
+            continue;
+        }
+
+        let text = resource.content.trim();
+        if text.is_empty() {
+            continue;
+        }
+        if output::looks_like_refusal(text) {
+            return SendVerdict::Hold("内容是模型的拒答话术".to_string());
+        }
+        if output::declines_opportunity(text) {
+            return SendVerdict::Hold("内容里表达了不考虑该机会，整轮取消发送".to_string());
+        }
+        if output::has_placeholder(text) {
+            return SendVerdict::Hold("内容残留未填充的占位符".to_string());
+        }
+
+        resource.content = output::truncate_at_sentence(text, max_chars);
+        checked.push(resource);
+    }
+
+    if checked.is_empty() {
+        return SendVerdict::Hold("没有可发送的内容".to_string());
+    }
+    SendVerdict::Send(checked)
+}
+
+/// 单条回复的发送前体检。通过则返回可发送的文本（必要时已截断）。
+///
+/// 与 [`vet_outbound`] 的差别是**刻意的**：这里不查「婉拒」。
+/// 开场白里写婉拒等于这个岗位根本不该发，但在回复里礼貌地表达「这个岗位我可能不太合适」
+/// 本身就是一条合理的消息——模型真要终止这段对话，有 `ReplyAction::Skip` 可用。
 ///
 /// 模型解析成功不代表内容能见人：拒答话术、没替换掉的占位符发出去，
 /// 对面一眼就知道是机器人在聊。
@@ -491,6 +572,55 @@ mod tests {
             reconcile(&decision, ResumeState::Sendable, &limits()),
             ReplyAction::ReplyAndSendResume
         );
+    }
+
+    fn image(path: &str) -> ReplyResource {
+        ReplyResource {
+            resource_type: ReplayResourceType::Image,
+            content: path.to_string(),
+        }
+    }
+
+    /// 一条不合格就整轮不发。逐条过滤会让动作退化成语义残缺的一半——
+    /// 实测里那半截就是「我不考虑你」后面跟一张简历图
+    #[test]
+    fn one_bad_item_holds_the_entire_batch() {
+        let verdict = vet_outbound(
+            vec![
+                text_resource("您好，我对这个岗位很感兴趣"),
+                text_resource("不过我暂时不考虑猎头渠道"),
+                image("C:/resume.png"),
+            ],
+            200,
+        );
+
+        assert!(matches!(verdict, SendVerdict::Hold(_)));
+    }
+
+    #[test]
+    fn a_clean_batch_passes_with_images_intact() {
+        match vet_outbound(
+            vec![text_resource("您好，我有相关项目经验"), image("C:/a.png")],
+            200,
+        ) {
+            SendVerdict::Send(resources) => {
+                assert_eq!(resources.len(), 2);
+                assert_eq!(resources[1].resource_type, ReplayResourceType::Image);
+            }
+            other => panic!("干净的内容不该被拦，实际：{other:?}"),
+        }
+    }
+
+    /// 图片路径不是给人读的文本，不能拿正文那套规则去体检它
+    #[test]
+    fn image_paths_are_never_checked_as_prose() {
+        assert!(matches!(
+            vet_outbound(
+                vec![image("C:/xx公司/todo.png"), text_resource("您好")],
+                200
+            ),
+            SendVerdict::Send(_)
+        ));
     }
 
     fn stamped(mid: i64, time: i64, text: &str) -> ChatMessage {

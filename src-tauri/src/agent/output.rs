@@ -308,6 +308,36 @@ fn extract_balanced(text: &str, open: u8, close: u8) -> Option<&str> {
     None
 }
 
+/// 文本是否表达了「不想要这个机会」。
+///
+/// 和 [`looks_like_refusal`] 不是一回事：那个抓的是模型的免责话术（「作为一个 AI 我无法…」），
+/// 这个抓的是模型**在正文里替求职者婉拒了岗位**——实测出现过模型写出
+/// 「注意到您是猎头顾问，我暂时不考虑猎头渠道」然后被原样发给对方，
+/// 紧接着后面那条固定的简历图片照发，对方收到的是「我不考虑你」加一张简历。
+///
+/// 模型现在有结构化渠道表达「不该投」（见 `GreetDecision`），这里是兜底：
+/// 模型不听话把意图写进正文时也要拦住。因此判定偏保守——
+/// 漏判的代价是把婉拒发给真人，误判的代价只是少投一个岗位，后者轻得多。
+pub fn declines_opportunity(text: &str) -> bool {
+    DECLINE_MARKERS.iter().any(|marker| text.contains(*marker))
+}
+
+/// 这些说法在真心想投的开场白里基本不会出现
+const DECLINE_MARKERS: &[&str] = &[
+    "不考虑",
+    "不感兴趣",
+    "不太合适",
+    "不合适",
+    "不匹配",
+    "不打算",
+    "无意向",
+    "没有意向",
+    "婉拒",
+    "谢绝",
+    "另请高明",
+    "再联系吧",
+];
+
 /// 文本是否像模型的拒答/免责话术（这类内容绝不能发给 HR）。
 pub fn looks_like_refusal(text: &str) -> bool {
     let head = text
@@ -493,6 +523,27 @@ fn weak_refusal_hit(head: &str, lead: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// 实测事故原文：模型判断不该投，把结论写进了开场白，那句话被发给了对方
+    #[test]
+    fn detects_a_greeting_that_declines_the_opportunity() {
+        assert!(super::declines_opportunity(
+            "您好，看到岗位是AI方向，还挺匹配的，不过注意到您是猎头顾问，我暂时不考虑猎头渠道，感谢理解。"
+        ));
+        assert!(super::declines_opportunity("这个岗位和我的方向不太合适"));
+        assert!(super::declines_opportunity("暂时没有意向，谢谢"));
+    }
+
+    #[test]
+    fn a_genuine_greeting_is_not_flagged_as_declining() {
+        for text in [
+            "您好，我对贵公司的AI应用岗很感兴趣，有相关项目经验，方便进一步沟通吗？",
+            "看到岗位要求熟悉大模型应用，这正是我擅长的方向。",
+            "您好，我有相关经验，希望能聊聊这个机会。",
+        ] {
+            assert!(!super::declines_opportunity(text), "误判：{text}");
+        }
+    }
+
     /// 断句点靠前时不能为了「断得干净」把正文砍掉大半
     #[test]
     fn an_early_sentence_break_does_not_gut_the_body() {

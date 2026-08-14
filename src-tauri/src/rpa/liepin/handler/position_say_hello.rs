@@ -9,6 +9,7 @@ use crate::{
     logger,
     rpa::{
         common::{upload_image_to_file_input, RpaJob},
+        conversation::SendVerdict,
         greet::build_greet_resources,
         liepin::LIEPIN_SITE_URL,
         run_flow::is_job_task_stop_requested,
@@ -125,7 +126,10 @@ pub async fn position_say_hello_on_page(
             }
 
             match greet_job(connection, job.clone(), config.clone()).await {
-                Ok(()) => {
+                Ok(false) => {
+                    stats.skipped_hold += 1;
+                }
+                Ok(true) => {
                     stats.greeted += 1;
                     processed_job_ids.insert(format!("liepin:{}", job.platform_job_id));
                     processed_job_ids.insert(job.platform_job_id.clone());
@@ -158,6 +162,8 @@ struct RoundStats {
     skipped_rule: u32,
     /// AI 语义复核未通过或失败
     skipped_ai: u32,
+    /// 内容通过了复核，但发送前被闸门整轮拦下（例如模型判断不该投）
+    skipped_hold: u32,
     greeted: u32,
     greet_failed: u32,
 }
@@ -165,13 +171,14 @@ struct RoundStats {
 impl RoundStats {
     fn summary(&self) -> String {
         format!(
-            "猎聘本页 {} 条岗位：打招呼成功 {} 条，失败 {} 条；已沟通跳过 {} 条，规则过滤跳过 {} 条，AI 复核跳过 {} 条",
+            "猎聘本页 {} 条岗位：打招呼成功 {} 条，失败 {} 条；已沟通跳过 {} 条，规则过滤跳过 {} 条，AI 复核跳过 {} 条，发送闸门拦下 {} 条",
             self.scanned,
             self.greeted,
             self.greet_failed,
             self.skipped_processed,
             self.skipped_rule,
-            self.skipped_ai
+            self.skipped_ai,
+            self.skipped_hold
         )
     }
 }
@@ -537,14 +544,16 @@ fn parse_company_from_card_text(card_text: &str, link_text: &str) -> Option<Stri
         .map(str::to_string)
 }
 
+/// 返回 false 表示这一轮被闸门拦下、什么都没发出去。
+/// 区分出来是为了不把「拦下」计成「打招呼成功」，那会让统计骗人
 async fn greet_job(
     browser_page: &ChromiumPage,
     mut job: RpaJob,
     config: AppRuntimeConfig,
-) -> Result<(), anyhow::Error> {
+) -> Result<bool, anyhow::Error> {
     if job.detail_url.is_empty() {
         logger::warning("猎聘岗位缺少详情链接，跳过")?;
-        return Ok(());
+        return Ok(false);
     }
 
     let page = browser::new_stealth_tab(browser_page)?;
@@ -578,19 +587,25 @@ async fn greet_job(
         )?;
         sleep_random_ms(800, 1200);
 
-        let resources = build_greet_resources(&config, &job).await?;
-        send_resources(&page, resources)?;
+        match build_greet_resources(&config, &job).await? {
+            // 整轮取消：既不发文本也不发图片，也不记为已沟通
+            SendVerdict::Hold(reason) => {
+                logger::info(format!("猎聘跳过 {}，未发送任何内容：{reason}", job.title))?;
+                return Ok(false);
+            }
+            SendVerdict::Send(resources) => send_resources(&page, resources)?,
+        }
         save_job_detail(&job, &config);
         logger::info(format!("猎聘 {} 初次沟通成功", job.title))?;
-        Ok(())
+        Ok(true)
     }
     .await;
     let close_result = page.close();
 
     match (result, close_result) {
-        (Ok(()), Ok(())) => Ok(()),
+        (Ok(sent), Ok(())) => Ok(sent),
         (Err(err), _) => Err(err),
-        (Ok(()), Err(err)) => Err(err.into()),
+        (Ok(_), Err(err)) => Err(err.into()),
     }
 }
 
@@ -1481,6 +1496,7 @@ mod tests {
             skipped_processed: 28,
             skipped_rule: 8,
             skipped_ai: 3,
+            skipped_hold: 4,
             greeted: 2,
             greet_failed: 1,
         };
@@ -1493,6 +1509,7 @@ mod tests {
         assert!(summary.contains("已沟通跳过 28 条"));
         assert!(summary.contains("规则过滤跳过 8 条"));
         assert!(summary.contains("AI 复核跳过 3 条"));
+        assert!(summary.contains("发送闸门拦下 4 条"));
     }
 
     #[test]
