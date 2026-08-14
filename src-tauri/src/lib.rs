@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod browser;
 pub mod command;
 pub mod config;

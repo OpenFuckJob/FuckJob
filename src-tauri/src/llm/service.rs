@@ -315,8 +315,56 @@ impl LlmService {
             .await
     }
 
+    /// 流式采集：增量只在内部累积成完整文本，**一个字都不向外推送**。
+    ///
+    /// 正因为不外推，这条路径可以安全重试与降级——和 [`LlmService::stream`] 的约束正好相反
+    /// （那条路径的增量已经落到界面上，重发会让用户看到重复或前后矛盾的内容）。
+    ///
+    /// 相比 [`LlmService::generate`]，流式在长输出上更稳：国产网关和反向代理常把
+    /// 静默的长连接掐断，而流式全程有数据流动；模型陷在推理标签里不停输出时，
+    /// 也不必等满整体超时才发现。
+    ///
+    /// **后来者注意**：若要在这里接 UI 增量推送，必须同时去掉重试，否则重发的内容会叠加。
+    pub async fn stream_collect(&self, prompt: String) -> Result<LlmResponse, AppError> {
+        let model_name = self.model.as_str();
+        let provider = &self.provider;
+        let retry = &self.retry;
+        let service_name = self.display_name.as_str();
+        let prompt = prompt.as_str();
+
+        // 十个 provider 的采集逻辑只有 backend 变体不同，展开写会让每次新增 provider 都要改一大片
+        macro_rules! collect {
+            ($client:expr) => {
+                stream_collect_with_retry(
+                    || $client.completion_model(model_name),
+                    model_name,
+                    prompt,
+                    provider,
+                    retry,
+                    service_name,
+                )
+                .await
+            };
+        }
+
+        match &self.backend {
+            LlmBackend::Anthropic(client) => collect!(client),
+            LlmBackend::DeepSeek(client) => collect!(client),
+            LlmBackend::OpenAiCompatible(client) => collect!(client),
+            LlmBackend::OpenAiResponses(client) => collect!(client),
+            LlmBackend::MiniMax(client) => collect!(client),
+            LlmBackend::Moonshot(client) => collect!(client),
+            LlmBackend::Ollama(client) => collect!(client),
+            LlmBackend::OpenRouter(client) => collect!(client),
+            LlmBackend::XiaomiMimo(client) => collect!(client),
+            LlmBackend::ZAi(client) => collect!(client),
+        }
+    }
+
     /// 流式生成。**不做重试、也不参与降级链**：失败前可能已经向界面推送过增量文本，
     /// 换一个服务重发会让用户看到重复或前后矛盾的内容，所以只能原样把错误抛给调用方。
+    ///
+    /// 只要完整文本、不需要边生成边展示时，请改用 [`LlmService::stream_collect`]。
     pub async fn stream<F>(&self, prompt: String, mut on_delta: F) -> Result<LlmResponse, AppError>
     where
         F: FnMut(String) -> Result<(), AppError>,
@@ -477,6 +525,23 @@ impl LlmChainService {
                 let credential = crate::credential::resolve_for_entry(&link.id)?;
                 let service = LlmService::from_chain_link(link, &credential)?.with_retry(retry);
                 service.generate(prompt).await
+            }
+        })
+        .await
+    }
+
+    /// 流式采集 + 降级链。语义见 [`LlmService::stream_collect`]：增量不外推，因此可以安全重试。
+    ///
+    /// Agent 循环统一走这条路径，不再直接用 [`LlmChainService::generate`]。
+    pub async fn stream_collect(&self, prompt: String) -> Result<LlmResponse, AppError> {
+        let retry = self.retry.clone();
+        run_with_chain(&self.links, move |link| {
+            let retry = retry.clone();
+            let prompt = prompt.clone();
+            async move {
+                let credential = crate::credential::resolve_for_entry(&link.id)?;
+                let service = LlmService::from_chain_link(link, &credential)?.with_retry(retry);
+                service.stream_collect(prompt).await
             }
         })
         .await
@@ -696,12 +761,9 @@ where
         let mut content = String::new();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|error| map_stream_completion_error(error, provider))?;
-            match chunk {
-                StreamedAssistantContent::Text(text) => {
-                    content.push_str(&text.text);
-                    on_delta(text.text)?;
-                }
-                _ => {}
+            if let StreamedAssistantContent::Text(text) = chunk {
+                content.push_str(&text.text);
+                on_delta(text.text)?;
             }
         }
 
@@ -714,6 +776,91 @@ where
     })
     .await
     .map_err(|_| AppError::network("大模型流式请求超时"))?
+}
+
+/// 流式采集一次，把增量攒成完整文本。失败原因区分超时与请求错误，交给 [`retry_plan`] 判定。
+///
+/// 这里刻意不复用 [`stream_once`]：那个函数把超时也映射成 `AppError::network`，
+/// 与「连不上」无法区分，而超时按既定策略是绝不重试的。
+async fn stream_collect_attempt<M>(
+    model: M,
+    model_name: &str,
+    prompt: &str,
+    provider: &LlmProviderPreset,
+) -> Result<LlmResponse, AttemptFailure>
+where
+    M: CompletionModel + Send,
+{
+    let outcome = timeout(Duration::from_secs(LLM_REQUEST_TIMEOUT_SECONDS), async {
+        let request = model.completion_request(prompt).build();
+        let mut stream = model
+            .stream(request)
+            .await
+            .map_err(|error| map_stream_completion_error(error, provider))?;
+
+        let mut content = String::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|error| map_stream_completion_error(error, provider))?;
+            if let StreamedAssistantContent::Text(text) = chunk {
+                content.push_str(&text.text);
+            }
+        }
+
+        Ok::<_, AppError>(LlmResponse {
+            content,
+            model: Some(model_name.to_string()),
+            finish_reason: None,
+            usage: None,
+        })
+    })
+    .await;
+
+    match outcome {
+        Err(_) => Err(AttemptFailure::Timeout),
+        Ok(Ok(response)) => Ok(response),
+        Ok(Err(error)) => Err(AttemptFailure::Completion(error)),
+    }
+}
+
+/// 给流式采集套上与 [`complete_once`] 相同的重试策略。
+///
+/// 模型按 `make_model` 每次重新构建：流断在中途时已收到的增量会被整段丢弃重来，
+/// 这正是「增量不外推」换来的自由——外部永远只看到成功那一次的完整结果。
+async fn stream_collect_with_retry<M, F>(
+    make_model: F,
+    model_name: &str,
+    prompt: &str,
+    provider: &LlmProviderPreset,
+    retry: &LlmRetryConfig,
+    service_name: &str,
+) -> Result<LlmResponse, AppError>
+where
+    M: CompletionModel + Send,
+    F: Fn() -> M,
+{
+    let mut attempt: u32 = 0;
+    loop {
+        let failure = match stream_collect_attempt(make_model(), model_name, prompt, provider).await
+        {
+            Ok(response) => return Ok(response),
+            Err(failure) => failure,
+        };
+
+        let Some(delay) = retry_plan(&failure, attempt, retry) else {
+            return Err(failure.into_error());
+        };
+
+        // 日志失败不能影响主流程
+        let _ = crate::logger::warning(format!(
+            "大模型服务「{service_name}」流式采集网络异常，{} 毫秒后重试（第 {}/{} 次）：{}",
+            delay.as_millis(),
+            attempt + 1,
+            retry.network_retry_attempts,
+            failure.reason()
+        ));
+        tokio::time::sleep(delay).await;
+        attempt += 1;
+    }
 }
 
 pub(crate) fn normalize_provider_base_url(provider: &LlmProviderPreset, base_url: &str) -> String {

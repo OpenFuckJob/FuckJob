@@ -1,5 +1,5 @@
 use crate::{
-    config::{AppRuntimeConfig, GreetConfig, GreetResource, ReplayResourceType, ReplyResource},
+    config::{AppRuntimeConfig, GreetConfig, ReplayResourceType, ReplyResource},
     llm::generate_greet_text,
     logger,
     rpa::common::RpaJob,
@@ -60,6 +60,7 @@ pub async fn build_greet_resources(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::GreetResource;
 
     fn resource(resource_type: ReplayResourceType, content: &str, enabled: bool) -> GreetResource {
         GreetResource {

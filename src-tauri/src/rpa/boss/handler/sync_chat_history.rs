@@ -465,7 +465,14 @@ pub async fn sync_chat_history_on_page(
                 JobSyncChange::Updated => result.jobs_updated += 1,
                 JobSyncChange::None => {}
             }
-            let saved = chat_message_dao::upsert_incremental(&job_id, &messages)?;
+            let saved = chat_message_dao::upsert_incremental(
+                chat_message_dao::ConversationKey {
+                    platform: "boss",
+                    conversation_id: &job_id,
+                    job_id: &job_id,
+                },
+                &messages,
+            )?;
             result.conversations += 1;
             result.inserted += saved.inserted;
             result.updated += saved.updated;

@@ -202,12 +202,30 @@ pub struct InterviewQuestion {
     pub answer_outline: String,
 }
 
-/// 聊天消息持久化记录，按 jobId 关联
+/// 聊天消息持久化记录。
+///
+/// 主键从 job_id 换成「平台 + 会话标识」，是因为猎聘的会话未必映射得到岗位：
+/// 它的 IM 接口不给岗位 ID，公司重名时无法可靠归属。按 job_id 存等于这类会话
+/// 一条都存不下来，历史上下文也就无从谈起。
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ChatMessageRecord {
-    /// 复合主键: "{job_id}:{mid}"
+    /// 复合主键: "{platform}:{conversation_id}:{mid}"
     pub id: String,
+
+    /// 归属岗位。猎聘映射不到岗位时为空，不影响消息落库
+    #[serde(default)]
     pub job_id: String,
+
+    /// 来源平台: boss / liepin。
+    /// 旧数据没有该字段，迁移时按 boss 回填——猎聘此前从未落过库
+    #[serde(default)]
+    pub platform: String,
+
+    /// 会话稳定标识。BOSS 为 encryptJobId，猎聘为 imid。
+    /// 旧数据没有该字段，迁移时用 job_id 回填
+    #[serde(default)]
+    pub conversation_id: String,
+
     pub mid: i64,
     /// true = 招聘者发送，false = 自己发送
     pub received: bool,
@@ -215,6 +233,13 @@ pub struct ChatMessageRecord {
     /// 发送时间戳（毫秒）
     pub time: i64,
     pub from_name: String,
+}
+
+impl ChatMessageRecord {
+    /// 复合主键的唯一构造入口。散着拼字符串迟早会拼出两种格式
+    pub fn build_id(platform: &str, conversation_id: &str, mid: i64) -> String {
+        format!("{platform}:{conversation_id}:{mid}")
+    }
 }
 
 #[cfg(test)]

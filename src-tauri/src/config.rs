@@ -62,6 +62,10 @@ pub fn default_app_config() -> AppRuntimeConfig {
         enable_llm: false,
         reply_prompt: None,
         background_context: None,
+        enable_auto_send_resume: default_enable_auto_send_resume(),
+        max_auto_replies: default_max_auto_replies(),
+        max_reply_chars: default_max_reply_chars(),
+        dry_run: false,
     };
     let resume_config = ResumeConfig {
         inject_llm_context: false,
@@ -1097,6 +1101,37 @@ pub struct ReplayConfig {
     /// 背景补充
     #[serde(default)]
     pub background_context: Option<String>,
+
+    /// 是否允许模型自主决定投递简历。
+    /// 关掉之后模型仍会判断时机，但只回消息，投递交回人工
+    #[serde(default = "default_enable_auto_send_resume")]
+    pub enable_auto_send_resume: bool,
+
+    /// 单个会话累计自动回复条数上限，达到后转人工。
+    /// 没有上限时模型会和 HR 无限客套下去
+    #[serde(default = "default_max_auto_replies")]
+    pub max_auto_replies: usize,
+
+    /// 单条自动回复的字数上限。超长的求职消息本身就不像真人写的
+    #[serde(default = "default_max_reply_chars")]
+    pub max_reply_chars: usize,
+
+    /// 演练模式：判断与生成照常，但不实际发送。
+    /// 首次启用自动回复时建议先开着跑一轮，确认生成质量再关掉
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+fn default_enable_auto_send_resume() -> bool {
+    true
+}
+
+fn default_max_auto_replies() -> usize {
+    5
+}
+
+fn default_max_reply_chars() -> usize {
+    200
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

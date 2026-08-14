@@ -392,7 +392,7 @@ impl StopReason {
 
 /// 跳过计数达到步长时才打进度日志，避免刷屏
 fn should_log_skip_progress(skipped_in_round: u32) -> bool {
-    skipped_in_round > 0 && skipped_in_round % SKIP_PROGRESS_STEP == 0
+    skipped_in_round > 0 && skipped_in_round.is_multiple_of(SKIP_PROGRESS_STEP)
 }
 
 /// 判断岗位列表加载超时是否疑似由 BOSS 安全验证 / 登录失效引起
