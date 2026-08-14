@@ -3,6 +3,8 @@ use std::net::TcpListener;
 use std::{
     fs,
     future::Future,
+    io::{Read, Write},
+    net::{SocketAddr, TcpStream},
     path::PathBuf,
     pin::Pin,
     process::{Command, Stdio},
@@ -146,7 +148,25 @@ static MANAGED_BROWSER_START_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(())
 static ACTIVE_TASK_BROWSER_LEASES: AtomicUsize = AtomicUsize::new(0);
 
 const DEFAULT_RPA_DEBUG_PORT: u16 = 9876;
+/// 默认端口被无关进程占用时，依次尝试的备用端口个数。9876 是 ddns-go 等常见
+/// 工具的默认监听端口，固定单端口会让本应用在这些环境里完全无法启动浏览器。
+const FALLBACK_RPA_DEBUG_PORT_COUNT: u16 = 4;
 const BROWSER_START_ATTEMPTS: usize = 3;
+const CDP_PROBE_TIMEOUT: Duration = Duration::from_millis(300);
+/// 探测响应的读取上限。非 CDP 服务（如管理后台）可能返回很大的 HTML 页面，
+/// 判定所需的信息只在头部，读满即可停止。
+const CDP_PROBE_MAX_BYTES: usize = 16 * 1024;
+
+/// 调试端口的占用情况。仅凭 TCP 握手无法区分后两者，而它们需要完全不同的处理。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DebugPortProbe {
+    /// 无人监听，可用于启动浏览器。
+    Free,
+    /// 监听方是可用的 Chrome CDP 端点。
+    Cdp,
+    /// 端口被非 CDP 进程占用（例如 ddns-go 的 Web 管理端）。
+    Occupied,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ManagedBrowserRecord {
@@ -331,16 +351,104 @@ pub fn init_browser_session(config: &BrowserConfig) -> Result<()> {
     Ok(())
 }
 
-fn is_cdp_port_active(port: u16) -> bool {
-    std::net::TcpStream::connect_timeout(
-        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
-        std::time::Duration::from_millis(300),
-    )
-    .is_ok()
+/// 向调试端口发起一次 `GET /json/version`，返回原始响应字节。
+///
+/// 这里不复用 `ChromiumPage::connect`：探测失败是正常分支而非异常，走 CDP 客户端
+/// 会额外承担建立 WebSocket 的开销与噪音日志。CDP 的 HTTP 端点是明文 HTTP/1.1，
+/// 手写请求即可，也避免为一次探活引入 HTTP 客户端依赖。
+fn fetch_cdp_version_response(port: u16) -> Option<Vec<u8>> {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = TcpStream::connect_timeout(&address, CDP_PROBE_TIMEOUT).ok()?;
+    stream.set_read_timeout(Some(CDP_PROBE_TIMEOUT)).ok()?;
+    stream.set_write_timeout(Some(CDP_PROBE_TIMEOUT)).ok()?;
+
+    // Chrome 会校验 Host 头必须是 IP 或 localhost，这里固定用回环地址。
+    let request = format!(
+        "GET /json/version HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).ok()?;
+
+    let mut response = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => {
+                response.extend_from_slice(&chunk[..read]);
+                if response.len() >= CDP_PROBE_MAX_BYTES {
+                    break;
+                }
+            }
+            // 读超时或连接被对端重置时，已读到的部分同样足够判定。
+            Err(_) => break,
+        }
+    }
+
+    Some(response)
 }
 
-fn should_connect_to_existing_browser(cdp_port_active: bool) -> bool {
-    cdp_port_active
+/// 判断响应是否来自 Chrome 的 CDP 端点。
+///
+/// `webSocketDebuggerUrl` 是 CDP 独有字段，ddns-go 这类 Web 服务对
+/// `/json/version` 只会返回 302／404／HTML，都无法通过这里的校验。
+fn is_cdp_version_response(response: &[u8]) -> bool {
+    let Some(separator) = response.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return false;
+    };
+    let (head, body) = response.split_at(separator);
+    let Ok(head) = std::str::from_utf8(head) else {
+        return false;
+    };
+    let status_ok = head.lines().next().is_some_and(|status_line| {
+        status_line.starts_with("HTTP/1.") && status_line.contains(" 200")
+    });
+    if !status_ok {
+        return false;
+    }
+
+    let Ok(body) = std::str::from_utf8(&body[4..]) else {
+        return false;
+    };
+    if let Ok(payload) = serde_json::from_str::<serde_json::Value>(body.trim()) {
+        return payload
+            .get("webSocketDebuggerUrl")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|url| url.starts_with("ws://"));
+    }
+    // 传输层编码（如 chunked）会让整体解析失败。此时退化为特征匹配：该字段仍是
+    // CDP 独有的，不会把普通 Web 服务误判成浏览器。
+    body.contains("\"webSocketDebuggerUrl\"") && body.contains("ws://")
+}
+
+fn probe_debug_port(port: u16) -> DebugPortProbe {
+    match fetch_cdp_version_response(port) {
+        None => DebugPortProbe::Free,
+        Some(response) if is_cdp_version_response(&response) => DebugPortProbe::Cdp,
+        Some(_) => DebugPortProbe::Occupied,
+    }
+}
+
+fn is_cdp_port_active(port: u16) -> bool {
+    probe_debug_port(port) == DebugPortProbe::Cdp
+}
+
+fn should_connect_to_existing_browser(probe: DebugPortProbe) -> bool {
+    probe == DebugPortProbe::Cdp
+}
+
+/// 候选调试端口：已记录的活跃端口优先，其后是默认端口及其备用端口。
+fn candidate_debug_ports(active_port: Option<u16>) -> Vec<u16> {
+    let mut ports = Vec::new();
+    if let Some(port) = active_port {
+        ports.push(port);
+    }
+    for offset in 0..=FALLBACK_RPA_DEBUG_PORT_COUNT {
+        let port = DEFAULT_RPA_DEBUG_PORT.saturating_add(offset);
+        if !ports.contains(&port) {
+            ports.push(port);
+        }
+    }
+    ports
 }
 
 fn cdp_connection_requires_stealth_injection() -> bool {
@@ -350,9 +458,12 @@ fn cdp_connection_requires_stealth_injection() -> bool {
 fn managed_browser_can_be_reused(
     record: &ManagedBrowserRecord,
     config: &BrowserConfig,
+    port: u16,
     cdp_port_active: bool,
 ) -> bool {
-    cdp_port_active && record.user_data_dir == config.user_data_dir
+    // 端口必须一并比对：记录只保存最近一次由本应用管理的浏览器，若它已退出而
+    // 同一端口上换成了用户自己开的 Chrome，只比对 user_data_dir 会误判为可复用。
+    cdp_port_active && record.port == port && record.user_data_dir == config.user_data_dir
 }
 
 fn managed_browser_record_path() -> Result<PathBuf> {
@@ -437,7 +548,7 @@ fn launch_managed_browser(config: &BrowserConfig, port: u16) -> Result<ChromiumP
         .spawn()?;
 
     for _ in 0..BROWSER_START_ATTEMPTS * 20 {
-        if should_connect_to_existing_browser(is_cdp_port_active(port)) {
+        if is_cdp_port_active(port) {
             if let Ok(browser) = connect_to_browser(port) {
                 save_managed_browser_record(&ManagedBrowserRecord {
                     pid: child.id(),
@@ -459,32 +570,32 @@ fn launch_managed_browser(config: &BrowserConfig, port: u16) -> Result<ChromiumP
 
 fn create_browser(config: &BrowserConfig) -> Result<ChromiumPage> {
     // 候选端口列表：优先检查已记录的活跃端口、默认固定端口(9876)及附近备用端口
-    let mut candidate_ports = Vec::new();
-    if let Ok(guard) = ACTIVE_DEBUG_PORT.read() {
-        if let Some(port) = *guard {
-            candidate_ports.push(port);
-        }
-    }
-    if !candidate_ports.contains(&DEFAULT_RPA_DEBUG_PORT) {
-        candidate_ports.push(DEFAULT_RPA_DEBUG_PORT);
-    }
-
+    let active_port = ACTIVE_DEBUG_PORT.read().ok().and_then(|guard| *guard);
+    let candidate_ports = candidate_debug_ports(active_port);
     let managed_record = load_managed_browser_record();
 
-    // 1. 端口已被占用时必须只连接已有 Chrome，不能用 ChromiumPage::new()
-    // 再次 launch 会删除同一 user-data-dir 的 Singleton 锁并启动第二个 Chrome，
-    // 导致 macOS 上出现“打开您的个人资料时出了点问题”。即使窗口被用户关闭，
-    // 只要 CDP 进程仍在，ChromiumPage::connect 会复用它并按需新建标签页。
+    // 第一个可直接用于启动浏览器的空闲端口。
+    let mut launch_port = None;
+    // 已被占用且不可复用的端口，仅在全部候选端口都不可用时用于组装错误信息。
+    let mut unavailable_ports = Vec::new();
+
     for &port in &candidate_ports {
-        if should_connect_to_existing_browser(is_cdp_port_active(port)) {
+        let probe = probe_debug_port(port);
+
+        // 1. 端口上存在真实 CDP 时必须只连接已有 Chrome，不能用 ChromiumPage::new()
+        // 再次 launch 会删除同一 user-data-dir 的 Singleton 锁并启动第二个 Chrome，
+        // 导致 macOS 上出现“打开您的个人资料时出了点问题”。即使窗口被用户关闭，
+        // 只要 CDP 进程仍在，ChromiumPage::connect 会复用它并按需新建标签页。
+        if should_connect_to_existing_browser(probe) {
             let record_matches = managed_record
                 .as_ref()
-                .map(|record| managed_browser_can_be_reused(record, config, true))
+                .map(|record| managed_browser_can_be_reused(record, config, port, true))
                 .unwrap_or(port == DEFAULT_RPA_DEBUG_PORT);
             if !record_matches {
-                return Err(anyhow!(
-                    "检测到非当前 profile 的浏览器调试端口 {port}，已拒绝启动或接管浏览器"
-                ));
+                // 非当前 profile 的浏览器：既不接管也不共用端口，换端口自建即可，
+                // 不同的 user-data-dir 之间没有 Singleton 锁冲突。
+                unavailable_ports.push(port);
+                continue;
             }
             match connect_to_browser(port) {
                 Ok(browser) => {
@@ -503,16 +614,40 @@ fn create_browser(config: &BrowserConfig) -> Result<ChromiumPage> {
                 Err(error) => return Err(anyhow!("检测到浏览器调试端口 {port}，但无法连接：{error}。已拒绝启动第二个浏览器以保护个人资料")),
             }
         }
+
+        // 2. 被 ddns-go 等非 CDP 进程占用的端口既不能连接也不能用于启动，
+        // 顺延到下一个候选端口。
+        if probe == DebugPortProbe::Occupied {
+            unavailable_ports.push(port);
+            continue;
+        }
+
+        if launch_port.is_none() {
+            launch_port = Some(port);
+        }
     }
 
-    // 2. 没有活动 CDP 实例时，由应用直接启动并记录 PID。不能交给
+    // 3. 没有可复用的 CDP 实例时，由应用直接启动并记录 PID。不能交给
     // rust_drission::ChromiumPage::new()，它会删除 profile 锁文件。
-    let target_port = DEFAULT_RPA_DEBUG_PORT;
+    let target_port = launch_port.ok_or_else(|| {
+        anyhow!(
+            "浏览器调试端口 {} 均已被其它程序占用（ddns-go 等工具默认监听 {DEFAULT_RPA_DEBUG_PORT}），请修改对方监听端口后重试",
+            format_port_list(&unavailable_ports)
+        )
+    })?;
     let browser = launch_managed_browser(config, target_port)?;
     if let Ok(mut guard) = ACTIVE_DEBUG_PORT.write() {
         *guard = Some(target_port);
     }
     Ok(browser)
+}
+
+fn format_port_list(ports: &[u16]) -> String {
+    ports
+        .iter()
+        .map(u16::to_string)
+        .collect::<Vec<_>>()
+        .join("、")
 }
 
 #[cfg(test)]
@@ -821,8 +956,11 @@ mod tests {
 
     #[test]
     fn active_cdp_port_uses_connection_instead_of_launching_a_second_browser() {
-        assert!(should_connect_to_existing_browser(true));
-        assert!(!should_connect_to_existing_browser(false));
+        assert!(should_connect_to_existing_browser(DebugPortProbe::Cdp));
+        assert!(!should_connect_to_existing_browser(DebugPortProbe::Free));
+        assert!(!should_connect_to_existing_browser(
+            DebugPortProbe::Occupied
+        ));
     }
 
     #[test]
@@ -838,8 +976,108 @@ mod tests {
             user_data_dir: config.user_data_dir.clone(),
         };
 
-        assert!(managed_browser_can_be_reused(&record, &config, true));
-        assert!(!managed_browser_can_be_reused(&record, &config, false));
+        assert!(managed_browser_can_be_reused(
+            &record,
+            &config,
+            DEFAULT_RPA_DEBUG_PORT,
+            true
+        ));
+        assert!(!managed_browser_can_be_reused(
+            &record,
+            &config,
+            DEFAULT_RPA_DEBUG_PORT,
+            false
+        ));
+    }
+
+    #[test]
+    fn managed_browser_record_is_not_reused_on_a_different_port() {
+        let config = BrowserConfig {
+            user_data_dir: "/tmp/offer-flow-profile".to_string(),
+            chrome_exe_path: None,
+            max_parallel_tasks: 2,
+        };
+        let record = ManagedBrowserRecord {
+            pid: 123,
+            port: DEFAULT_RPA_DEBUG_PORT,
+            user_data_dir: config.user_data_dir.clone(),
+        };
+
+        assert!(!managed_browser_can_be_reused(
+            &record,
+            &config,
+            DEFAULT_RPA_DEBUG_PORT + 1,
+            true
+        ));
+    }
+
+    #[test]
+    fn chrome_version_response_is_recognized_as_cdp() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=UTF-8\r\nContent-Length: 123\r\n\r\n{\"Browser\":\"Chrome/131.0.6778.86\",\"Protocol-Version\":\"1.3\",\"webSocketDebuggerUrl\":\"ws://127.0.0.1:9876/devtools/browser/abcd\"}";
+
+        assert!(is_cdp_version_response(response));
+    }
+
+    #[test]
+    fn ddns_go_style_responses_are_not_mistaken_for_cdp() {
+        // ddns-go 在 9876 上跑的是自己的 Web 管理端，对 /json/version 只会
+        // 给出跳转、404 或 HTML，任何一种都不能被当成可接管的浏览器。
+        let redirect = b"HTTP/1.1 302 Found\r\nLocation: /login\r\nContent-Length: 0\r\n\r\n";
+        let not_found = b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nnot found";
+        let html = b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<!DOCTYPE html><html><body>ddns-go</body></html>";
+
+        assert!(!is_cdp_version_response(redirect));
+        assert!(!is_cdp_version_response(not_found));
+        assert!(!is_cdp_version_response(html));
+    }
+
+    #[test]
+    fn malformed_responses_are_not_mistaken_for_cdp() {
+        assert!(!is_cdp_version_response(b""));
+        assert!(!is_cdp_version_response(b"HTTP/1.1 200 OK\r\n\r\n"));
+        // 合法 JSON 但缺少 CDP 独有字段，同样不可接管。
+        assert!(!is_cdp_version_response(
+            b"HTTP/1.1 200 OK\r\n\r\n{\"status\":\"ok\"}"
+        ));
+    }
+
+    #[test]
+    fn a_port_serving_no_listener_is_free_for_launching() {
+        let port = allocate_browser_debug_port().expect("allocate browser debug port");
+
+        assert_eq!(probe_debug_port(port), DebugPortProbe::Free);
+    }
+
+    #[test]
+    fn a_port_held_by_a_non_cdp_service_is_reported_as_occupied() {
+        // 用一个只接受连接、不回应任何数据的监听端模拟被占用的端口。
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind stub service");
+        let port = listener.local_addr().expect("stub service addr").port();
+
+        assert_eq!(probe_debug_port(port), DebugPortProbe::Occupied);
+    }
+
+    #[test]
+    fn candidate_ports_fall_back_past_the_default_port() {
+        let ports = candidate_debug_ports(None);
+
+        assert_eq!(ports.first(), Some(&DEFAULT_RPA_DEBUG_PORT));
+        assert_eq!(ports.len(), FALLBACK_RPA_DEBUG_PORT_COUNT as usize + 1);
+        assert!(ports.contains(&(DEFAULT_RPA_DEBUG_PORT + 1)));
+    }
+
+    #[test]
+    fn candidate_ports_check_the_recorded_active_port_first_without_duplicates() {
+        let ports = candidate_debug_ports(Some(DEFAULT_RPA_DEBUG_PORT + 2));
+
+        assert_eq!(ports.first(), Some(&(DEFAULT_RPA_DEBUG_PORT + 2)));
+        assert_eq!(
+            ports
+                .iter()
+                .filter(|&&port| port == DEFAULT_RPA_DEBUG_PORT + 2)
+                .count(),
+            1
+        );
     }
 
     #[test]
