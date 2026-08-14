@@ -263,7 +263,7 @@ async fn handle_conversation(
         return Ok(());
     }
 
-    let text = match conversation::vet_reply_text(&decision.reply, limits.max_reply_chars) {
+    let text = match conversation::vet_reply(&decision.reply, limits.max_reply_chars) {
         Ok(text) => text,
         Err(reason) => {
             logger::warning(format!("生成的回复未通过发送前体检，已放弃发送：{reason}"))?;

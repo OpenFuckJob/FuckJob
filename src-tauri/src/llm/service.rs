@@ -1,7 +1,6 @@
 use crate::config::{AppRuntimeConfig, LlmChainLink, LlmProviderPreset, LlmRetryConfig};
 use crate::credential::ResolvedCredential;
 use crate::error::{AppError, AppErrorCode};
-use crate::llm::template;
 use crate::llm::types::{ConnectionReport, LlmResponse};
 use futures::StreamExt;
 use rig::client::CompletionClient;
@@ -306,15 +305,6 @@ impl LlmService {
         }
     }
 
-    pub async fn generate_template(
-        &self,
-        prompt_template: &str,
-        params: &Value,
-    ) -> Result<LlmResponse, AppError> {
-        self.generate(template::render(prompt_template, params)?)
-            .await
-    }
-
     /// 流式采集：增量只在内部累积成完整文本，**一个字都不向外推送**。
     ///
     /// 正因为不外推，这条路径可以安全重试与降级——和 [`LlmService::stream`] 的约束正好相反
@@ -514,22 +504,6 @@ impl LlmChainService {
         self.links.is_empty()
     }
 
-    pub async fn generate(&self, prompt: String) -> Result<LlmResponse, AppError> {
-        let retry = self.retry.clone();
-        run_with_chain(&self.links, move |link| {
-            // 每一环的密钥、客户端都是独立的，必须在尝试时才构建：
-            // 主用服务的密钥缺失不应该阻止备用服务顶上
-            let retry = retry.clone();
-            let prompt = prompt.clone();
-            async move {
-                let credential = crate::credential::resolve_for_entry(&link.id)?;
-                let service = LlmService::from_chain_link(link, &credential)?.with_retry(retry);
-                service.generate(prompt).await
-            }
-        })
-        .await
-    }
-
     /// 流式采集 + 降级链。语义见 [`LlmService::stream_collect`]：增量不外推，因此可以安全重试。
     ///
     /// Agent 循环统一走这条路径，不再直接用 [`LlmChainService::generate`]。
@@ -607,15 +581,6 @@ impl LlmChainService {
         }
 
         Err(chain_exhausted_error(last_error, total))
-    }
-
-    pub async fn generate_template(
-        &self,
-        prompt_template: &str,
-        params: &Value,
-    ) -> Result<LlmResponse, AppError> {
-        self.generate(template::render(prompt_template, params)?)
-            .await
     }
 }
 

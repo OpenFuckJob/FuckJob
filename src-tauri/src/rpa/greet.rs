@@ -75,6 +75,7 @@ pub async fn build_greet_resources(
     Ok(conversation::vet_outbound(
         resources,
         config.replay_config.max_reply_chars,
+        conversation::OutboundKind::Greeting,
     ))
 }
 
@@ -170,7 +171,7 @@ mod tests {
             },
         ];
 
-        match conversation::vet_outbound(resources, 200) {
+        match conversation::vet_outbound(resources, 200, conversation::OutboundKind::Greeting) {
             SendVerdict::Hold(reason) => assert!(reason.contains("不考虑")),
             other => panic!("必须整轮拦下，实际：{other:?}"),
         }

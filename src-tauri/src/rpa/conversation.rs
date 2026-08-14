@@ -335,6 +335,19 @@ pub enum SendVerdict {
     Hold(String),
 }
 
+/// 这一轮内容的性质，决定用哪套体检策略。
+///
+/// 只有这一处差异，所以不值得为它写两个函数——此前 `vet_reply_text` 和
+/// `vet_outbound` 各写一遍拒答、占位符、截断，改一处忘一处只是时间问题。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutboundKind {
+    /// 开场白。写了婉拒就等于这个岗位根本不该发，整轮取消
+    Greeting,
+    /// 会话回复。礼貌表达「这个岗位我可能不太合适」本身是合理消息，
+    /// 模型真要终止对话有 [`ReplyAction::Skip`] 可用，不在这里拦
+    Reply,
+}
+
 /// 所有对外发送的最后一道门。打招呼和自动回复共用。
 ///
 /// **任何一条内容不合格，整轮都不发**，而不是只丢掉那一条。这是实测教训：
@@ -344,7 +357,11 @@ pub enum SendVerdict {
 /// 它让一段本该整体取消的动作，退化成一段语义残缺的动作。
 ///
 /// 图片这类非文本资源无法体检，但它们的去留跟着整轮走，不会单独发出去。
-pub fn vet_outbound(resources: Vec<ReplyResource>, max_chars: usize) -> SendVerdict {
+pub fn vet_outbound(
+    resources: Vec<ReplyResource>,
+    max_chars: usize,
+    kind: OutboundKind,
+) -> SendVerdict {
     let mut checked: Vec<ReplyResource> = Vec::with_capacity(resources.len());
 
     for mut resource in resources {
@@ -360,7 +377,7 @@ pub fn vet_outbound(resources: Vec<ReplyResource>, max_chars: usize) -> SendVerd
         if output::looks_like_refusal(text) {
             return SendVerdict::Hold("内容是模型的拒答话术".to_string());
         }
-        if output::declines_opportunity(text) {
+        if kind == OutboundKind::Greeting && output::declines_opportunity(text) {
             return SendVerdict::Hold("内容里表达了不考虑该机会，整轮取消发送".to_string());
         }
         if output::has_placeholder(text) {
@@ -377,27 +394,22 @@ pub fn vet_outbound(resources: Vec<ReplyResource>, max_chars: usize) -> SendVerd
     SendVerdict::Send(checked)
 }
 
-/// 单条回复的发送前体检。通过则返回可发送的文本（必要时已截断）。
+/// 单条回复走同一道门的便捷包装。
 ///
-/// 与 [`vet_outbound`] 的差别是**刻意的**：这里不查「婉拒」。
-/// 开场白里写婉拒等于这个岗位根本不该发，但在回复里礼貌地表达「这个岗位我可能不太合适」
-/// 本身就是一条合理的消息——模型真要终止这段对话，有 `ReplyAction::Skip` 可用。
-///
-/// 模型解析成功不代表内容能见人：拒答话术、没替换掉的占位符发出去，
-/// 对面一眼就知道是机器人在聊。
-pub fn vet_reply_text(text: &str, max_chars: usize) -> Result<String, String> {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return Err("回复正文为空".to_string());
+/// 只是把一条文本包成批次调用 [`vet_outbound`]，不含任何独立的判定逻辑——
+/// 两个平台都要用，写成包装才不会各自展开一遍。
+pub fn vet_reply(text: &str, max_chars: usize) -> Result<String, String> {
+    match vet_outbound(
+        vec![ReplyResource {
+            resource_type: ReplayResourceType::Text,
+            content: text.to_string(),
+        }],
+        max_chars,
+        OutboundKind::Reply,
+    ) {
+        SendVerdict::Send(mut resources) => Ok(resources.remove(0).content),
+        SendVerdict::Hold(reason) => Err(reason),
     }
-    if output::looks_like_refusal(trimmed) {
-        return Err("回复是模型的拒答话术，不能发给对方".to_string());
-    }
-    if output::has_placeholder(trimmed) {
-        return Err("回复残留未填充的占位符，不能发给对方".to_string());
-    }
-
-    Ok(output::truncate_at_sentence(trimmed, max_chars))
 }
 
 /// 决策与实际能力的一致性校正。
@@ -592,6 +604,7 @@ mod tests {
                 image("C:/resume.png"),
             ],
             200,
+            OutboundKind::Greeting,
         );
 
         assert!(matches!(verdict, SendVerdict::Hold(_)));
@@ -602,6 +615,7 @@ mod tests {
         match vet_outbound(
             vec![text_resource("您好，我有相关项目经验"), image("C:/a.png")],
             200,
+            OutboundKind::Greeting,
         ) {
             SendVerdict::Send(resources) => {
                 assert_eq!(resources.len(), 2);
@@ -617,10 +631,27 @@ mod tests {
         assert!(matches!(
             vet_outbound(
                 vec![image("C:/xx公司/todo.png"), text_resource("您好")],
-                200
+                200,
+                OutboundKind::Greeting
             ),
             SendVerdict::Send(_)
         ));
+    }
+
+    /// 回复里礼貌说「不太合适」是合理消息，不该被开场白那套规则拦掉
+    #[test]
+    fn a_polite_decline_is_allowed_in_a_reply_but_not_in_a_greeting() {
+        let text = "感谢您的关注，不过这个岗位和我的方向不太合适。";
+
+        assert!(conversation_vet_reply_ok(text));
+        assert!(matches!(
+            vet_outbound(vec![text_resource(text)], 200, OutboundKind::Greeting),
+            SendVerdict::Hold(_)
+        ));
+    }
+
+    fn conversation_vet_reply_ok(text: &str) -> bool {
+        vet_reply(text, 200).is_ok()
     }
 
     fn stamped(mid: i64, time: i64, text: &str) -> ChatMessage {

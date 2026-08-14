@@ -13,8 +13,8 @@ use crate::{
     rpa::{
         common::ChatMessage,
         conversation::{
-            self, gate, match_template, reconcile, vet_reply_text, ConversationActions,
-            ConversationContext, GateVerdict, ReplyAction, ReplyLimits, ResumeState,
+            self, gate, match_template, reconcile, ConversationActions, ConversationContext,
+            GateVerdict, ReplyAction, ReplyLimits, ResumeState,
         },
         liepin::{
             handler::{
@@ -268,7 +268,7 @@ async fn handle_conversation(
             return Ok(());
         }
 
-        // 固定话术不过 vet_reply_text：那是给模型生成内容做的体检，
+        // 固定话术不过发送前体检：那是给模型生成内容做的体检，
         // 拿它去截断或否决用户的原话，只会让"固定回复"变得不固定
         if let Err(error) = send_resources(page, resources) {
             logger::warning(format!("猎聘模板回复发送失败，跳过该会话：{}", error))?;
@@ -306,7 +306,7 @@ async fn handle_conversation(
         return Ok(());
     }
 
-    let text = match vet_reply_text(&decision.reply, limits.max_reply_chars) {
+    let text = match conversation::vet_reply(&decision.reply, limits.max_reply_chars) {
         Ok(text) => text,
         Err(reason) => {
             logger::warning(format!("猎聘回复正文未通过体检，不发送：{}", reason))?;
