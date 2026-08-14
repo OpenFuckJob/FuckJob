@@ -39,6 +39,8 @@ import {
   RegexRule,
   JobProfile,
   getJobProfiles,
+  DEFAULT_MAX_AUTO_REPLIES,
+  DEFAULT_MAX_REPLY_CHARS,
 } from "@/types/app-config";
 import {
   jobTypeOptions,
@@ -1247,6 +1249,27 @@ export function ConfigPage(props: ConfigPageProps) {
                 </Form.Item>
               </div>
 
+              <div className="flex items-center justify-between gap-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                <div>
+                  <Text className="text-slate-900 font-bold block">
+                    演练模式
+                  </Text>
+                  <Text className="text-slate-500 text-xs">
+                    照常判断并生成回复，但不实际发送，只写日志；建议首次使用先开启，跑一轮确认生成质量再关掉
+                  </Text>
+                </div>
+                <Form.Item
+                  name={["replay_config", "dry_run"]}
+                  valuePropName="checked"
+                  className="!m-0"
+                >
+                  <Switch
+                    aria-label="演练模式"
+                    onChange={(v) => props.updateReplay({ dry_run: v })}
+                  />
+                </Form.Item>
+              </div>
+
               {props.config.replay_config.enable_llm && (
                 <div className="space-y-5">
                   <Form.Item
@@ -1282,6 +1305,83 @@ export function ConfigPage(props: ConfigPageProps) {
                       className="text-sm"
                     />
                   </Form.Item>
+
+                  <div className="rounded-2xl border border-slate-200/80 bg-slate-50/80 p-5 space-y-5">
+                    <div>
+                      <Text className="text-slate-900 font-bold block">
+                        自动回复边界
+                      </Text>
+                      <Text className="text-slate-500 text-xs">
+                        限制模型的自主程度，超出边界的会话会转回人工
+                      </Text>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-6">
+                      <div>
+                        <Text className="text-slate-900 font-bold block">
+                          允许自主投递简历
+                        </Text>
+                        <Text className="text-slate-500 text-xs">
+                          关闭后模型仍会判断投递时机，但只回消息，投递交回人工
+                        </Text>
+                      </div>
+                      <Form.Item
+                        name={["replay_config", "enable_auto_send_resume"]}
+                        valuePropName="checked"
+                        className="!m-0"
+                      >
+                        <Switch
+                          aria-label="允许自主投递简历"
+                          onChange={(v) =>
+                            props.updateReplay({ enable_auto_send_resume: v })
+                          }
+                        />
+                      </Form.Item>
+                    </div>
+
+                    <Row gutter={[24, 16]}>
+                      <Col xs={24} md={12}>
+                        <Form.Item
+                          label="单会话自动回复上限"
+                          name={["replay_config", "max_auto_replies"]}
+                          extra="累计回复达到该条数后转人工，避免和 HR 无限客套。"
+                          className="!mb-0"
+                        >
+                          <InputNumber
+                            min={1}
+                            precision={0}
+                            style={{ width: "100%" }}
+                            onChange={(value) =>
+                              props.updateReplay({
+                                max_auto_replies:
+                                  value ?? DEFAULT_MAX_AUTO_REPLIES,
+                              })
+                            }
+                          />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={12}>
+                        <Form.Item
+                          label="单条回复字数上限"
+                          name={["replay_config", "max_reply_chars"]}
+                          extra="超长的求职消息本身就不像真人写的。超出后会自动截断，并尽量断在句末。"
+                          className="!mb-0"
+                        >
+                          <InputNumber
+                            min={1}
+                            precision={0}
+                            style={{ width: "100%" }}
+                            onChange={(value) =>
+                              props.updateReplay({
+                                max_reply_chars:
+                                  value ?? DEFAULT_MAX_REPLY_CHARS,
+                              })
+                            }
+                          />
+                        </Form.Item>
+                      </Col>
+                    </Row>
+                  </div>
                 </div>
               )}
             </div>
