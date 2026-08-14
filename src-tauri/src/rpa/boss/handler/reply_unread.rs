@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use anyhow::{anyhow, Context};
 use rust_drission::utils::sleep_random_ms;
@@ -11,7 +11,7 @@ use crate::{
     logger,
     rpa::{
         boss::{
-            handler::{actions::BossActions, send_messages},
+            handler::{actions::BossActions, chat_list, chat_list::ListState, send_messages},
             model::{ChatMessage, UnreadChat},
             BOSS_CHAT_URL,
         },
@@ -24,20 +24,6 @@ use crate::{
 };
 
 const PLATFORM: &str = "boss";
-
-// 点击不同 label 的聊天
-fn click_label(page: &rust_drission::Page, name: &str) -> Result<(), anyhow::Error> {
-    let label_name_eles = page.eles(".label-list .label-name")?;
-
-    for label_name_ele in label_name_eles {
-        let label_content = label_name_ele.text_content()?.trim().to_string();
-        if label_content == name || label_content.starts_with(name) {
-            label_name_ele.click()?;
-            break;
-        }
-    }
-    Ok(())
-}
 
 pub async fn reply_unread(
     app_runtime_config: &AppRuntimeConfig,
@@ -56,74 +42,95 @@ pub async fn reply_unread_on_page(
 ) -> Result<Vec<UnreadChat>, anyhow::Error> {
     let app_runtime_config = app_runtime_config.clone();
     logger::info("正在打开沟通页面")?;
-    page.get(BOSS_CHAT_URL)?;
-    page.wait(".label-list .label-name", Duration::from_secs(10))?;
+    page.get(BOSS_CHAT_URL).context("打开 BOSS 沟通页面失败")?;
+    chat_list::wait_for_chat_page(page, Duration::from_secs(20))?;
 
+    // 每轮重新拉一次未读列表再处理一个会话。两个原因：点开会话会让它变已读、
+    // 从未读列表消失，整列 DOM 跟着重排，一次性取出的卡片快照从第二个起就指向
+    // 了脱离文档的节点，点了不报错也不生效；而列表本身是分页的，处理掉几个之后
+    // 后面的才会补上来。handled 只是最后一道防线，兜住「处理完仍赖在列表里」的
+    // 会话，免得同一张卡片被无限重试
+    let mut handled: HashSet<String> = HashSet::new();
     loop {
         if is_job_task_stop_requested() {
             logger::info("沟通任务已结束")?;
             return Ok(Vec::new());
         }
-        click_label(page, "未读")?;
-        page.wait(".user-list-content", Duration::from_secs(10))?;
-        sleep_random_ms(800, 1000);
-        let user_card_eles = page.elements(".user-list-content .friend-content")?;
-        if user_card_eles.is_empty() {
-            logger::info("没有未读消息")?;
-            break;
-        }
-        logger::info(format!("当前未读会话数: {}", user_card_eles.len()))?;
 
-        for user_card_ele in user_card_eles {
-            if is_job_task_stop_requested() {
-                logger::info("沟通任务已结束")?;
-                return Ok(Vec::new());
+        let cards = match chat_list::reload_label(page, "未读", Duration::from_secs(15))? {
+            ListState::Empty => {
+                logger::info("没有未读消息")?;
+                break;
             }
+            ListState::Unknown => {
+                logger::warning(
+                    "未读列表既没出现会话卡片也没出现空态提示，状态无法判定，本次跳过",
+                )?;
+                break;
+            }
+            ListState::Cards(cards) => cards,
+        };
 
-            let history_listener = page.listen_url("zpchat/geek/historyMsg")?;
-            let boss_data_listener = page.listen_url("zpchat/geek/getBossData")?;
-            user_card_ele.click()?;
-            sleep_random_ms(500, 800);
+        // 列表分页加载，渲染出来的往往少于总数；标签上的计数才是真实剩余量
+        let remaining = chat_list::selected_count(page)?.unwrap_or(cards.len());
+        logger::info(format!("当前未读会话数: {remaining}"))?;
 
-            let job_id = match boss_data_listener.wait(Duration::from_secs(10)) {
-                Ok(Some(packet)) => packet
-                    .body
-                    .and_then(|body| String::from_utf8(body).ok())
-                    .and_then(|body| parse_encrypt_job_id(&body)),
-                _ => None,
-            };
+        let mut pending = None;
+        for card in cards.iter() {
+            let key = chat_list::conversation_key(card)?;
+            if !key.is_empty() && !handled.contains(&key) {
+                pending = Some((card, key));
+                break;
+            }
+        }
+        let Some((user_card_ele, key)) = pending else {
+            logger::warning(format!(
+                "未读列表里这 {} 个会话本轮都已处理过却仍未消失，结束本轮",
+                cards.len()
+            ))?;
+            break;
+        };
+        handled.insert(key);
 
-            let packet = match history_listener.wait(Duration::from_secs(10)) {
-                Ok(Some(p)) => p,
-                Ok(None) => {
-                    logger::warning("等待 historyMsg 响应超时，跳过")?;
-                    continue;
-                }
-                Err(e) => {
-                    logger::warning(format!("监听 historyMsg 失败: {e}，跳过"))?;
-                    continue;
-                }
-            };
-            let Some(body_bytes) = packet.body else {
-                logger::warning("historyMsg 响应 body 为空，跳过")?;
+        let history_listener = page.listen_url("zpchat/geek/historyMsg")?;
+        let boss_data_listener = page.listen_url("zpchat/geek/getBossData")?;
+        user_card_ele.click()?;
+        sleep_random_ms(500, 800);
+
+        let job_id = match boss_data_listener.wait(Duration::from_secs(10)) {
+            Ok(Some(packet)) => packet
+                .body
+                .and_then(|body| String::from_utf8(body).ok())
+                .and_then(|body| parse_encrypt_job_id(&body)),
+            _ => None,
+        };
+
+        let packet = match history_listener.wait(Duration::from_secs(10)) {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                logger::warning("等待 historyMsg 响应超时，跳过")?;
                 continue;
-            };
-            let body_str = String::from_utf8(body_bytes).context("historyMsg 响应非 UTF-8 编码")?;
-            let fresh = parse_chat_messages(&body_str)?;
-
-            // 处理这一个会话时出的错不该让整轮未读中断：后面还有别的会话等着
-            if let Err(error) =
-                handle_conversation(page, &app_runtime_config, job_id.as_deref(), fresh).await
-            {
-                logger::warning(format!("处理会话失败，跳过该会话继续：{error}"))?;
             }
+            Err(e) => {
+                logger::warning(format!("监听 historyMsg 失败: {e}，跳过"))?;
+                continue;
+            }
+        };
+        let Some(body_bytes) = packet.body else {
+            logger::warning("historyMsg 响应 body 为空，跳过")?;
+            continue;
+        };
+        let body_str = String::from_utf8(body_bytes).context("historyMsg 响应非 UTF-8 编码")?;
+        let fresh = parse_chat_messages(&body_str)?;
 
-            sleep_random_ms(3000, 5000);
+        // 处理这一个会话时出的错不该让整轮未读中断：后面还有别的会话等着
+        if let Err(error) =
+            handle_conversation(page, &app_runtime_config, job_id.as_deref(), fresh).await
+        {
+            logger::warning(format!("处理会话失败，跳过该会话继续：{error}"))?;
         }
 
-        if is_job_task_stop_requested() {
-            break;
-        }
+        sleep_random_ms(3000, 5000);
     }
     Ok(Vec::new())
 }
