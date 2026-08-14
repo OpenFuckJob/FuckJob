@@ -547,6 +547,68 @@ impl LlmChainService {
         .await
     }
 
+    /// 流式生成 + 有条件的降级链。增量通过 `on_delta` 实时推给调用方。
+    ///
+    /// 降级只在**一个字都还没吐出去**的时候允许：一旦开始推增量，界面上已经有内容了，
+    /// 换一个服务重发会让用户看到重复或前后矛盾的文本。所以这里不复用
+    /// [`run_with_chain`]——那套无条件往下试，正是这个场景不能接受的。
+    ///
+    /// 也因此不做重试：重试和降级在这里是同一个问题。
+    pub async fn stream_with<F>(
+        &self,
+        prompt: String,
+        mut on_delta: F,
+    ) -> Result<LlmResponse, AppError>
+    where
+        F: FnMut(String) -> Result<(), AppError>,
+    {
+        let total = self.links.len();
+        let mut emitted = false;
+        let mut last_error: Option<AppError> = None;
+
+        for (index, link) in self.links.iter().enumerate() {
+            let attempt = async {
+                let credential = crate::credential::resolve_for_entry(&link.id)?;
+                let service = LlmService::from_chain_link(link, &credential)?;
+                service
+                    .stream(prompt.clone(), |delta| {
+                        emitted = true;
+                        on_delta(delta)
+                    })
+                    .await
+            }
+            .await;
+
+            match attempt {
+                Ok(response) => {
+                    if index > 0 {
+                        let _ = crate::logger::info(format!(
+                            "主用大模型服务不可用，已降级到备用服务「{}」",
+                            link.display_name()
+                        ));
+                    }
+                    return Ok(response);
+                }
+                Err(error) => {
+                    if emitted {
+                        // 已经有内容推到界面上了，只能把错误原样抛出去
+                        return Err(error);
+                    }
+                    if total > 1 {
+                        let _ = crate::logger::warning(format!(
+                            "大模型服务「{}」流式调用失败：{}，尝试下一个备用服务",
+                            link.display_name(),
+                            error.message
+                        ));
+                    }
+                    last_error = Some(error);
+                }
+            }
+        }
+
+        Err(chain_exhausted_error(last_error, total))
+    }
+
     pub async fn generate_template(
         &self,
         prompt_template: &str,

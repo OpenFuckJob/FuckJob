@@ -1,5 +1,4 @@
 use crate::command::base::CommandResult;
-use crate::llm::service::LlmService;
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 
@@ -138,19 +137,14 @@ async fn stream_prompt(
         Ok(value) => value,
         Err(error) => return CommandResult::err(error),
     };
-    let credential = match crate::credential::resolve() {
-        Ok(value) => value,
-        Err(error) => return CommandResult::err(error),
-    };
-    let service = match LlmService::from_runtime(&config, &credential) {
-        Ok(value) => value,
-        Err(error) => return CommandResult::err(error),
-    };
     let kind_text = kind.to_string();
     let mut emitted_question_chars = 0usize;
 
-    let result = service
-        .stream(prompt, |delta| {
+    // 和其余所有模型用途一样走统一的 Agent 循环。流式模式下循环会强制单轮、
+    // 且只在一个字都还没吐出去时才允许降级——增量已经推到界面上就不能重发
+    let task = crate::agent::tasks::TemplateTask::new("模拟面试", &prompt, serde_json::json!({}));
+    let result = crate::agent::AgentRunner::new(&config)
+        .run_streaming(&task, |delta| {
             let content = if kind_text == "question" {
                 let remaining = MAX_QUESTION_CHARS.saturating_sub(emitted_question_chars);
                 let value = delta.chars().take(remaining).collect::<String>();
@@ -179,10 +173,11 @@ async fn stream_prompt(
         .await;
 
     match result {
-        Ok(response) => {
+        Ok(outcome) => {
+            let response_content = outcome.output;
             let content = if kind == "summary" {
-                match parse_interview_report(&response.content) {
-                    Ok(report) => serde_json::to_string(&report).unwrap_or(response.content),
+                match parse_interview_report(&response_content) {
+                    Ok(report) => serde_json::to_string(&report).unwrap_or(response_content),
                     Err(error) => {
                         let message = error.to_string();
                         let _ = app_handle.emit(
@@ -197,7 +192,7 @@ async fn stream_prompt(
                     }
                 }
             } else {
-                normalize_question(&response.content)
+                normalize_question(&response_content)
             };
             let _ = app_handle.emit(
                 "mock_interview:done",
@@ -226,58 +221,33 @@ async fn stream_prompt(
 
 fn build_question_prompt(request: &MockInterviewQuestionRequest) -> String {
     let focus = interview_focus(request.round);
-    format!(
-        r#"你是一位严格、专业、有压迫感但不失礼貌的技术面试官。你正在通过多轮追问帮助候选人暴露简历中的薄弱点，并挖掘可用于优化简历的真实事实。
+    let focus_areas = if request.focus_areas.is_empty() {
+        "AI 智能规划".to_string()
+    } else {
+        request.focus_areas.join("、")
+    };
 
-候选人简历：
----
-
-目标岗位与 JD：
-{job_context}
-
-面试类型：{interview_type}
-难度：{difficulty}
-{resume_content}
----
-
-历史对话：
-{history}
-
-当前问题序号：第 {round} 题
-当前面试模块：{module_name}
-模块目标：{module_description}
-当前模块进度：第 {module_question}/{module_target_questions} 个核心问题
-问题类型：{question_kind}
-用户设置的侧重点：{focus_areas}
-辅助考察维度：{focus_name}
-维度说明：{focus_description}
-
-请只输出这一轮面试官要问的一个问题。
-要求：
-1. 问题必须基于简历、目标岗位和历史回答，并围绕当前面试模块展开。
-2. question_kind 为 followup 时必须承接上一条回答追问可验证细节；为 core 时提出该模块尚未覆盖的新问题。
-3. 只问一个简短、口语化的问题，最多 60 个中文字符；不要堆叠多个子问题。
-4. 不要输出解释、编号、总结，也不要重复历史对话中已经问过的问题。
-5. 必须承接候选人上一轮回答；如果存在模糊、矛盾或缺少证据的表述，优先追问可验证细节。
-6. 根据面试类型和难度控制问题深度，不要提出与目标岗位无关的问题。"#,
-        resume_content = request.resume_content,
-        job_context = fallback_context(&request.job_context),
-        interview_type = request.interview_type,
-        difficulty = request.difficulty,
-        history = format_history(&request.history),
-        round = request.round,
-        focus_name = focus.name,
-        focus_description = focus.description,
-        module_name = request.module_name,
-        module_description = request.module_description,
-        question_kind = request.question_kind,
-        focus_areas = if request.focus_areas.is_empty() {
-            "AI 智能规划".to_string()
-        } else {
-            request.focus_areas.join("、")
-        },
-        module_question = request.module_question,
-        module_target_questions = request.module_target_questions
+    crate::agent::prompts::compose(
+        &crate::agent::prompts::with_shared(crate::agent::prompts::INTERVIEW_QUESTION),
+        &[
+            ("RESUME", &request.resume_content),
+            ("JOB_CONTEXT", fallback_context(&request.job_context)),
+            ("INTERVIEW_TYPE", &request.interview_type),
+            ("DIFFICULTY", &request.difficulty),
+            ("HISTORY", &format_history(&request.history)),
+            ("ROUND", &request.round.to_string()),
+            ("MODULE_NAME", &request.module_name),
+            ("MODULE_DESCRIPTION", &request.module_description),
+            ("MODULE_QUESTION", &request.module_question.to_string()),
+            (
+                "MODULE_TARGET",
+                &request.module_target_questions.to_string(),
+            ),
+            ("QUESTION_KIND", &request.question_kind),
+            ("FOCUS_AREAS", &focus_areas),
+            ("FOCUS_NAME", focus.name),
+            ("FOCUS_DESCRIPTION", focus.description),
+        ],
     )
 }
 
@@ -313,64 +283,15 @@ fn interview_focus(round: u32) -> InterviewFocus {
 }
 
 fn build_summary_prompt(request: &MockInterviewSummaryRequest) -> String {
-    format!(
-        r#"你是一位资深简历优化专家。请基于候选人的原始简历和完整模拟面试对话，完成一次最终总结和简历优化建议。
-
-原始简历：
----
-{resume_content}
----
-
-完整对话：
-{history}
-
-目标岗位与 JD：
-{job_context}
-
-面试类型：{interview_type}
-难度：{difficulty}
-
-只输出合法 JSON 对象，不要输出 Markdown 代码块、前言或解释。格式必须为：
-{{
-  "overallScore": 0到100的整数,
-  "overallSummary": "总体评价",
-  "dimensions": [
-    {{
-      "dimension": "技术深度",
-      "score": 0到100的整数,
-      "strengths": ["优势"],
-      "weaknesses": ["薄弱点"],
-      "evidence": ["来自对话的事实依据"]
-    }}
-  ],
-  "risks": ["真实性、岗位匹配或表达风险"],
-  "optimizations": [],
-  "questionReviews": [
-    {{
-      "questionIndex": 1,
-      "question": "面试官问题原文",
-      "answer": "候选人回答原文",
-      "module": "所属面试模块",
-      "score": 0到100的整数,
-      "summary": "本题评价",
-      "strengths": ["做得好的部分"],
-      "improvements": ["可以改进的部分"],
-      "answerOutline": ["基于真实经历的建议回答结构，不编造示范答案"]
-    }}
-  ]
-}}
-
-要求：
-1. dimensions 必须覆盖技术深度、个人贡献、量化结果、问题处理、表达可信度。
-2. optimizations 固定返回空数组，本报告不生成或修改简历。
-3. questionReviews 必须覆盖所有已回答或跳过的核心问题，追问可合并到对应核心问题。
-4. 不得编造经历或数据；每项评分和评价必须能追溯到对话原文。
-5. 未充分考察的能力要在评价中明确说明，不能直接给低分。"#,
-        resume_content = request.resume_content,
-        history = format_history(&request.history),
-        job_context = fallback_context(&request.job_context),
-        interview_type = request.interview_type,
-        difficulty = request.difficulty
+    crate::agent::prompts::compose(
+        &crate::agent::prompts::with_shared(crate::agent::prompts::INTERVIEW_SUMMARY),
+        &[
+            ("RESUME", &request.resume_content),
+            ("HISTORY", &format_history(&request.history)),
+            ("JOB_CONTEXT", fallback_context(&request.job_context)),
+            ("INTERVIEW_TYPE", &request.interview_type),
+            ("DIFFICULTY", &request.difficulty),
+        ],
     )
 }
 

@@ -1,9 +1,17 @@
+use crate::agent::tasks::{
+    GreetTask, JobFilterRulesTask, ReplyDecisionTask, ResumeOptimizeTask, ResumeQuestionsTask,
+};
 use crate::command::base::CommandResult;
 use crate::config::RegexRule;
 use crate::error::AppError;
-use crate::llm::service::LlmChainService;
+use crate::rpa::common::{ChatMessage, RpaJob};
+use crate::rpa::conversation::{ConversationContext, ReplyDecision, ResumeState};
+use crate::rpa::run_flow::PlatformKind;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+
+// 这些类型定义在 agent 层，命令层只做转发：调试入口和实际运行必须是同一条链路，
+// 各自维护一份输入结构迟早会漂移
+pub use crate::agent::tasks::{OptimizeWithAnswerRequest, PredictedQuestion};
 
 #[derive(Debug, Deserialize)]
 pub struct DebugReplayRequest {
@@ -31,22 +39,6 @@ pub struct DebugGreetRequest {
     pub location: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct PredictedQuestion {
-    pub id: i64,
-    pub question: String,
-    pub intent: String,
-    pub target_section: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct OptimizeWithAnswerRequest {
-    pub resume_content: String,
-    pub question: String,
-    pub user_answer: String,
-    pub section_title: String,
-}
-
 #[derive(Debug, Serialize)]
 pub struct ResumeLlmResult {
     pub success: bool,
@@ -67,31 +59,18 @@ pub async fn generate_job_filter_rules(
         Ok(value) => value,
         Err(error) => return CommandResult::err(error),
     };
-    let service = match service(&config) {
-        Ok(value) => value,
-        Err(error) => return CommandResult::err(error),
-    };
 
-    match service
-        .generate(build_job_filter_rules_prompt(requirement))
-        .await
-    {
-        Ok(response) => match parse_generated_job_filter_rules(&response.content) {
-            Ok(rules) => CommandResult::ok(rules),
-            Err(error) => CommandResult::err(error),
-        },
+    match crate::agent::run(&JobFilterRulesTask::new(requirement), &config).await {
+        Ok(outcome) => CommandResult::ok(outcome.output),
         Err(error) => CommandResult::err(error),
     }
 }
 
-/// 这里的调用全部是非流式的，统一走带重试与降级的链式服务，
-/// 与自动求职链路保持一致的可用性。
-fn service(
-    config: &crate::config::AppRuntimeConfig,
-) -> Result<LlmChainService, crate::error::AppError> {
-    LlmChainService::from_runtime(config)
-}
-
+/// 调试入口：预演一次自动回复。
+///
+/// 走的是和实际运行**完全相同**的任务，包括决策、护栏与发送前体检。
+/// 此前这里自己拼了一套参数（还漏掉了 chat_history，导致调试页必然报错），
+/// 于是调试看到的效果和真正跑出来的并不是一回事。
 #[tauri::command]
 pub async fn debug_generate_replay(
     app_handle: tauri::AppHandle,
@@ -102,45 +81,71 @@ pub async fn debug_generate_replay(
         Err(err) => return CommandResult::err(err),
     };
 
-    let template = match &config.replay_config.reply_prompt {
-        Some(t) if !t.is_empty() => t.clone(),
-        _ => return CommandResult::err("回复提示词未配置，请在配置中心设置回复提示词"),
+    let context = ConversationContext {
+        platform: PlatformKind::Boss,
+        conversation_id: "debug".to_string(),
+        job: Some(debug_job_detail(&req)),
+        messages: req
+            .messages
+            .iter()
+            .enumerate()
+            .map(|(index, message)| ChatMessage {
+                mid: index as i64,
+                received: message.received,
+                text: message.text.clone(),
+                time: index as i64,
+                from_name: message.from_name.clone(),
+            })
+            .collect(),
+        // 调试没有真实页面可读，按最保守的状态给：不允许预演里出现投递动作
+        resume_state: ResumeState::Unknown,
     };
 
-    let messages_json = serde_json::to_string(&req.messages).unwrap_or_default();
-    let mut params = json!({
-        "message_content": messages_json,
-        "job_description": req.job_detail,
-    });
-
-    if config.resume_config.inject_llm_context {
-        if let Some(ref resume) = config.resume_config.resume_content {
-            if !resume.is_empty() {
-                if let Value::Object(ref mut map) = params {
-                    map.insert("resume_context".to_string(), json!(resume));
-                }
-            }
-        }
-    }
-
-    if let Some(ref bg) = config.replay_config.background_context {
-        if !bg.is_empty() {
-            if let Value::Object(ref mut map) = params {
-                map.insert("background_context".to_string(), json!(bg));
-            }
-        }
-    }
-
-    let service = match service(&config) {
-        Ok(v) => v,
-        Err(e) => return CommandResult::err(e),
-    };
-    match service.generate_template(&template, &params).await {
-        Ok(vo) => CommandResult::ok(vo.content),
+    match crate::agent::run(&ReplyDecisionTask::new(&config, &context), &config).await {
+        Ok(outcome) => CommandResult::ok(describe_decision(&outcome.output)),
         Err(err) => CommandResult::err(err),
     }
 }
 
+/// 决策结果渲染成调试页能直接看的一段文本。
+///
+/// 不回复和转人工也要说清楚，否则用户只看到空白，会以为是生成失败
+fn describe_decision(decision: &ReplyDecision) -> String {
+    if decision.action.needs_text() {
+        return decision.reply.clone();
+    }
+    format!(
+        "（AI 判断本轮不发送：{}。理由：{}）",
+        match decision.action {
+            crate::rpa::conversation::ReplyAction::Skip => "无需回复",
+            _ => "需要转人工",
+        },
+        decision.reason
+    )
+}
+
+fn debug_job_detail(req: &DebugReplayRequest) -> crate::dao::model::JobDetail {
+    crate::dao::model::JobDetail {
+        id: "debug".to_string(),
+        platform: "boss".to_string(),
+        source_task_id: None,
+        profile_id: None,
+        profile_name: None,
+        profile_snapshot_id: None,
+        title: req.job_title.clone(),
+        company_name: req.company_name.clone(),
+        detail: req.job_detail.clone(),
+        salary: req.salary.clone(),
+        location: Some(req.location.clone()),
+        is_reply: false,
+        is_send_resume: false,
+        created_at: String::new(),
+        resume_sent_at: None,
+        updated_at: String::new(),
+    }
+}
+
+/// 调试入口：预演一次打招呼。与实际运行共用同一个任务
 #[tauri::command]
 pub async fn debug_generate_greet(
     app_handle: tauri::AppHandle,
@@ -151,39 +156,19 @@ pub async fn debug_generate_greet(
         Err(err) => return CommandResult::err(err),
     };
 
-    let template = match &config.greet_config.reply_prompt {
-        Some(t) if !t.is_empty() => t.clone(),
-        _ => return CommandResult::err("打招呼提示词未配置，请在配置中心设置打招呼提示词"),
+    let job = RpaJob {
+        platform: PlatformKind::Boss,
+        platform_job_id: "debug".to_string(),
+        title: req.job_title,
+        company_name: req.company_name,
+        detail: req.job_detail,
+        salary: req.salary,
+        location: Some(req.location),
+        detail_url: String::new(),
     };
 
-    let job = json!({
-        "title": req.job_title,
-        "company_name": req.company_name,
-        "detail": req.job_detail,
-        "salary": req.salary,
-        "location": req.location,
-    });
-
-    let mut params = json!({
-        "job_content": job.to_string(),
-    });
-
-    if config.resume_config.inject_llm_context {
-        if let Some(ref resume) = config.resume_config.resume_content {
-            if !resume.is_empty() {
-                if let Value::Object(ref mut map) = params {
-                    map.insert("resume_context".to_string(), json!(resume));
-                }
-            }
-        }
-    }
-
-    let service = match service(&config) {
-        Ok(v) => v,
-        Err(e) => return CommandResult::err(e),
-    };
-    match service.generate_template(&template, &params).await {
-        Ok(vo) => CommandResult::ok(vo.content),
+    match crate::agent::run(&GreetTask::new(&config, &job), &config).await {
+        Ok(outcome) => CommandResult::ok(outcome.output),
         Err(err) => CommandResult::err(err),
     }
 }
@@ -201,18 +186,9 @@ pub async fn predict_resume_questions(
         Ok(v) => v,
         Err(e) => return CommandResult::err(e),
     };
-    let service = match service(&config) {
-        Ok(v) => v,
-        Err(e) => return CommandResult::err(e),
-    };
-    match service
-        .generate(build_predict_resume_questions_prompt(&resume_content))
-        .await
-    {
-        Ok(vo) => match parse_predicted_questions(&vo.content) {
-            Ok(questions) => CommandResult::ok(questions),
-            Err(err) => CommandResult::err(err),
-        },
+
+    match crate::agent::run(&ResumeQuestionsTask::new(&resume_content), &config).await {
+        Ok(outcome) => CommandResult::ok(outcome.output),
         Err(err) => CommandResult::err(err),
     }
 }
@@ -239,227 +215,12 @@ pub async fn optimize_resume_with_answer(
         Ok(v) => v,
         Err(e) => return CommandResult::err(e),
     };
-    let service = match service(&config) {
-        Ok(v) => v,
-        Err(e) => return CommandResult::err(e),
-    };
-    match service
-        .generate(build_optimize_resume_with_answer_prompt(&request))
-        .await
-    {
-        Ok(vo) => CommandResult::ok(ResumeLlmResult {
+
+    match crate::agent::run(&ResumeOptimizeTask::new(&request), &config).await {
+        Ok(outcome) => CommandResult::ok(ResumeLlmResult {
             success: true,
-            data: vo.content.trim().to_string(),
+            data: outcome.output,
         }),
         Err(err) => CommandResult::err(err),
-    }
-}
-
-fn build_predict_resume_questions_prompt(resume_content: &str) -> String {
-    format!(
-        r#"你是一位挑剔且经验丰富的技术面试官。请仔细阅读以下候选人的 Markdown 简历：
----
-{resume_content}
----
-请找出简历中不详实、缺乏量化指标（如QPS、性能提升百分比、业务成效）、或者技术方案可能存在漏洞的 5 个薄弱点。
-针对这 5 个薄弱点，提出 5 个在真实面试中面试官最可能追问的深度专业问题，并说明你的提问意图（想考察候选人什么底层能力）。
-
-输出约束（极其重要）：
-只输出一个合法的 JSON 数组，不要包含任何 Markdown 代码块标记（如 ```json），不要有任何前言、后记或解释。
-
-JSON 数组格式如下：
-[
-  {{
-    "id": 1,
-    "question": "具体追问的问题，如：你提到在网关层做限流，能详细说说令牌桶算法和漏桶算法的区别，以及你们为什么选择前者吗？",
-    "intent": "考察对高并发限流方案的底层掌握程度及技术选型思考",
-    "target_section": "项目经历"
-  }}
-]"#
-    )
-}
-
-fn build_job_filter_rules_prompt(requirement: &str) -> String {
-    format!(
-        r#"你是岗位筛选规则生成器。请把用户的自然语言需求转换为 Rust regex crate 兼容的正则规则。
-
-用户需求：
-<requirement>
-{requirement}
-</requirement>
-
-规则字段说明：
-- name：简短中文名称。
-- pattern：Rust regex 兼容的正则表达式，禁止使用前瞻、后顾和反向引用。
-- target：只能是 Title、Company、Description、All。Title 匹配岗位标题，Company 匹配公司名，Description 和 All 匹配岗位描述。
-- mode：只能是 ACCEPT 或 REJECT。ACCEPT 表示只接受命中的岗位，REJECT 表示拒绝命中的岗位。
-
-输出要求：
-1. 只输出合法 JSON 数组，不得输出 Markdown、解释或其他文字。
-2. 每条规则只表达一个清晰意图，最多输出 12 条。
-3. 使用非捕获分组和 | 表达同类关键词，例如“Java|Golang”。
-4. 不要臆造用户未提出的筛选条件。
-
-输出格式：
-[
-  {{"name":"排除外包","pattern":"外包|驻场","target":"Description","mode":"REJECT"}}
-]"#
-    )
-}
-
-fn parse_generated_job_filter_rules(raw: &str) -> Result<Vec<RegexRule>, AppError> {
-    let cleaned = raw
-        .trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim();
-    let mut rules: Vec<RegexRule> = serde_json::from_str(cleaned).map_err(|error| {
-        AppError::validation("大模型返回的规则格式无效").with_detail(error.to_string())
-    })?;
-
-    if rules.is_empty() {
-        return Err(AppError::validation("大模型未生成任何规则"));
-    }
-    if rules.len() > 12 {
-        return Err(AppError::validation("大模型生成的规则过多，请缩小需求范围"));
-    }
-
-    for (index, rule) in rules.iter_mut().enumerate() {
-        rule.name = rule.name.trim().to_string();
-        rule.pattern = rule.pattern.trim().to_string();
-        if rule.name.is_empty() || rule.pattern.is_empty() {
-            return Err(AppError::validation(format!(
-                "第 {} 条规则缺少名称或正则表达式",
-                index + 1
-            )));
-        }
-        regex::Regex::new(&rule.pattern).map_err(|error| {
-            AppError::validation(format!("第 {} 条规则的正则表达式无效", index + 1))
-                .with_detail(error.to_string())
-        })?;
-    }
-
-    Ok(rules)
-}
-
-fn build_optimize_resume_with_answer_prompt(request: &OptimizeWithAnswerRequest) -> String {
-    format!(
-        r#"你是一位资深简历精修专家。候选人针对简历中的某项缺陷回答了面试官的追问。请将他回答中包含的有效信息（技术细节、行动步骤、可量化的数据结果）重构融进简历对应章节中。
-
-原简历内容：
-{resume_content}
-
-面试提问：
-{question}
-
-候选人的回答：
-{user_answer}
-
-关联优化章节：
-{section_title}
-
-优化及重构要求：
-1. 提取回答中的闪光点，将其提炼为符合“STAR原则”（情境-任务-行动-结果）的描述。
-2. 保持简历专业、简洁的学术风格，用词要精确（如“负责、主导、重构、优化”）。
-3. 只输出优化重构后的【整个章节】（必须包含原标题，如 ## {section_title}）的 Markdown 文本，原简历其他章节无需输出。
-4. 禁止输出任何解释、引导语、注释或包裹 Markdown 块标记。
-
-输出格式示例：
-## {section_title}
-- 优化后的内容1...
-- 优化后的内容2..."#,
-        resume_content = request.resume_content,
-        question = request.question,
-        user_answer = request.user_answer,
-        section_title = request.section_title
-    )
-}
-
-fn parse_predicted_questions(raw: &str) -> Result<Vec<PredictedQuestion>, String> {
-    let cleaned = raw
-        .trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim();
-    let questions: Vec<PredictedQuestion> =
-        serde_json::from_str(cleaned).map_err(|error| format!("解析预测问题失败：{error}"))?;
-
-    if questions.is_empty() {
-        return Err("预测问题为空".to_string());
-    }
-
-    Ok(questions)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        build_job_filter_rules_prompt, build_optimize_resume_with_answer_prompt,
-        build_predict_resume_questions_prompt, parse_generated_job_filter_rules,
-        OptimizeWithAnswerRequest,
-    };
-
-    #[test]
-    fn predict_resume_questions_prompt_requires_json_array() {
-        let prompt = build_predict_resume_questions_prompt("## 项目经历\n- 做过网关限流");
-
-        assert!(prompt.contains("挑剔且经验丰富的技术面试官"));
-        assert!(prompt.contains("只输出一个合法的 JSON 数组"));
-        assert!(prompt.contains("\"target_section\""));
-        assert!(prompt.contains("## 项目经历"));
-    }
-
-    #[test]
-    fn optimize_resume_with_answer_prompt_includes_answer_and_section() {
-        let request = OptimizeWithAnswerRequest {
-            resume_content: "## 项目经历\n- 负责网关".to_string(),
-            question: "你们为什么选择令牌桶？".to_string(),
-            user_answer: "峰值 QPS 3000，令牌桶允许突发流量。".to_string(),
-            section_title: "项目经历".to_string(),
-        };
-
-        let prompt = build_optimize_resume_with_answer_prompt(&request);
-
-        assert!(prompt.contains("资深简历精修专家"));
-        assert!(prompt.contains("你们为什么选择令牌桶？"));
-        assert!(prompt.contains("峰值 QPS 3000"));
-        assert!(prompt.contains("## 项目经历"));
-        assert!(prompt.contains("只输出优化重构后的【整个章节】"));
-    }
-
-    #[test]
-    fn job_filter_prompt_requires_structured_rust_regex_rules() {
-        let prompt = build_job_filter_rules_prompt("只看 Java，排除外包和驻场");
-
-        assert!(prompt.contains("Rust regex crate"));
-        assert!(prompt.contains("只看 Java，排除外包和驻场"));
-        assert!(prompt.contains("\"target\""));
-        assert!(prompt.contains("\"mode\""));
-    }
-
-    #[test]
-    fn generated_job_filter_rules_are_parsed_and_validated() {
-        let rules = parse_generated_job_filter_rules(
-            r#"```json
-[{"name":"排除外包","pattern":"外包|驻场","target":"Description","mode":"REJECT"}]
-```"#,
-        )
-        .unwrap();
-
-        assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].name, "排除外包");
-        assert_eq!(rules[0].pattern, "外包|驻场");
-    }
-
-    #[test]
-    fn generated_job_filter_rules_reject_invalid_regex() {
-        let error = parse_generated_job_filter_rules(
-            r#"[{"name":"错误规则","pattern":"(?=Java)","target":"Title","mode":"ACCEPT"}]"#,
-        )
-        .unwrap_err();
-
-        assert!(error.message.contains("正则表达式无效"));
     }
 }

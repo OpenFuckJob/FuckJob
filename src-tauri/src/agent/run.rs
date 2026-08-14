@@ -122,10 +122,45 @@ impl<'a> AgentRunner<'a> {
     }
 
     pub async fn run<T: AgentTask>(&self, task: &T) -> Result<AgentOutcome<T::Output>, AppError> {
+        self.execute(task, None::<fn(String) -> Result<(), AppError>>)
+            .await
+    }
+
+    /// 边生成边把增量推给调用方（模拟面试这类需要实时展示的用途）。
+    ///
+    /// 流式下**强制单轮**：增量已经落到界面上了，返工重发会让用户看到重复内容。
+    /// 这条约束写在循环里而不是「这个用途特殊、绕开循环自己实现」——
+    /// 后者正是此前流式调用游离在体系之外、拿不到统一取消与日志的原因。
+    pub async fn run_streaming<T, F>(
+        &self,
+        task: &T,
+        on_delta: F,
+    ) -> Result<AgentOutcome<T::Output>, AppError>
+    where
+        T: AgentTask,
+        F: FnMut(String) -> Result<(), AppError>,
+    {
+        self.execute(task, Some(on_delta)).await
+    }
+
+    async fn execute<T, F>(
+        &self,
+        task: &T,
+        mut on_delta: Option<F>,
+    ) -> Result<AgentOutcome<T::Output>, AppError>
+    where
+        T: AgentTask,
+        F: FnMut(String) -> Result<(), AppError>,
+    {
         let service = LlmChainService::from_runtime(self.config)?;
         let base_prompt = task.build_prompt()?;
 
-        let max_rounds = task.max_rounds().max(1);
+        let streaming = on_delta.is_some();
+        let max_rounds = if streaming {
+            1
+        } else {
+            task.max_rounds().max(1)
+        };
         let mut rejections: Vec<String> = Vec::new();
 
         for round in 1..=max_rounds {
@@ -138,9 +173,12 @@ impl<'a> AgentRunner<'a> {
                 Some(reason) => format!("{base_prompt}{RETRY_HEADER}{reason}{RETRY_FOOTER}"),
             };
 
-            // 走流式采集而非一次性返回：增量全在内部累积、不外推，因此可以安全重试，
-            // 同时避开网关掐断静默长连接、整体超时把已生成内容全部作废这两个坑
-            let response = service.stream_collect(prompt).await?;
+            // 两条路都是流式：流式避开了网关掐断静默长连接、整体超时把已生成内容
+            // 全部作废这两个坑。区别只在增量推不推出去——不推才敢重试和降级
+            let response = match on_delta.as_mut() {
+                Some(callback) => service.stream_with(prompt, callback).await?,
+                None => service.stream_collect(prompt).await?,
+            };
 
             if self.cancelled() {
                 return Err(AppError::cancelled("任务已停止，大模型调用已取消"));

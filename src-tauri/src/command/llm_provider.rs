@@ -146,6 +146,10 @@ fn find_chain_link<'a>(
 }
 
 /// 用已保存的配置构建降级链中某个服务的实例
+/// 连接测试是全项目**唯一**不走 [`crate::agent`] 的模型调用，这是刻意的：
+/// 它要验证的是「这一个 provider 通不通」，而 Agent 循环带降级链——
+/// 主用服务连不上时会顶上备用服务并返回成功，等于把测试本身废掉。
+/// 探活也不是「任务」，没有提示词、没有结构化输出、不需要返工。
 fn entry_service(app_handle: tauri::AppHandle, entry_id: &str) -> Result<LlmService, AppError> {
     let (link, credential) = resolve_chain_entry(app_handle, entry_id)?;
     LlmService::from_chain_link(&link, &credential)

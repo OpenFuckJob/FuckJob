@@ -260,8 +260,22 @@ pub fn sanitize(raw: &str) -> String {
 
 /// 从净化后的文本里抽出第一段完整 JSON 对象，抽不到返回 None。
 pub fn extract_json(text: &str) -> Option<&str> {
+    extract_balanced(text, b'{', b'}')
+}
+
+/// 从净化后的文本里抽出第一段完整 JSON 数组，抽不到返回 None。
+///
+/// 规则生成、面试问题预测这类任务要的是数组而不是对象。它们此前各自手撕
+/// ```json 围栏再整段 parse，模型只要在数组前后多说一句就整个失败。
+pub fn extract_json_array(text: &str) -> Option<&str> {
+    extract_balanced(text, b'[', b']')
+}
+
+/// 括号配对扫描。不能简单用 `find` + `rfind`：JSON 后面跟的解释文字里
+/// 只要出现一个闭括号，边界就错了。
+fn extract_balanced(text: &str, open: u8, close: u8) -> Option<&str> {
     let bytes = text.as_bytes();
-    let start = bytes.iter().position(|byte| *byte == b'{')?;
+    let start = bytes.iter().position(|byte| *byte == open)?;
 
     let mut depth = 0usize;
     let mut in_string = false;
@@ -280,16 +294,15 @@ pub fn extract_json(text: &str) -> Option<&str> {
             }
             continue;
         }
-        match byte {
-            b'"' => in_string = true,
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(&text[start..=index]);
-                }
+        if *byte == b'"' {
+            in_string = true;
+        } else if *byte == open {
+            depth += 1;
+        } else if *byte == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(&text[start..=index]);
             }
-            _ => {}
         }
     }
     None
