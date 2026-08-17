@@ -36,3 +36,9 @@ settings.local.json
 ./docs/updater-release.md
 
 designs/
+
+
+*.md
+.super-dev
+.gitignore
+.playwright-mcp
