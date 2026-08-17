@@ -312,6 +312,57 @@ pub struct TemplateHit<'a> {
     pub resources: Vec<ReplyResource>,
 }
 
+impl<'a> TemplateHit<'a> {
+    /// 规则名允许留空，日志里得有个能读的称呼。
+    ///
+    /// 返回值绑定模板的生命周期而不是 `&self`，调用方才能先取名字再把
+    /// `resources` 交出去发送，不必为了打一行日志多克隆一次字符串
+    pub fn display_name(&self) -> &'a str {
+        match self.rule_name.trim() {
+            "" => "未命名规则",
+            name => name,
+        }
+    }
+}
+
+/// 闸门通过之后走哪条回复路径。
+///
+/// 两条路径由两个独立开关控制，任一开着都算启用了自动回复。
+/// 单独抽出来是为了能在不碰浏览器、不跑模型的前提下验证分流行为——
+/// 它一旦失效，要么用户配的固定话术静默变成模型自由发挥，
+/// 要么开了 LLM 的会话被当成没启用自动回复直接跳过。
+#[derive(Debug)]
+pub enum ReplyRoute<'a> {
+    /// 命中确定性模板，直接发它配置的资源
+    Template(TemplateHit<'a>),
+    /// 没有模板管得着，交给模型决策
+    Decide,
+    /// 两条路径都用不上，本轮不处理
+    Skip(String),
+}
+
+/// 按配置和当前会话内容选择回复路径。
+///
+/// 模板命中优先于模型：用户显式写了正则和话术，就说明这类消息他要的是
+/// 稳定可预期的答复，不该每次再花额度让模型重新发挥一遍。模板开关关掉时
+/// 存量模板一律不参与匹配，否则「关掉了却照发」比不关更难排查。
+pub fn choose_route<'a>(
+    config: &'a ReplayConfig,
+    context: &ConversationContext,
+) -> ReplyRoute<'a> {
+    if config.enable_template_reply {
+        if let Some(hit) = match_template(&config.templates, context) {
+            return ReplyRoute::Template(hit);
+        }
+    }
+
+    if config.enable_llm {
+        return ReplyRoute::Decide;
+    }
+
+    ReplyRoute::Skip("没有回复规则命中，且未启用 LLM 回复".to_string())
+}
+
 /// 取最近 N 条消息的正文拼成一段，供正则匹配。
 ///
 /// 不区分收发方向是沿用改造前的语义：用户已有的正则是照着这个行为写的，
@@ -760,6 +811,70 @@ mod tests {
         let hit = match_template(&templates, &context(vec![message(true, "在吗")])).unwrap();
 
         assert_eq!(hit.resources[0].content, "在的");
+    }
+
+    fn replay_config(enable_llm: bool, enable_template_reply: bool) -> ReplayConfig {
+        let mut config = crate::config::default_app_config().replay_config;
+        config.enable_llm = enable_llm;
+        config.enable_template_reply = enable_template_reply;
+        config.templates = vec![template("面试", vec![text_resource("好的，时间我这边可以")])];
+        config
+    }
+
+    /// 只开 LLM 的方案照样要回复——此前这条被当成「未启用自动回复」整条跳过。
+    /// 同时模板开关关着时存量模板一律不参与匹配，「关掉了却照发」比不关更难排查
+    #[test]
+    fn llm_alone_reaches_the_model_and_leaves_templates_out() {
+        let config = replay_config(true, false);
+
+        match choose_route(&config, &context(vec![message(true, "下周二方便来面试吗")])) {
+            ReplyRoute::Decide => {}
+            other => panic!("只开 LLM 时应交给模型，实际：{other:?}"),
+        }
+    }
+
+    #[test]
+    fn templates_alone_reply_without_the_model() {
+        let config = replay_config(false, true);
+
+        match choose_route(&config, &context(vec![message(true, "下周二方便来面试吗")])) {
+            ReplyRoute::Template(hit) => {
+                assert_eq!(hit.resources[0].content, "好的，时间我这边可以")
+            }
+            other => panic!("只开模板时应走模板，实际：{other:?}"),
+        }
+    }
+
+    /// 只开模板、消息又没命中任何规则时不能落到模型：那条链路用户根本没启用
+    #[test]
+    fn an_unmatched_message_is_skipped_when_only_templates_are_on() {
+        let config = replay_config(false, true);
+
+        assert!(matches!(
+            choose_route(&config, &context(vec![message(true, "期望薪资多少")])),
+            ReplyRoute::Skip(_)
+        ));
+    }
+
+    /// 两条都开着时模板命中优先：用户写死的话术比模型现编的更该被信任
+    #[test]
+    fn a_hit_template_wins_over_the_model_when_both_are_on() {
+        let config = replay_config(true, true);
+
+        assert!(matches!(
+            choose_route(&config, &context(vec![message(true, "下周二方便来面试吗")])),
+            ReplyRoute::Template(_)
+        ));
+    }
+
+    #[test]
+    fn an_unnamed_rule_still_reads_in_the_log() {
+        let mut templates = vec![template("在吗", vec![text_resource("在的")])];
+        templates[0].regex_rule.name = "   ".to_string();
+
+        let hit = match_template(&templates, &context(vec![message(true, "在吗")]));
+
+        assert_eq!(hit.unwrap().display_name(), "未命名规则");
     }
 
     #[test]

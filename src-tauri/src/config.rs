@@ -57,7 +57,7 @@ pub fn default_app_config() -> AppRuntimeConfig {
     let platform_filter_config = PlatformFilterConfig::default();
     let greet_config = default_greet_config();
     let replay_config = ReplayConfig {
-        enable_auto_replay: false,
+        enable_template_reply: false,
         templates: Vec::new(),
         enable_llm: false,
         reply_prompt: None,
@@ -1082,17 +1082,26 @@ impl GreetConfig {
 }
 
 // ================================
-// 主动回复配置 优先级：LLM > Regex
+// 主动回复配置
+//
+// 两个开关各代表一条独立的回复路径，不是「总开关 + 子选项」的关系：
+// `enable_llm` 是模型决策链路，`enable_template_reply` 是正则模板链路。
+// 同时开着时模板命中即短路——用户显式写死的话术比模型现编的更该被信任。
+// 界面上这两个 bool 合并呈现为一个四选一的回复策略，用户不必自己推演组合。
 // ================================
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ReplayConfig {
-    /// 是否启用自动回复
-    pub enable_auto_replay: bool,
+    /// 是否启用正则模板回复。只管模板这一条路径，不是自动回复的总开关。
+    ///
+    /// 旧名 `enable_auto_replay` 读着像总开关，代码里也真被当成总开关用过一段时间，
+    /// 于是「只开 LLM」的方案会被整条跳过。别名保留是为了读得进旧配置文件
+    #[serde(alias = "enable_auto_replay")]
+    pub enable_template_reply: bool,
 
     /// 正则匹配回复模板
     pub templates: Vec<ReplyTemplate>,
 
-    /// 是否启用自动回复
+    /// 是否启用大模型生成回复内容
     pub enable_llm: bool,
 
     /// 回复提示词
@@ -1120,6 +1129,32 @@ pub struct ReplayConfig {
     /// 首次启用自动回复时建议先开着跑一轮，确认生成质量再关掉
     #[serde(default)]
     pub dry_run: bool,
+}
+
+impl ReplayConfig {
+    /// 本方案是否要处理未读会话。
+    ///
+    /// 任意一条回复路径开着就有事可做。此前这里只看模板开关，
+    /// 于是「只开 LLM 回复」的方案会在读完会话之后被整条链路跳过
+    pub fn auto_reply_enabled(&self) -> bool {
+        self.enable_llm || self.enable_template_reply
+    }
+
+    pub fn prompt_ready(&self) -> bool {
+        self.reply_prompt
+            .as_deref()
+            .is_some_and(|prompt| !prompt.trim().is_empty())
+    }
+
+    /// 模板链路是否有内容可发。全是空话术的模板等于没配
+    pub fn has_sendable_template(&self) -> bool {
+        self.templates.iter().any(|template| {
+            template
+                .content
+                .iter()
+                .any(|resource| !resource.content.trim().is_empty())
+        })
+    }
 }
 
 fn default_enable_auto_send_resume() -> bool {
@@ -1606,6 +1641,25 @@ greet_config:
         .unwrap();
 
         assert!(!config.greet_config.enable_llm);
+    }
+
+    /// 这个字段改过名。旧配置里它叫 enable_auto_replay，升级后必须照样读得进来，
+    /// 否则用户什么都没动，模板回复就静默关掉了
+    #[test]
+    fn the_legacy_auto_replay_key_still_loads_into_the_renamed_field() {
+        let config = parse_config_content(
+            r#"
+schema_version: 1
+replay_config:
+  enable_auto_replay: true
+  templates: []
+  enable_llm: false
+  reply_prompt: null
+"#,
+        )
+        .unwrap();
+
+        assert!(config.replay_config.enable_template_reply);
     }
 
     #[test]

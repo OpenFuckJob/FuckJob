@@ -54,7 +54,7 @@ greet_config: &default_greet
     - resource_type: LLM
       content: ""
 replay_config: &default_replay
-  enable_auto_replay: true
+  enable_template_reply: true
   templates:
     - regex_rule:
         name: 新回复规则

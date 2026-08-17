@@ -7,14 +7,14 @@ use serde::Deserialize;
 use crate::{
     agent::{tasks::ReplyDecisionTask, AgentRunner},
     browser,
-    config::{AppRuntimeConfig, ReplyResource, ReplyTemplate},
+    config::AppRuntimeConfig,
     dao::{chat_message_dao, job_detail_dao, model::JobDetail, profile_snapshot_dao},
     logger,
     rpa::{
         common::ChatMessage,
         conversation::{
-            self, gate, match_template, reconcile, ConversationActions, ConversationContext,
-            GateVerdict, ReplyAction, ReplyLimits, ResumeState,
+            self, choose_route, gate, reconcile, ConversationActions, ConversationContext,
+            GateVerdict, ReplyAction, ReplyLimits, ReplyRoute, ResumeState,
         },
         liepin::{
             handler::{
@@ -211,8 +211,8 @@ async fn handle_conversation(
         }
     }
 
-    if !conversation_config.replay_config.enable_auto_replay {
-        logger::info("猎聘会话所属求职方案未启用自动回复，跳过")?;
+    if !conversation_config.replay_config.auto_reply_enabled() {
+        logger::info("猎聘会话所属求职方案的 LLM 回复与回复模板都未启用，跳过")?;
         return Ok(());
     }
 
@@ -251,34 +251,38 @@ async fn handle_conversation(
         }
     }
 
-    // 确定性模板优先于模型：用户显式写了正则和话术，就说明这类消息他要的是
-    // 稳定可预期的答复，不该每次再花额度让模型重新发挥一遍
-    if let ReplyRoute::Template {
-        rule_name: rule,
-        resources,
-    } = choose_route(&conversation_config.replay_config.templates, &context)
-    {
-        let count = resources.len();
+    match choose_route(&conversation_config.replay_config, &context) {
+        // 确定性模板优先于模型：用户显式写了正则和话术，就说明这类消息他要的是
+        // 稳定可预期的答复，不该每次再花额度让模型重新发挥一遍
+        ReplyRoute::Template(hit) => {
+            let rule = hit.display_name();
+            let count = hit.resources.len();
 
-        if limits.dry_run {
+            if limits.dry_run {
+                logger::info(format!(
+                    "猎聘演练模式：命中回复规则「{}」，本应发送 {} 条资源",
+                    rule, count
+                ))?;
+                return Ok(());
+            }
+
+            // 固定话术不过发送前体检：那是给模型生成内容做的体检，
+            // 拿它去截断或否决用户的原话，只会让"固定回复"变得不固定
+            if let Err(error) = send_resources(page, hit.resources) {
+                logger::warning(format!("猎聘模板回复发送失败，跳过该会话：{}", error))?;
+                return Ok(());
+            }
             logger::info(format!(
-                "猎聘演练模式：命中回复规则「{}」，本应发送 {} 条资源",
+                "猎聘命中回复规则「{}」，已发送 {} 条资源",
                 rule, count
             ))?;
             return Ok(());
         }
-
-        // 固定话术不过发送前体检：那是给模型生成内容做的体检，
-        // 拿它去截断或否决用户的原话，只会让"固定回复"变得不固定
-        if let Err(error) = send_resources(page, resources) {
-            logger::warning(format!("猎聘模板回复发送失败，跳过该会话：{}", error))?;
+        ReplyRoute::Skip(reason) => {
+            logger::info(format!("猎聘会话「{}」跳过：{}", name, reason))?;
             return Ok(());
         }
-        logger::info(format!(
-            "猎聘命中回复规则「{}」，已发送 {} 条资源",
-            rule, count
-        ))?;
-        return Ok(());
+        ReplyRoute::Decide => {}
     }
 
     let decision = match AgentRunner::new(&conversation_config)
@@ -343,39 +347,6 @@ async fn handle_conversation(
     }
 
     Ok(())
-}
-
-/// 闸门通过之后的分流结果。
-///
-/// 单独抽出来是为了能在不碰浏览器、不跑模型的前提下验证「命中模板就短路」
-/// 这个行为——它一旦失效，用户配的固定话术会静默变成模型自由发挥。
-#[derive(Debug, Clone, PartialEq)]
-enum ReplyRoute {
-    /// 命中确定性模板，直接发它配置的资源
-    Template {
-        rule_name: String,
-        resources: Vec<ReplyResource>,
-    },
-    /// 没有模板管得着，交给模型决策
-    Decide,
-}
-
-fn choose_route(templates: &[ReplyTemplate], context: &ConversationContext) -> ReplyRoute {
-    match match_template(templates, context) {
-        Some(hit) => ReplyRoute::Template {
-            rule_name: display_rule_name(hit.rule_name),
-            resources: hit.resources,
-        },
-        None => ReplyRoute::Decide,
-    }
-}
-
-/// 规则名可以留空，日志里得有个能读的称呼
-fn display_rule_name(name: &str) -> String {
-    match name.trim() {
-        "" => "未命名规则".to_string(),
-        name => name.to_string(),
-    }
 }
 
 fn action_label(action: ReplyAction) -> &'static str {
@@ -922,7 +893,7 @@ fn truncate_str(s: &str, max_len: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ReplayResourceType;
+    use crate::config::{ReplayResourceType, ReplyResource, ReplyTemplate};
 
     fn job(id: &str, title: &str) -> JobDetail {
         JobDetail {
@@ -1188,46 +1159,55 @@ mod tests {
         }
     }
 
+    /// 两条路径都开着的方案，模板和模型的分流由平台无关层统一决定
+    fn replay_config(templates: Vec<ReplyTemplate>) -> crate::config::ReplayConfig {
+        let mut config = crate::config::default_app_config().replay_config;
+        config.enable_template_reply = true;
+        config.enable_llm = true;
+        config.templates = templates;
+        config
+    }
+
     /// 用户写死的话术必须原样发出，不能被模型链路顶掉，
     /// 否则这次改造等于把存量正则配置全部架空
     #[test]
     fn a_matching_template_short_circuits_the_decision_chain() {
-        let templates = vec![template(
+        let config = replay_config(vec![template(
             "面试邀约",
             "面试",
             vec![text_resource("好的，时间我这边可以")],
-        )];
+        )]);
 
         let route = choose_route(
-            &templates,
+            &config,
             &context(vec![chat(1, 100, true, "下周二方便来面试吗")]),
         );
 
-        assert_eq!(
-            route,
-            ReplyRoute::Template {
-                rule_name: "面试邀约".to_string(),
-                resources: vec![text_resource("好的，时间我这边可以")],
+        match route {
+            ReplyRoute::Template(hit) => {
+                assert_eq!(hit.display_name(), "面试邀约");
+                assert_eq!(hit.resources, vec![text_resource("好的，时间我这边可以")]);
             }
-        );
+            other => panic!("应命中模板，实际：{other:?}"),
+        }
     }
 
     /// 两条规则配了相同话术时，日志必须仍能认出是哪条命中——
     /// 这正是规则名要跟着资源一起回传、而不是靠内容反查的原因
     #[test]
     fn the_matched_rule_is_identified_even_when_two_rules_share_the_same_reply() {
-        let templates = vec![
+        let config = replay_config(vec![
             template("薪资询问", "薪资", vec![text_resource("方便电话聊吗")]),
             template("面试邀约", "面试", vec![text_resource("方便电话聊吗")]),
-        ];
+        ]);
 
         let route = choose_route(
-            &templates,
+            &config,
             &context(vec![chat(1, 100, true, "下周二方便来面试吗")]),
         );
 
         match route {
-            ReplyRoute::Template { rule_name, .. } => assert_eq!(rule_name, "面试邀约"),
+            ReplyRoute::Template(hit) => assert_eq!(hit.display_name(), "面试邀约"),
             other => panic!("应命中面试邀约，实际：{other:?}"),
         }
     }
@@ -1236,32 +1216,33 @@ mod tests {
     /// 所有会话都会被拦死在模板这一步，模型永远轮不上
     #[test]
     fn the_default_llm_only_template_still_reaches_the_decision_chain() {
-        let templates = vec![template(
+        let config = replay_config(vec![template(
             "默认",
             ".*",
             vec![ReplyResource {
                 resource_type: ReplayResourceType::LLM,
                 content: String::new(),
             }],
-        )];
+        )]);
 
-        assert_eq!(
-            choose_route(&templates, &context(vec![chat(1, 100, true, "在吗")])),
+        assert!(matches!(
+            choose_route(&config, &context(vec![chat(1, 100, true, "在吗")])),
             ReplyRoute::Decide
-        );
+        ));
     }
 
     #[test]
     fn unmatched_messages_go_to_the_decision_chain() {
-        let templates = vec![template("面试邀约", "面试", vec![text_resource("好的")])];
+        let config = replay_config(vec![template(
+            "面试邀约",
+            "面试",
+            vec![text_resource("好的")],
+        )]);
 
-        assert_eq!(
-            choose_route(
-                &templates,
-                &context(vec![chat(1, 100, true, "期望薪资多少")])
-            ),
+        assert!(matches!(
+            choose_route(&config, &context(vec![chat(1, 100, true, "期望薪资多少")])),
             ReplyRoute::Decide
-        );
+        ));
     }
 
     #[test]

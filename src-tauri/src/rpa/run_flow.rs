@@ -224,22 +224,22 @@ pub fn inspect_readiness(
         .iter()
         .map(|profile| &profile.replay_config)
         .collect::<Vec<_>>();
+    // LLM 回复和正则模板是两条独立路径，任一开启就算启用了自动回复。
+    // 只看模板开关会把「只开 LLM」的方案判成未启用，进而漏掉它对模型服务的依赖
     let auto_reply_configs = replay_configs
         .iter()
         .copied()
-        .filter(|replay| replay.enable_auto_replay)
+        .filter(|replay| replay.auto_reply_enabled())
         .collect::<Vec<_>>();
     let any_auto_reply = !auto_reply_configs.is_empty();
+    let reply_prompt_missing = auto_reply_configs
+        .iter()
+        .any(|replay| replay.enable_llm && !replay.prompt_ready());
     let reply_ready = !needs_reply_config
-        || auto_reply_configs.iter().all(|replay| {
-            replay.enable_llm
-                || replay.templates.iter().any(|template| {
-                    template
-                        .content
-                        .iter()
-                        .any(|resource| !resource.content.trim().is_empty())
-                })
-        });
+        || (!reply_prompt_missing
+            && auto_reply_configs
+                .iter()
+                .all(|replay| replay.enable_llm || replay.has_sendable_template()));
     items.push(ReadinessItem {
         key: "reply".to_string(),
         label: "自动回复".to_string(),
@@ -254,8 +254,10 @@ pub fn inspect_readiness(
             "所有求职方案均未启用自动回复".to_string()
         } else if reply_ready {
             "自动回复资源已配置".to_string()
+        } else if reply_prompt_missing {
+            "已启用 AI 回复，请填写自动回复提示词".to_string()
         } else {
-            "自动回复已启用，但没有可用回复资源".to_string()
+            "选择了仅规则回复，但没有配置可发送的话术".to_string()
         },
         config_group: Some("reply".to_string()),
     });
@@ -799,12 +801,13 @@ mod tests {
     #[test]
     fn reply_readiness_checks_all_profile_routes_instead_of_only_default() {
         let mut config = default_app_config();
-        config.job_profiles[0].replay_config.enable_auto_replay = false;
+        config.job_profiles[0].replay_config.enable_template_reply = false;
         let mut routed = config.job_profiles[0].clone();
         routed.id = "routed".to_string();
         routed.name = "需要 AI 的历史方案".to_string();
-        routed.replay_config.enable_auto_replay = true;
+        routed.replay_config.enable_template_reply = true;
         routed.replay_config.enable_llm = true;
+        routed.replay_config.reply_prompt = Some("请根据对话生成回复".to_string());
         config.job_profiles.push(routed);
 
         let report = inspect_readiness(PlatformKind::Boss, FlowMode::ReplyUnread, &config);
@@ -813,10 +816,46 @@ mod tests {
         assert_eq!(find_item(&report, "llm").level, ReadinessLevel::Blocked);
     }
 
+    /// LLM 回复和正则模板是两个独立开关。只开 LLM 的方案照样要回复，
+    /// 也照样依赖模型服务——此前它被判成「未启用自动回复」，
+    /// 于是模型服务没配也放行，真跑起来才发现整条链路被跳过
+    #[test]
+    fn llm_reply_alone_counts_as_enabled_and_requires_the_model_service() {
+        let mut config = default_app_config();
+        let replay = &mut config.job_profiles[0].replay_config;
+        replay.enable_template_reply = false;
+        replay.enable_llm = true;
+        replay.reply_prompt = Some("请根据对话生成回复".to_string());
+
+        let report = inspect_readiness(PlatformKind::Boss, FlowMode::ReplyUnread, &config);
+
+        assert_eq!(find_item(&report, "reply").level, ReadinessLevel::Ready);
+        assert_eq!(find_item(&report, "reply").message, "自动回复资源已配置");
+        assert_eq!(find_item(&report, "llm").level, ReadinessLevel::Blocked);
+    }
+
+    /// 开了 LLM 回复却没写提示词，运行期会在生成那一步直接报错，
+    /// 不如在开跑之前就说清楚缺什么
+    #[test]
+    fn reply_is_blocked_when_llm_is_on_without_a_prompt() {
+        let mut config = default_app_config();
+        let replay = &mut config.job_profiles[0].replay_config;
+        replay.enable_llm = true;
+        replay.reply_prompt = Some("   ".to_string());
+
+        let report = inspect_readiness(PlatformKind::Boss, FlowMode::ReplyUnread, &config);
+
+        assert_eq!(find_item(&report, "reply").level, ReadinessLevel::Blocked);
+        assert_eq!(
+            find_item(&report, "reply").message,
+            "已启用 AI 回复，请填写自动回复提示词"
+        );
+    }
+
     #[test]
     fn reply_readiness_allows_a_sync_run_when_every_profile_disables_auto_reply() {
         let mut config = default_app_config();
-        config.job_profiles[0].replay_config.enable_auto_replay = false;
+        config.job_profiles[0].replay_config.enable_template_reply = false;
 
         let report = inspect_readiness(PlatformKind::Boss, FlowMode::ReplyUnread, &config);
 

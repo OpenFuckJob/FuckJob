@@ -16,6 +16,7 @@ import {
   Cascader,
   Collapse,
   Alert,
+  Radio,
   Dropdown,
   Modal,
   Tabs,
@@ -87,6 +88,66 @@ import { AboutPanel } from "./AboutPanel";
 import { AiFeatureGate } from "@/components/AiFeatureGate";
 
 const { Title, Text } = Typography;
+
+/**
+ * 自动回复的策略。
+ *
+ * 后端是 enable_llm / enable_template_reply 两个独立 bool，界面上收敛成一次单选：
+ * 两个平级开关会让人以为「都打开」是某种冲突配置，实际它是最常用的那一档。
+ */
+type ReplyStrategy = "off" | "template" | "llm" | "template_first";
+
+type ReplyStrategyFlags = Pick<
+  ReplayConfig,
+  "enable_llm" | "enable_template_reply"
+>;
+
+const REPLY_STRATEGY_FLAGS: Record<ReplyStrategy, ReplyStrategyFlags> = {
+  off: { enable_llm: false, enable_template_reply: false },
+  template: { enable_llm: false, enable_template_reply: true },
+  llm: { enable_llm: true, enable_template_reply: false },
+  template_first: { enable_llm: true, enable_template_reply: true },
+};
+
+const REPLY_STRATEGY_OPTIONS: {
+  value: ReplyStrategy;
+  label: string;
+  description: string;
+  needsLlm: boolean;
+}[] = [
+  {
+    value: "template_first",
+    label: "规则优先，AI 兜底（推荐）",
+    description:
+      "命中正则规则的消息直接发固定话术，不消耗模型额度；其余交给 AI 判断",
+    needsLlm: true,
+  },
+  {
+    value: "llm",
+    label: "仅 AI 回复",
+    description: "每条未读都交给大模型判断该回什么、要不要投简历",
+    needsLlm: true,
+  },
+  {
+    value: "template",
+    label: "仅规则回复",
+    description: "只回命中正则规则的消息，其余留给人工处理",
+    needsLlm: false,
+  },
+  {
+    value: "off",
+    label: "关闭自动回复",
+    description: "沟通任务只同步消息，不代你发送任何内容",
+    needsLlm: false,
+  },
+];
+
+function replyStrategyOf(config: ReplayConfig): ReplyStrategy {
+  if (config.enable_llm && config.enable_template_reply) return "template_first";
+  if (config.enable_llm) return "llm";
+  if (config.enable_template_reply) return "template";
+  return "off";
+}
 
 const basePromptVariableItems = [
   {
@@ -1210,7 +1271,13 @@ export function ConfigPage(props: ConfigPageProps) {
             </div>
           </Space>
         );
-      case "reply":
+      case "reply": {
+        const replayStrategy = replyStrategyOf(props.config.replay_config);
+        const llmConfigured = !!props.config.llm_config;
+        const usesLlmReply =
+          replayStrategy === "llm" || replayStrategy === "template_first";
+        const usesTemplateReply =
+          replayStrategy === "template" || replayStrategy === "template_first";
         return (
           <Space direction="vertical" size="large" className="w-full">
             <div>
@@ -1228,49 +1295,73 @@ export function ConfigPage(props: ConfigPageProps) {
             <Divider className="!my-0 opacity-10" />
             <AiFeatureGate configured={!!props.config.llm_config} onConfigure={props.onOpenLlmConfig}><></></AiFeatureGate>
             <div className="rounded-2xl border border-slate-200/80 bg-white/85 p-6 space-y-5">
-              <div className="flex items-center justify-between gap-6">
-                <div>
-                  <Text className="text-slate-900 font-bold block">
-                    LLM 自动回复
-                  </Text>
-                  <Text className="text-slate-500 text-xs">
-                    启用后使用大模型根据上下文生成回复
-                  </Text>
-                </div>
-                <Form.Item
-                  name={["replay_config", "enable_llm"]}
-                  valuePropName="checked"
-                  className="!m-0"
-                >
-                  <Switch
-                    disabled={!props.config.llm_config}
-                    onChange={(v) => props.updateReplay({ enable_llm: v })}
-                  />
-                </Form.Item>
+              <div>
+                <Text className="text-slate-900 font-bold block">
+                  回复策略
+                </Text>
+                <Text className="text-slate-500 text-xs">
+                  未读会话按这里选定的方式处理，每条消息只会走其中一条路径
+                </Text>
               </div>
 
-              <div className="flex items-center justify-between gap-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-                <div>
-                  <Text className="text-slate-900 font-bold block">
-                    演练模式
-                  </Text>
-                  <Text className="text-slate-500 text-xs">
-                    照常判断并生成回复，但不实际发送，只写日志；建议首次使用先开启，跑一轮确认生成质量再关掉
-                  </Text>
+              <Radio.Group
+                value={replayStrategy}
+                onChange={(e) =>
+                  props.updateReplay(
+                    REPLY_STRATEGY_FLAGS[e.target.value as ReplyStrategy],
+                  )
+                }
+                className="w-full"
+              >
+                <div className="flex flex-col gap-2 w-full">
+                  {REPLY_STRATEGY_OPTIONS.map((option) => (
+                    <Radio
+                      key={option.value}
+                      value={option.value}
+                      disabled={option.needsLlm && !llmConfigured}
+                      className="items-start! rounded-xl border border-slate-200/80 px-4 py-3 m-0! hover:border-sky-300"
+                    >
+                      <Text className="text-slate-900 font-bold block">
+                        {option.label}
+                      </Text>
+                      <Text className="text-slate-500 text-xs">
+                        {option.description}
+                      </Text>
+                    </Radio>
+                  ))}
                 </div>
-                <Form.Item
-                  name={["replay_config", "dry_run"]}
-                  valuePropName="checked"
-                  className="!m-0"
-                >
-                  <Switch
-                    aria-label="演练模式"
-                    onChange={(v) => props.updateReplay({ dry_run: v })}
-                  />
-                </Form.Item>
-              </div>
+              </Radio.Group>
 
-              {props.config.replay_config.enable_llm && (
+              {!llmConfigured && (
+                <Text className="text-slate-400 text-xs block">
+                  含 AI 的策略需要先配置模型服务后才能选择。
+                </Text>
+              )}
+
+              {replayStrategy !== "off" && (
+                <div className="flex items-center justify-between gap-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                  <div>
+                    <Text className="text-slate-900 font-bold block">
+                      演练模式
+                    </Text>
+                    <Text className="text-slate-500 text-xs">
+                      照常判断并生成回复，但不实际发送，只写日志；建议首次使用先开启，跑一轮确认生成质量再关掉
+                    </Text>
+                  </div>
+                  <Form.Item
+                    name={["replay_config", "dry_run"]}
+                    valuePropName="checked"
+                    className="!m-0"
+                  >
+                    <Switch
+                      aria-label="演练模式"
+                      onChange={(v) => props.updateReplay({ dry_run: v })}
+                    />
+                  </Form.Item>
+                </div>
+              )}
+
+              {usesLlmReply && (
                 <div className="space-y-5">
                   <Form.Item
                     label="自动回复提示词"
@@ -1386,32 +1477,20 @@ export function ConfigPage(props: ConfigPageProps) {
               )}
             </div>
 
-            <div className="space-y-6">
-              <div className="rounded-2xl border border-slate-200/80 bg-white/85 p-6 space-y-5">
-                <div className="flex items-center justify-between gap-6">
+            {usesTemplateReply && (
+              <div className="space-y-6">
+                <div className="rounded-2xl border border-slate-200/80 bg-white/85 p-6 space-y-5">
                   <div>
                     <Text className="text-slate-900 font-bold block">
-                      自动回复模板
+                      正则回复规则
                     </Text>
                     <Text className="text-slate-500 text-xs">
-                      启用后使用正则规则匹配 HR 消息并发送固定回复
+                      {usesLlmReply
+                        ? "按顺序匹配，命中的第一条规则直接发送固定话术；没有命中的消息交给 AI 回复"
+                        : "按顺序匹配，命中的第一条规则直接发送固定话术；没有命中的消息留给人工处理"}
                     </Text>
                   </div>
-                  <Form.Item
-                    name={["replay_config", "enable_auto_replay"]}
-                    valuePropName="checked"
-                    className="!m-0"
-                  >
-                    <Switch
-                      aria-label="启用自动回复"
-                      onChange={(v) =>
-                        props.updateReplay({ enable_auto_replay: v })
-                      }
-                    />
-                  </Form.Item>
-                </div>
 
-                {props.config.replay_config.enable_auto_replay && (
                   <div className="space-y-4 pt-2 border-t border-slate-200/80">
                     <div className="flex items-center justify-between">
                       <div>
@@ -1600,11 +1679,12 @@ export function ConfigPage(props: ConfigPageProps) {
                       </div>
                     )}
                   </div>
-                )}
+                </div>
               </div>
-            </div>
+            )}
           </Space>
         );
+      }
       case "browser":
         return (
           <Space direction="vertical" size="large" className="w-full">

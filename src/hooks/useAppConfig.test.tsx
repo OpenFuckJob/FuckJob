@@ -21,7 +21,7 @@ const config: AppRuntimeConfig = {
   job_filter_config: { query: null, city: null, job_type: 0, salary: 0, experience: [], dgree: [], industry: [], scale: [], stage: [], keywords: [], exclude_keywords: [], company_keywords: [], company_exclude_keywords: [], enable_semantic_filter: false, semantic_filter_intent: null, regex_rules: [] },
   platform_filter_config: { liepin: { dq: null, salary_code: null, pub_time: null, work_year_code: null, comp_tag: [] } },
   greet_config: { enable_llm: false, reply_prompt: null, default_template: [] },
-  replay_config: { enable_auto_replay: false, templates: [], enable_llm: false, reply_prompt: null, background_context: null, enable_auto_send_resume: true, max_auto_replies: 5, max_reply_chars: 200, dry_run: false },
+  replay_config: { enable_template_reply: false, templates: [], enable_llm: false, reply_prompt: null, background_context: null, enable_auto_send_resume: true, max_auto_replies: 5, max_reply_chars: 200, dry_run: false },
   browser_config: { user_data_dir: "profile", chrome_exe_path: null, max_parallel_tasks: 2 },
   resume_config: { inject_llm_context: false, resume_path: null, resume_content: null },
 };
