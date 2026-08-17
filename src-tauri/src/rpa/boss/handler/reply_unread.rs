@@ -17,7 +17,7 @@ use crate::{
         },
         conversation::{
             self, ConversationActions, ConversationContext, GateVerdict, ReplyAction, ReplyLimits,
-            ResumeState,
+            ReplyRoute, ResumeState,
         },
         run_flow::{is_job_task_stop_requested, PlatformKind},
     },
@@ -182,8 +182,8 @@ async fn handle_conversation(
         }
     }
 
-    if !conversation_config.replay_config.enable_auto_replay {
-        logger::info("该会话所属求职方案未启用自动回复，跳过")?;
+    if !conversation_config.replay_config.auto_reply_enabled() {
+        logger::info("该会话所属求职方案的 LLM 回复与回复模板都未启用，跳过")?;
         return Ok(());
     }
 
@@ -228,27 +228,29 @@ async fn handle_conversation(
         }
     }
 
-    // 用户显式配了正则和固定话术，说明这类消息他要的是稳定可预期的答复，
-    // 不该每次再花额度让模型重新发挥一遍
-    if let Some(hit) =
-        conversation::match_template(&conversation_config.replay_config.templates, &context)
-    {
-        let count = hit.resources.len();
-        if limits.dry_run {
-            logger::info(format!(
-                "[演练] 命中回复规则「{}」，本应发送 {count} 条内容",
-                hit.rule_name
-            ))?;
+    match conversation::choose_route(&conversation_config.replay_config, &context) {
+        // 用户显式配了正则和固定话术，说明这类消息他要的是稳定可预期的答复，
+        // 不该每次再花额度让模型重新发挥一遍
+        ReplyRoute::Template(hit) => {
+            let rule = hit.display_name();
+            let count = hit.resources.len();
+            if limits.dry_run {
+                logger::info(format!(
+                    "[演练] 命中回复规则「{rule}」，本应发送 {count} 条内容"
+                ))?;
+                return Ok(());
+            }
+            // 固定话术不过发送前体检：那是给模型生成内容做的，
+            // 拿它截断或否决用户写死的原话，只会让「固定回复」变得不固定
+            send_messages(page, hit.resources)?;
+            logger::info(format!("已按回复规则「{rule}」发送 {count} 条内容"))?;
             return Ok(());
         }
-        // 固定话术不过发送前体检：那是给模型生成内容做的，
-        // 拿它截断或否决用户写死的原话，只会让「固定回复」变得不固定
-        send_messages(page, hit.resources)?;
-        logger::info(format!(
-            "已按回复规则「{}」发送 {count} 条内容",
-            hit.rule_name
-        ))?;
-        return Ok(());
+        ReplyRoute::Skip(reason) => {
+            logger::info(format!("本会话跳过：{reason}"))?;
+            return Ok(());
+        }
+        ReplyRoute::Decide => {}
     }
 
     let outcome = AgentRunner::new(&conversation_config)
