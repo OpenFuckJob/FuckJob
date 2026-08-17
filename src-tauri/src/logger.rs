@@ -112,6 +112,10 @@ pub fn warning(msg: impl ToString) -> Result<()> {
     write_log("WARN", &msg.to_string())
 }
 
+pub fn error(msg: impl ToString) -> Result<()> {
+    write_log("ERROR", &msg.to_string())
+}
+
 fn write_log(level: &str, msg: &str) -> Result<()> {
     let _io = LOG_IO_LOCK
         .lock()

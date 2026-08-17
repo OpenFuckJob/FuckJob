@@ -139,7 +139,19 @@ export interface ReplayConfig {
   enable_llm: boolean;
   reply_prompt: string | null;
   background_context: string | null;
+  /** 关掉后模型仍会判断投递时机，但只回消息，投递交回人工 */
+  enable_auto_send_resume: boolean;
+  /** 没有上限时模型会和 HR 无限客套下去 */
+  max_auto_replies: number;
+  /** 超长的求职消息本身就不像真人写的 */
+  max_reply_chars: number;
+  /** 演练模式：判断与生成照常，但不实际发送，只写日志 */
+  dry_run: boolean;
 }
+
+/** 与 Rust 侧 ReplayConfig 的 serde 默认值保持一致 */
+export const DEFAULT_MAX_AUTO_REPLIES = 5;
+export const DEFAULT_MAX_REPLY_CHARS = 200;
 
 export interface BrowserConfig {
   user_data_dir: string;

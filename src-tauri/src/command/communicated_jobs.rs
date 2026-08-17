@@ -288,7 +288,16 @@ fn collect_conversation_messages(
 
     let body_str = String::from_utf8(body).context("historyMsg 响应非 UTF-8 编码")?;
     let chat_messages = parse_chat_messages(&body_str)?;
-    chat_message_dao::save_incremental(&job_id, &chat_messages)
+    // BOSS 的 encryptJobId 同时充当会话标识与岗位标识
+    let saved = chat_message_dao::upsert_incremental(
+        chat_message_dao::ConversationKey {
+            platform: "boss",
+            conversation_id: &job_id,
+            job_id: &job_id,
+        },
+        &chat_messages,
+    )?;
+    Ok(saved.inserted)
 }
 
 fn click_communicated_job_card(

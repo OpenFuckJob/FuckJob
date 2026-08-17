@@ -1,12 +1,17 @@
 use crate::{
-    config::{AppRuntimeConfig, GreetConfig, GreetResource, ReplayResourceType, ReplyResource},
-    llm::generate_greet_text,
+    agent,
+    agent::tasks::GreetTask,
+    config::{AppRuntimeConfig, GreetConfig, ReplayResourceType, ReplyResource},
     logger,
     rpa::common::RpaJob,
+    rpa::conversation::{self, GreetAction, SendVerdict},
 };
 
 /// 把配置的显式发送序列转换为最终资源列表。
-/// 禁用项和空内容不会发送；LLM 生成不可用时仅跳过 LLM 项，不影响后续固定内容。
+///
+/// 禁用项和空内容不会发送。LLM 那一条**生成失败**时只跳过它、不影响后续固定内容——
+/// 那属于服务不可用，固定的自我介绍照发是合理的。
+/// 但模型判断「不该投」是另一回事，那要整轮取消，由调用方在这之前拦掉。
 fn compose_greet_resources(greet: &GreetConfig, generated: Option<String>) -> Vec<ReplyResource> {
     let generated = generated.filter(|text| !text.trim().is_empty());
 
@@ -28,25 +33,36 @@ fn compose_greet_resources(greet: &GreetConfig, generated: Option<String>) -> Ve
         .collect()
 }
 
+/// 组装一个岗位的打招呼发送序列。
+///
+/// 返回 [`SendVerdict::Hold`] 表示这个岗位整轮都不该发——可能是模型判断不该投，
+/// 也可能是内容没通过发送前体检。调用方必须尊重它：不能"至少把固定内容发出去"。
 pub async fn build_greet_resources(
     config: &AppRuntimeConfig,
     job: &RpaJob,
-) -> Result<Vec<ReplyResource>, anyhow::Error> {
-    let generated = if config.greet_config.llm_resource_ready() {
-        match generate_greet_text(config.clone(), job).await {
-            Ok(result) if result.success && !result.data.trim().is_empty() => Some(result.data),
-            Ok(_) => {
-                logger::warning("LLM 未生成打招呼内容，已跳过该条")?;
-                None
+) -> Result<SendVerdict, anyhow::Error> {
+    let mut generated = None;
+
+    if config.greet_config.llm_resource_ready() {
+        match agent::run(&GreetTask::new(config, job), config).await {
+            Ok(outcome) => {
+                let decision = outcome.output;
+                if decision.action == GreetAction::Skip {
+                    // 模型有正规渠道说「不该投」，这条路径存在的意义就是让这个结论
+                    // 变成一个动作，而不是被写进正文发给对方
+                    return Ok(SendVerdict::Hold(format!(
+                        "模型判断该岗位不适合投递（把握 {} 分）：{}",
+                        decision.confidence, decision.reason
+                    )));
+                }
+                generated = Some(decision.greeting);
             }
+            // 生成失败属于服务不可用，不代表这个岗位不该投，固定内容仍然可以发
             Err(error) => {
                 logger::warning(format!("LLM 打招呼生成失败，已跳过该条: {}", error))?;
-                None
             }
         }
-    } else {
-        None
-    };
+    }
 
     let resources = compose_greet_resources(&config.greet_config, generated);
     if resources.is_empty() {
@@ -54,12 +70,19 @@ pub async fn build_greet_resources(
             "打招呼发送序列没有可发送内容，请至少启用并配置一条有效内容"
         ));
     }
-    Ok(resources)
+
+    // 和自动回复共用同一道门：任何一条不合格就整轮不发
+    Ok(conversation::vet_outbound(
+        resources,
+        config.replay_config.max_reply_chars,
+        conversation::OutboundKind::Greeting,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::GreetResource;
 
     fn resource(resource_type: ReplayResourceType, content: &str, enabled: bool) -> GreetResource {
         GreetResource {
@@ -107,6 +130,7 @@ mod tests {
         assert_eq!(compose_greet_resources(&greet, None)[0].content, "有效内容");
     }
 
+    /// 模型服务挂掉不代表这个岗位不该投，固定的自我介绍照发
     #[test]
     fn llm_failure_skips_only_llm_item() {
         let greet = greet(vec![
@@ -130,5 +154,26 @@ mod tests {
         let resources = compose_greet_resources(&greet, Some("不应发送".to_string()));
         assert_eq!(resources.len(), 1);
         assert_eq!(resources[0].content, "固定内容");
+    }
+
+    /// 实测事故：模型把婉拒写进开场白，那条被发了出去，
+    /// 紧跟着的简历图片也照发。整轮必须一起取消
+    #[test]
+    fn a_declining_greeting_holds_the_whole_sequence_including_the_image() {
+        let resources = vec![
+            ReplyResource {
+                resource_type: ReplayResourceType::LLM,
+                content: "您好，注意到您是猎头顾问，我暂时不考虑猎头渠道，感谢理解。".to_string(),
+            },
+            ReplyResource {
+                resource_type: ReplayResourceType::Image,
+                content: "C:/resume.png".to_string(),
+            },
+        ];
+
+        match conversation::vet_outbound(resources, 200, conversation::OutboundKind::Greeting) {
+            SendVerdict::Hold(reason) => assert!(reason.contains("不考虑")),
+            other => panic!("必须整轮拦下，实际：{other:?}"),
+        }
     }
 }

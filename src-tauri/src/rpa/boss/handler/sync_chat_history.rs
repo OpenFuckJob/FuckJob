@@ -12,7 +12,10 @@ use crate::{
     logger,
     rpa::{
         boss::{
-            handler::{parse_chat_messages, parse_encrypt_job_id},
+            handler::{
+                chat_list::{self, conversation_key, ListState},
+                parse_chat_messages, parse_encrypt_job_id,
+            },
             model::ChatMessage,
             BOSS_CHAT_URL,
         },
@@ -281,21 +284,6 @@ fn upsert_synced_job(
     Ok(JobSyncChange::Inserted)
 }
 
-fn conversation_key(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn click_label(page: &rust_drission::Page, name: &str) -> Result<bool, anyhow::Error> {
-    for label in page.eles(".label-list .label-name")? {
-        if label.text_content()?.trim().starts_with(name) {
-            label.click()?;
-            sleep_random_ms(500, 800);
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 fn scroll_conversation_list(page: &rust_drission::Page, reset: bool) -> Result<(), anyhow::Error> {
     let target = if reset {
         "0"
@@ -335,7 +323,7 @@ fn collect_current_conversation_keys(
         }
         let mut discovered = 0;
         for card in page.elements(".user-list-content .friend-content")? {
-            let key = conversation_key(&card.text_content()?);
+            let key = conversation_key(&card)?;
             if !key.is_empty() && keys.insert(key) {
                 discovered += 1;
             }
@@ -365,24 +353,31 @@ pub async fn sync_chat_history_on_page(
     page: &rust_drission::Page,
 ) -> Result<ChatHistorySyncResult, anyhow::Error> {
     logger::info("周期间歇：开始同步 BOSS 历史对话")?;
-    page.get(BOSS_CHAT_URL)?;
-    page.wait(".user-list-content", Duration::from_secs(15))?;
-    sleep_random_ms(800, 1200);
+    page.get(BOSS_CHAT_URL).context("打开 BOSS 沟通页面失败")?;
+    chat_list::wait_for_chat_page(page, Duration::from_secs(20))?;
 
     // 先在“未读”分类中只扫描标识，绝不点击会话卡片。
-    // 如果无法识别未读分类，为避免误把消息标记为已读，本次同步直接跳过。
-    if !click_label(page, "未读")? {
-        logger::warning("未找到 BOSS 未读分类，为保护未读状态，本次不同步历史对话")?;
-        return Ok(ChatHistorySyncResult::default());
-    }
-    let unread_keys = collect_current_conversation_keys(page)?;
+    // 未读列表状态判不准时宁可整轮不同步：同步会逐个点开会话，
+    // 少跳过一个就等于把一条未读消息替用户读掉了。
+    let unread_keys = match chat_list::switch_label_and_wait(page, "未读", Duration::from_secs(15))?
+    {
+        ListState::Empty => HashSet::new(),
+        ListState::Cards(_) => collect_current_conversation_keys(page)?,
+        ListState::Unknown => {
+            logger::warning("未读列表状态无法判定，为保护未读状态，本次不同步历史对话")?;
+            return Ok(ChatHistorySyncResult::default());
+        }
+    };
     logger::info(format!(
         "检测到未读会话 {} 个，同步时将全部跳过",
         unread_keys.len()
     ))?;
 
-    if !click_label(page, "全部")? {
-        logger::warning("未找到 BOSS 全部会话分类，本次不同步历史对话")?;
+    if matches!(
+        chat_list::switch_label_and_wait(page, "全部", Duration::from_secs(15))?,
+        ListState::Empty
+    ) {
+        logger::info("BOSS 沟通列表为空，无需同步")?;
         return Ok(ChatHistorySyncResult::default());
     }
     scroll_conversation_list(page, true)?;
@@ -405,7 +400,7 @@ pub async fn sync_chat_history_on_page(
                 break;
             }
 
-            let key = conversation_key(&card.text_content()?);
+            let key = conversation_key(&card)?;
             if key.is_empty() || !seen.insert(key.clone()) {
                 continue;
             }
@@ -465,7 +460,14 @@ pub async fn sync_chat_history_on_page(
                 JobSyncChange::Updated => result.jobs_updated += 1,
                 JobSyncChange::None => {}
             }
-            let saved = chat_message_dao::upsert_incremental(&job_id, &messages)?;
+            let saved = chat_message_dao::upsert_incremental(
+                chat_message_dao::ConversationKey {
+                    platform: "boss",
+                    conversation_id: &job_id,
+                    job_id: &job_id,
+                },
+                &messages,
+            )?;
             result.conversations += 1;
             result.inserted += saved.inserted;
             result.updated += saved.updated;
@@ -499,19 +501,6 @@ pub async fn sync_chat_history_on_page(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn conversation_key_ignores_whitespace_differences() {
-        assert_eq!(
-            conversation_key("招聘者\n  示例公司\tJava 工程师"),
-            "招聘者 示例公司 Java 工程师"
-        );
-    }
-
-    #[test]
-    fn conversation_key_rejects_blank_cards() {
-        assert!(conversation_key(" \n\t ").is_empty());
-    }
 
     #[test]
     fn parses_job_snapshot_from_boss_data() {

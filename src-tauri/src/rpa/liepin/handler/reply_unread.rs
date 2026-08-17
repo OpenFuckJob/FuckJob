@@ -1,24 +1,34 @@
 use std::{collections::HashSet, time::Duration};
 
 use anyhow::Context;
-use regex::Regex;
 use rust_drission::{utils::sleep_random_ms, Page};
 use serde::Deserialize;
 
 use crate::{
+    agent::{tasks::ReplyDecisionTask, AgentRunner},
     browser,
-    config::{AppRuntimeConfig, ReplayResourceType, ReplyResource, ReplyTemplate},
-    dao::{job_detail_dao, model::JobDetail, profile_snapshot_dao},
+    config::{AppRuntimeConfig, ReplyResource, ReplyTemplate},
+    dao::{chat_message_dao, job_detail_dao, model::JobDetail, profile_snapshot_dao},
     logger,
     rpa::{
         common::ChatMessage,
+        conversation::{
+            self, gate, match_template, reconcile, ConversationActions, ConversationContext,
+            GateVerdict, ReplyAction, ReplyLimits, ResumeState,
+        },
         liepin::{
-            handler::position_say_hello::{install_request_recorder, send_resources},
+            handler::{
+                actions::LiepinActions,
+                position_say_hello::{install_request_recorder, send_resources},
+            },
             LIEPIN_USER_HOME_URL,
         },
-        run_flow::is_job_task_stop_requested,
+        run_flow::{is_job_task_stop_requested, PlatformKind},
     },
 };
+
+/// 落库时的平台标识。和 [`chat_message_dao`] 里的会话主键保持一致
+const PLATFORM: &str = "liepin";
 
 /// 沟通入口气泡，点开后弹出右侧会话抽屉
 const CHAT_ENTRY: &str = ".im-ui-basic-entry";
@@ -126,14 +136,8 @@ pub async fn reply_unread_on_page(
                 continue;
             }
 
-            let chat_messages = collect_chat_messages(page, chat_since)?;
-
-            // 对方来要简历就同意，和 Boss 侧"别人请求、我们确认发送"是同一条规则。
-            // 放在取完消息之后，这条请求本身也会进上下文，回复时 LLM 知道刚同意过
-            if accept_resume_request(page)? {
-                logger::info("猎聘对方索要简历，已点同意")?;
-            }
-            let latest = chat_messages
+            let (fresh_messages, message_source) = collect_chat_messages(page, chat_since)?;
+            let latest = fresh_messages
                 .last()
                 .map(|m| m.text.as_str())
                 .unwrap_or("(空)");
@@ -145,43 +149,241 @@ pub async fn reply_unread_on_page(
                 truncate_str(latest, 30)
             ))?;
 
-            let owned_job = resolve_owned_job(&contact, &chat_messages);
-            let (conversation_config, source) =
-                profile_snapshot_dao::resolve_for_job(&config, owned_job.as_ref())
-                    .map_err(anyhow::Error::msg)?;
-            match source {
-                profile_snapshot_dao::ResolutionSource::Snapshot => {}
-                profile_snapshot_dao::ResolutionSource::CurrentProfile => {
-                    logger::warning("猎聘会话的方案快照缺失，按当前同名方案回复")?;
-                }
-                profile_snapshot_dao::ResolutionSource::DefaultProfile => {
-                    logger::warning(format!(
-                        "猎聘会话「{}」无法可靠映射到历史岗位，按默认方案回复",
-                        truncate_str(&contact.display_name(), 20)
-                    ))?;
-                }
-            }
-
-            if !conversation_config.replay_config.enable_auto_replay {
-                logger::info("猎聘会话所属求职方案未启用自动回复，跳过")?;
-                continue;
-            }
-
-            if let Some(resources) = resolve_reply_resources(
-                &conversation_config,
-                &conversation_config.replay_config.templates,
-                &chat_messages,
-            )
-            .await?
-            {
-                send_resources(page, resources)?;
-                logger::info("猎聘回复消息已发送")?;
-            } else {
-                logger::info("猎聘未匹配到回复模板，跳过")?;
-            }
+            handle_conversation(page, &config, &contact, &fresh_messages, message_source).await?;
 
             sleep_random_ms(2500, 4500);
         }
+    }
+}
+
+/// 处理单个会话：落库 → 合并历史 → 闸门 → 模型决策 → 执行动作。
+///
+/// 模型调用和消息发送这两处失败只记日志、不往外抛：一次生成超时或一个聊天窗卡住，
+/// 不该让整轮未读处理中断，剩下的会话仍然值得处理。
+async fn handle_conversation(
+    page: &Page,
+    config: &AppRuntimeConfig,
+    contact: &UnreadContact,
+    fresh_messages: &[ChatMessage],
+    message_source: Source,
+) -> Result<(), anyhow::Error> {
+    let name = truncate_str(&contact.display_name(), 20).to_string();
+
+    // 只有接口取数才带稳定的 mid（雪花 id）；DOM 兜底的 mid 是列表下标，
+    // 落库会和真实消息串主键、合并历史也会按下标错误去重，
+    // 所以那一路只当本轮上下文用，不入库
+    let from_api = message_source == Source::Api;
+
+    // 历史必须在写入之前读，否则读回来的就是刚写进去的这一页
+    let history = if from_api {
+        chat_message_dao::find_by_conversation(PLATFORM, &contact.imid).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let messages = conversation::merge_messages(history, fresh_messages.to_vec());
+
+    let owned_job = resolve_owned_job(contact, &messages);
+    if from_api {
+        let key = chat_message_dao::ConversationKey {
+            platform: PLATFORM,
+            conversation_id: &contact.imid,
+            // 映射不到岗位也要存：会话本身就是主键，岗位归属之后某轮识别出来再回填
+            job_id: owned_job.as_ref().map(|job| job.id.as_str()).unwrap_or(""),
+        };
+        if let Err(error) = chat_message_dao::upsert_incremental(key, fresh_messages) {
+            logger::warning(format!("猎聘聊天记录保存失败: {}", error))?;
+        }
+    }
+
+    let (conversation_config, source) =
+        profile_snapshot_dao::resolve_for_job(config, owned_job.as_ref())
+            .map_err(anyhow::Error::msg)?;
+    match source {
+        profile_snapshot_dao::ResolutionSource::Snapshot => {}
+        profile_snapshot_dao::ResolutionSource::CurrentProfile => {
+            logger::warning("猎聘会话的方案快照缺失，按当前同名方案回复")?;
+        }
+        profile_snapshot_dao::ResolutionSource::DefaultProfile => {
+            logger::warning(format!(
+                "猎聘会话「{}」无法可靠映射到历史岗位，按默认方案回复",
+                name
+            ))?;
+        }
+    }
+
+    if !conversation_config.replay_config.enable_auto_replay {
+        logger::info("猎聘会话所属求职方案未启用自动回复，跳过")?;
+        return Ok(());
+    }
+
+    let limits = ReplyLimits::from_config(&conversation_config.replay_config);
+    let actions = LiepinActions;
+    let resume_state = actions.resume_state(page)?;
+    let context = ConversationContext {
+        platform: PlatformKind::Liepin,
+        conversation_id: contact.imid.clone(),
+        job: owned_job,
+        messages,
+        resume_state,
+    };
+
+    match gate(&context, &limits) {
+        GateVerdict::Skip(reason) => {
+            logger::info(format!("猎聘会话「{}」跳过：{}", name, reason))?;
+            return Ok(());
+        }
+        // 转人工就是不自动处理，连简历请求都留给用户自己拿主意 ——
+        // 触发转人工的正是证件、账户这类不该由机器代答的话题
+        GateVerdict::Escalate(reason) => {
+            logger::warning(format!("猎聘会话「{}」转人工：{}", name, reason))?;
+            return Ok(());
+        }
+        GateVerdict::Proceed => {}
+    }
+
+    // 对方来要简历就同意，和 Boss 侧"别人请求、我们确认发送"是同一条规则。
+    // 放在取完消息之后，这条请求本身也会进上下文，回复时模型知道刚同意过
+    if resume_state == ResumeState::RequestedByPeer {
+        if limits.dry_run {
+            logger::info("猎聘演练模式：对方索要简历，实际运行时会点同意")?;
+        } else if actions.accept_resume_request(page)? {
+            logger::info("猎聘对方索要简历，已点同意")?;
+        }
+    }
+
+    // 确定性模板优先于模型：用户显式写了正则和话术，就说明这类消息他要的是
+    // 稳定可预期的答复，不该每次再花额度让模型重新发挥一遍
+    if let ReplyRoute::Template {
+        rule_name: rule,
+        resources,
+    } = choose_route(&conversation_config.replay_config.templates, &context)
+    {
+        let count = resources.len();
+
+        if limits.dry_run {
+            logger::info(format!(
+                "猎聘演练模式：命中回复规则「{}」，本应发送 {} 条资源",
+                rule, count
+            ))?;
+            return Ok(());
+        }
+
+        // 固定话术不过发送前体检：那是给模型生成内容做的体检，
+        // 拿它去截断或否决用户的原话，只会让"固定回复"变得不固定
+        if let Err(error) = send_resources(page, resources) {
+            logger::warning(format!("猎聘模板回复发送失败，跳过该会话：{}", error))?;
+            return Ok(());
+        }
+        logger::info(format!(
+            "猎聘命中回复规则「{}」，已发送 {} 条资源",
+            rule, count
+        ))?;
+        return Ok(());
+    }
+
+    let decision = match AgentRunner::new(&conversation_config)
+        .with_cancel(is_job_task_stop_requested)
+        .run(&ReplyDecisionTask::new(&conversation_config, &context))
+        .await
+    {
+        Ok(outcome) => outcome.output,
+        Err(error) => {
+            logger::warning(format!("猎聘回复决策失败，本轮不回复：{}", error))?;
+            return Ok(());
+        }
+    };
+
+    let action = reconcile(&decision, resume_state, &limits);
+    let label = action_label(action);
+    if !action.needs_text() {
+        // 决策理由不含求职者隐私，打出来用户才知道机器为什么按兵不动
+        let message = format!("猎聘会话「{}」{}：{}", name, label, decision.reason);
+        if action == ReplyAction::Escalate {
+            logger::warning(message)?;
+        } else {
+            logger::info(message)?;
+        }
+        return Ok(());
+    }
+
+    let text = match conversation::vet_reply(&decision.reply, limits.max_reply_chars) {
+        Ok(text) => text,
+        Err(reason) => {
+            logger::warning(format!("猎聘回复正文未通过体检，不发送：{}", reason))?;
+            return Ok(());
+        }
+    };
+
+    if limits.dry_run {
+        logger::info(format!(
+            "猎聘演练模式：本应{}（正文 {} 字），理由：{}",
+            label,
+            text.chars().count(),
+            decision.reason
+        ))?;
+        return Ok(());
+    }
+
+    // 正文含求职者隐私，日志只留字数和理由
+    match actions.send_text(page, &text) {
+        Ok(true) => logger::info(format!(
+            "猎聘回复已发送（正文 {} 字），理由：{}",
+            text.chars().count(),
+            decision.reason
+        ))?,
+        Ok(false) => logger::warning("猎聘回复正文为空，未发送")?,
+        Err(error) => {
+            logger::warning(format!("猎聘回复发送失败，跳过该会话：{}", error))?;
+            return Ok(());
+        }
+    }
+
+    if action == ReplyAction::ReplyAndSendResume && !actions.send_resume(page)? {
+        logger::info("猎聘没有主动投递简历的入口，本轮只回复了消息")?;
+    }
+
+    Ok(())
+}
+
+/// 闸门通过之后的分流结果。
+///
+/// 单独抽出来是为了能在不碰浏览器、不跑模型的前提下验证「命中模板就短路」
+/// 这个行为——它一旦失效，用户配的固定话术会静默变成模型自由发挥。
+#[derive(Debug, Clone, PartialEq)]
+enum ReplyRoute {
+    /// 命中确定性模板，直接发它配置的资源
+    Template {
+        rule_name: String,
+        resources: Vec<ReplyResource>,
+    },
+    /// 没有模板管得着，交给模型决策
+    Decide,
+}
+
+fn choose_route(templates: &[ReplyTemplate], context: &ConversationContext) -> ReplyRoute {
+    match match_template(templates, context) {
+        Some(hit) => ReplyRoute::Template {
+            rule_name: display_rule_name(hit.rule_name),
+            resources: hit.resources,
+        },
+        None => ReplyRoute::Decide,
+    }
+}
+
+/// 规则名可以留空，日志里得有个能读的称呼
+fn display_rule_name(name: &str) -> String {
+    match name.trim() {
+        "" => "未命名规则".to_string(),
+        name => name.to_string(),
+    }
+}
+
+fn action_label(action: ReplyAction) -> &'static str {
+    match action {
+        ReplyAction::Reply => "回复",
+        ReplyAction::ReplyAndSendResume => "回复并投递简历",
+        ReplyAction::Skip => "不回复",
+        ReplyAction::Escalate => "转人工",
     }
 }
 
@@ -379,60 +581,26 @@ fn open_contact(page: &Page, imid: &str) -> Result<bool, anyhow::Error> {
     Ok(true)
 }
 
-/// HR 主动索要简历时会推一张卡片（payload 里 `extType` = 206），带【拒绝】【同意】两个按钮。
-/// 同意即把简历发过去 —— 这是对方发起、我们确认，和主动给每个 HR 投简历是两回事。
+/// 取聊天记录：优先用接口响应，拿不到再退回 DOM。
 ///
-/// 只认文案里带"简历"的那张卡：优先沟通、职位卡片长得一样，光靠按钮会误点。
-/// 已经处理过的卡片不再有可点的【同意】，所以按钮还在就说明这次是待处理的。
-///
-/// 点完就发出去了，没有二次确认 —— 实测过。不要照 Boss 那边补 `.panel-resume` 的等待，
-/// 猎聘这里没有那个弹窗，等只会白等到超时。
-fn accept_resume_request(page: &Page) -> Result<bool, anyhow::Error> {
-    let value = page
-        .run_js_await(
-            r#"
-            (() => {
-                const cards = Array.from(document.querySelectorAll(".im-ui-common-message-card"));
-                // 同一个会话可能来过多次，从最新的一张往回找
-                for (const card of cards.reverse()) {
-                    if (!(card.innerText || "").includes("简历")) continue;
-                    const button = card.querySelector("button[btntext='同意']");
-                    if (!button || button.disabled) continue;
-                    button.setAttribute("data-fj-agree", "1");
-                    return true;
-                }
-                return false;
-            })()
-            "#,
-        )
-        .context("查找猎聘简历请求卡片失败")?;
-
-    let raw = value.get("value").cloned().unwrap_or(value);
-    if !raw.as_bool().unwrap_or(false) {
-        return Ok(false);
-    }
-
-    // 标记出来再用真实点击，比在页面里直接 click 更接近人的操作
-    page.click("button[data-fj-agree='1']")?;
-    sleep_random_ms(800, 1200);
-    Ok(true)
-}
-
-/// 取聊天记录：优先用接口响应，拿不到再退回 DOM
-fn collect_chat_messages(page: &Page, since: f64) -> Result<Vec<ChatMessage>, anyhow::Error> {
+/// 一并返回来源，是因为两条路的 `mid` 含义不同：接口给的是雪花 id，
+/// DOM 兜底只能拿列表下标顶上，后者不能落库。
+fn collect_chat_messages(
+    page: &Page,
+    since: f64,
+) -> Result<(Vec<ChatMessage>, Source), anyhow::Error> {
     match read_api_body(page, CHAT_LIST_API, since)? {
+        // 整段都是系统提示/营销卡时会解析成空，这时 DOM 也给不出更多，直接返回空
         Some(body) => match parse_chat_messages(&body) {
-            Ok(messages) if !messages.is_empty() => Ok(messages),
-            // 整段都是系统提示/营销卡时会解析成空，这时 DOM 也给不出更多，直接返回空
-            Ok(messages) => Ok(messages),
+            Ok(messages) => Ok((messages, Source::Api)),
             Err(error) => {
                 logger::warning(format!("猎聘聊天记录接口解析失败，改用页面元素: {}", error))?;
-                collect_chat_messages_from_dom(page)
+                Ok((collect_chat_messages_from_dom(page)?, Source::Dom))
             }
         },
         None => {
             logger::warning("猎聘聊天记录接口未捕获，改用页面元素")?;
-            collect_chat_messages_from_dom(page)
+            Ok((collect_chat_messages_from_dom(page)?, Source::Dom))
         }
     }
 }
@@ -715,69 +883,6 @@ struct BizData {
     job_salary: Option<String>,
 }
 
-async fn resolve_reply_resources(
-    config: &AppRuntimeConfig,
-    templates: &[ReplyTemplate],
-    chat_messages: &[ChatMessage],
-) -> Result<Option<Vec<ReplyResource>>, anyhow::Error> {
-    if config.replay_config.enable_llm {
-        if chat_messages.is_empty() {
-            return Ok(None);
-        }
-
-        match crate::llm::generate_replay_text(String::new(), config, chat_messages).await {
-            Ok(result) if result.success && !result.data.trim().is_empty() => {
-                return Ok(Some(vec![ReplyResource {
-                    resource_type: ReplayResourceType::Text,
-                    content: result.data,
-                }]));
-            }
-            Ok(_) => logger::warning("LLM 未生成可发送内容，改用显式文本模板")?,
-            Err(error) => logger::warning(format!("LLM 生成失败，改用显式文本模板: {}", error))?,
-        }
-    }
-
-    if let Some(template) = match_reply_template(templates, chat_messages) {
-        let resources: Vec<ReplyResource> = template
-            .content
-            .iter()
-            .filter(|r| !r.content.trim().is_empty())
-            .cloned()
-            .collect();
-        if !resources.is_empty() {
-            return Ok(Some(resources));
-        }
-    }
-
-    Ok(None)
-}
-
-fn match_reply_template<'a>(
-    templates: &'a [ReplyTemplate],
-    chat_messages: &[ChatMessage],
-) -> Option<&'a ReplyTemplate> {
-    templates.iter().find(|template| {
-        Regex::new(&template.regex_rule.pattern)
-            .map(|regex| {
-                regex.is_match(&latest_chat_history(
-                    chat_messages,
-                    template.regex_rule.limit,
-                ))
-            })
-            .unwrap_or(false)
-    })
-}
-
-fn latest_chat_history(chat_messages: &[ChatMessage], limit: i32) -> String {
-    let limit = usize::try_from(limit.max(1)).unwrap_or(1);
-    let start = chat_messages.len().saturating_sub(limit);
-    chat_messages[start..]
-        .iter()
-        .map(|message| message.text.as_str())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// 会话列表的滚动容器是 `im-ui-contacts-wrap` 里一个没有 class 的 div，
 /// 只能从会话卡往上找第一个能滚的祖先
 fn scroll_contact_list(page: &Page) -> Result<bool, anyhow::Error> {
@@ -817,6 +922,7 @@ fn truncate_str(s: &str, max_len: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ReplayResourceType;
 
     fn job(id: &str, title: &str) -> JobDetail {
         JobDetail {
@@ -968,6 +1074,194 @@ mod tests {
             .unwrap()
             .is_empty());
         assert!(parse_unread_contacts(r#"{"flag":1}"#).unwrap().is_empty());
+    }
+
+    fn chat(mid: i64, time: i64, received: bool, text: &str) -> ChatMessage {
+        ChatMessage {
+            mid,
+            received,
+            text: text.into(),
+            time,
+            from_name: String::new(),
+        }
+    }
+
+    /// 接口只给最近一页，缺了前面的往来模型会把聊过的问题重新问一遍
+    #[test]
+    fn history_and_current_page_are_merged_in_time_order() {
+        let history = vec![
+            chat(1, 100, false, "您好，岗位还在招吗"),
+            chat(2, 200, true, "在的，方便发下简历吗"),
+        ];
+        let fresh = [chat(3, 300, true, "周期一年的项目考虑吗")];
+
+        let merged = conversation::merge_messages(history, fresh.to_vec());
+
+        let texts: Vec<&str> = merged.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "您好，岗位还在招吗",
+                "在的，方便发下简历吗",
+                "周期一年的项目考虑吗"
+            ]
+        );
+    }
+
+    /// 库里存的正是上一轮写进去的接口消息，不按 mid 去重就会整页翻倍
+    #[test]
+    fn overlapping_messages_are_deduplicated_by_mid() {
+        let history = vec![chat(1, 100, true, "在吗"), chat(2, 200, false, "在的")];
+        let fresh = [
+            chat(2, 200, false, "在的"),
+            chat(3, 300, true, "什么时候方便"),
+        ];
+
+        let merged = conversation::merge_messages(history, fresh.to_vec());
+
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged.iter().filter(|m| m.mid == 2).count(), 1);
+    }
+
+    /// 撤回、编辑之后接口给的才是现状，同一 mid 不能被库里的旧内容盖回去
+    #[test]
+    fn the_current_page_wins_when_the_same_message_changed() {
+        let history = vec![chat(7, 100, true, "旧内容")];
+        let fresh = [chat(7, 100, true, "新内容")];
+
+        let merged = conversation::merge_messages(history, fresh.to_vec());
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].text, "新内容");
+    }
+
+    /// 接口按时间倒序下发，库里也可能乱序，合并后必须重新按时间升序
+    #[test]
+    fn merged_messages_are_sorted_even_when_both_sides_are_unordered() {
+        let history = vec![chat(9, 900, true, "第四"), chat(1, 100, false, "第一")];
+        let fresh = [chat(5, 500, true, "第三"), chat(3, 300, false, "第二")];
+
+        let merged = conversation::merge_messages(history, fresh.to_vec());
+
+        let times: Vec<i64> = merged.iter().map(|m| m.time).collect();
+        assert_eq!(times, vec![100, 300, 500, 900]);
+    }
+
+    #[test]
+    fn merging_without_history_keeps_the_current_page_as_is() {
+        let fresh = [chat(1, 100, true, "在吗")];
+
+        assert_eq!(
+            conversation::merge_messages(Vec::new(), fresh.to_vec()).len(),
+            1
+        );
+        assert!(
+            conversation::merge_messages(vec![chat(1, 100, true, "在吗")], Vec::new()).len() == 1
+        );
+    }
+
+    fn context(messages: Vec<ChatMessage>) -> ConversationContext {
+        ConversationContext {
+            platform: PlatformKind::Liepin,
+            conversation_id: "imid-abc".into(),
+            job: None,
+            messages,
+            resume_state: ResumeState::Unavailable,
+        }
+    }
+
+    fn template(name: &str, pattern: &str, content: Vec<ReplyResource>) -> ReplyTemplate {
+        ReplyTemplate {
+            regex_rule: crate::config::ReplyRegexRule {
+                name: name.into(),
+                pattern: pattern.into(),
+                limit: 2,
+            },
+            content,
+        }
+    }
+
+    fn text_resource(content: &str) -> ReplyResource {
+        ReplyResource {
+            resource_type: ReplayResourceType::Text,
+            content: content.into(),
+        }
+    }
+
+    /// 用户写死的话术必须原样发出，不能被模型链路顶掉，
+    /// 否则这次改造等于把存量正则配置全部架空
+    #[test]
+    fn a_matching_template_short_circuits_the_decision_chain() {
+        let templates = vec![template(
+            "面试邀约",
+            "面试",
+            vec![text_resource("好的，时间我这边可以")],
+        )];
+
+        let route = choose_route(
+            &templates,
+            &context(vec![chat(1, 100, true, "下周二方便来面试吗")]),
+        );
+
+        assert_eq!(
+            route,
+            ReplyRoute::Template {
+                rule_name: "面试邀约".to_string(),
+                resources: vec![text_resource("好的，时间我这边可以")],
+            }
+        );
+    }
+
+    /// 两条规则配了相同话术时，日志必须仍能认出是哪条命中——
+    /// 这正是规则名要跟着资源一起回传、而不是靠内容反查的原因
+    #[test]
+    fn the_matched_rule_is_identified_even_when_two_rules_share_the_same_reply() {
+        let templates = vec![
+            template("薪资询问", "薪资", vec![text_resource("方便电话聊吗")]),
+            template("面试邀约", "面试", vec![text_resource("方便电话聊吗")]),
+        ];
+
+        let route = choose_route(
+            &templates,
+            &context(vec![chat(1, 100, true, "下周二方便来面试吗")]),
+        );
+
+        match route {
+            ReplyRoute::Template { rule_name, .. } => assert_eq!(rule_name, "面试邀约"),
+            other => panic!("应命中面试邀约，实际：{other:?}"),
+        }
+    }
+
+    /// 出厂默认模板是「.* + 一条空的 LLM 槽」。它要是算命中，
+    /// 所有会话都会被拦死在模板这一步，模型永远轮不上
+    #[test]
+    fn the_default_llm_only_template_still_reaches_the_decision_chain() {
+        let templates = vec![template(
+            "默认",
+            ".*",
+            vec![ReplyResource {
+                resource_type: ReplayResourceType::LLM,
+                content: String::new(),
+            }],
+        )];
+
+        assert_eq!(
+            choose_route(&templates, &context(vec![chat(1, 100, true, "在吗")])),
+            ReplyRoute::Decide
+        );
+    }
+
+    #[test]
+    fn unmatched_messages_go_to_the_decision_chain() {
+        let templates = vec![template("面试邀约", "面试", vec![text_resource("好的")])];
+
+        assert_eq!(
+            choose_route(
+                &templates,
+                &context(vec![chat(1, 100, true, "期望薪资多少")])
+            ),
+            ReplyRoute::Decide
+        );
     }
 
     #[test]
