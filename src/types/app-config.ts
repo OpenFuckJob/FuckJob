@@ -134,7 +134,8 @@ export interface GreetConfig {
 }
 
 export interface ReplayConfig {
-  enable_auto_replay: boolean;
+  /** 只管正则模板这一条路径，不是自动回复的总开关（旧名 enable_auto_replay） */
+  enable_template_reply: boolean;
   templates: ReplyTemplate[];
   enable_llm: boolean;
   reply_prompt: string | null;
