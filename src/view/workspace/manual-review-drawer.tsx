@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Badge, Button, Card, Empty, List, Modal, Space, Tag, Tooltip, Typography, message } from "antd";
+import { Button, Drawer, Empty, List, Modal, Space, Tag, Tooltip, Typography, message } from "antd";
 import { ExclamationCircleOutlined } from "@ant-design/icons";
 import { invoke } from "@tauri-apps/api/core";
 import type { CommandResult } from "../../types/command";
@@ -14,13 +14,13 @@ import {
 const REFRESH_INTERVAL_MS = 30_000;
 
 /**
- * 待人工处理的会话。
+ * 待人工处理的会话数据源。
  *
- * 存在的理由：点开会话就会让它变成已读，但 AI 未必会回。轮询模式下用户不会
- * 盯着日志，那些「读了却没回」的消息会静默消失，手机上连未读红点都没有。
- * 这里是它们唯一的出口。
+ * 单独抽成 hook 是因为它有两个消费方：工作台顶部的统计磁贴只要一个数字，
+ * 抽屉才需要完整列表。让磁贴去挂一个隐藏的列表组件来拿计数，
+ * 会变成两处各轮询一次。
  */
-export default function ManualReviewPanel() {
+export function useManualReview() {
   const [records, setRecords] = useState<ManualReviewRecord[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -44,26 +44,62 @@ export default function ManualReviewPanel() {
     return () => clearInterval(timer);
   }, [refresh]);
 
-  const resolveOne = useCallback(
-    async (record: ManualReviewRecord) => {
-      try {
-        const result = await invoke<CommandResult<null>>("manual_review_resolve", {
-          platform: record.platform,
-          conversationId: record.conversation_id,
-        });
-        if (!result.success) {
-          message.error(commandErrorMessage(result.error, "标记失败"));
-          return;
-        }
-        setRecords((current) => current.filter((item) => item.id !== record.id));
-      } catch (error) {
-        message.error(`标记失败：${error}`);
+  const resolve = useCallback(async (record: ManualReviewRecord) => {
+    try {
+      const result = await invoke<CommandResult<null>>("manual_review_resolve", {
+        platform: record.platform,
+        conversationId: record.conversation_id,
+      });
+      if (!result.success) {
+        message.error(commandErrorMessage(result.error, "标记失败"));
+        return;
       }
-    },
-    [],
-  );
+      setRecords((current) => current.filter((item) => item.id !== record.id));
+    } catch (error) {
+      message.error(`标记失败：${error}`);
+    }
+  }, []);
 
-  const clearAll = useCallback(() => {
+  const clear = useCallback(async () => {
+    const result = await invoke<CommandResult<null>>("manual_review_clear");
+    if (!result.success) {
+      message.error(commandErrorMessage(result.error, "清空失败"));
+      return;
+    }
+    setRecords([]);
+  }, []);
+
+  return { records, loading, refresh, resolve, clear };
+}
+
+interface Props {
+  open: boolean;
+  onClose: () => void;
+  records: ManualReviewRecord[];
+  loading: boolean;
+  onResolve: (record: ManualReviewRecord) => void;
+  onClear: () => void;
+  /** 跳到该岗位的会话记录。岗位归属缺失的条目跳不了，入口会隐藏 */
+  onOpenConversation?: (jobId: string) => void;
+}
+
+/**
+ * 待人工处理的会话。
+ *
+ * 存在的理由：点开会话就会让它变成已读，但 AI 未必会回。轮询模式下用户不会
+ * 盯着日志，那些「读了却没回」的消息会静默消失，手机上连未读红点都没有。
+ * 这里是它们唯一的出口。
+ */
+export default function ManualReviewDrawer({
+  open,
+  onClose,
+  records,
+  loading,
+  onResolve,
+  onClear,
+  onOpenConversation,
+}: Props) {
+  const confirmClear = useCallback(() => {
     Modal.confirm({
       title: "清空待处理列表",
       icon: <ExclamationCircleOutlined />,
@@ -71,29 +107,19 @@ export default function ManualReviewPanel() {
       okText: "清空",
       okButtonProps: { danger: true },
       cancelText: "取消",
-      onOk: async () => {
-        const result = await invoke<CommandResult<null>>("manual_review_clear");
-        if (!result.success) {
-          message.error(commandErrorMessage(result.error, "清空失败"));
-          return;
-        }
-        setRecords([]);
-      },
+      onOk: onClear,
     });
-  }, [records.length]);
+  }, [onClear, records.length]);
 
   return (
-    <Card
-      size="small"
-      title={
-        <Space size={8}>
-          <span>待你处理</span>
-          <Badge count={records.length} showZero={false} />
-        </Space>
-      }
+    <Drawer
+      title="待你处理"
+      width={480}
+      open={open}
+      onClose={onClose}
       extra={
         records.length > 0 ? (
-          <Button size="small" type="text" danger onClick={clearAll}>
+          <Button size="small" type="text" danger onClick={confirmClear}>
             清空
           </Button>
         ) : null
@@ -104,19 +130,32 @@ export default function ManualReviewPanel() {
           image={Empty.PRESENTED_IMAGE_SIMPLE}
           description={
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {loading ? "加载中" : "没有需要你接手的会话。AI 判断不该自己回的消息会出现在这里"}
+              {loading
+                ? "加载中"
+                : "没有需要你接手的会话。AI 读了消息却决定不回时，会把会话放到这里，不会让它悄悄过去"}
             </Typography.Text>
           }
         />
       ) : (
         <List
-          size="small"
           dataSource={records}
           renderItem={(record) => (
             <List.Item
               key={record.id}
               actions={[
-                <Button key="resolve" size="small" type="link" onClick={() => void resolveOne(record)}>
+                ...(record.job_id && onOpenConversation
+                  ? [
+                      <Button
+                        key="open"
+                        size="small"
+                        type="link"
+                        onClick={() => onOpenConversation(record.job_id)}
+                      >
+                        查看会话
+                      </Button>,
+                    ]
+                  : []),
+                <Button key="resolve" size="small" type="link" onClick={() => onResolve(record)}>
                   已处理
                 </Button>,
               ]}
@@ -124,7 +163,10 @@ export default function ManualReviewPanel() {
               <List.Item.Meta
                 title={
                   <Space size={8} wrap>
-                    <Tag color={MANUAL_REVIEW_REASON_COLORS[record.reason]} style={{ marginInlineEnd: 0 }}>
+                    <Tag
+                      color={MANUAL_REVIEW_REASON_COLORS[record.reason]}
+                      style={{ marginInlineEnd: 0 }}
+                    >
                       {MANUAL_REVIEW_REASON_LABELS[record.reason]}
                     </Tag>
                     <Typography.Text strong style={{ fontSize: 13 }}>
@@ -160,6 +202,6 @@ export default function ManualReviewPanel() {
           )}
         />
       )}
-    </Card>
+    </Drawer>
   );
 }

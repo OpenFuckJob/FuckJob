@@ -18,6 +18,7 @@ import {
   CheckCircleOutlined,
   CopyOutlined,
   DatabaseOutlined,
+  ExclamationCircleOutlined,
   EyeInvisibleOutlined,
   EyeOutlined,
   LoadingOutlined,
@@ -44,7 +45,7 @@ import {
   isActiveJobTask,
 } from "../../types/rpa";
 import type { JobDetail } from "../../types/job-detail";
-import ManualReviewPanel from "./manual-review-panel";
+import ManualReviewDrawer, { useManualReview } from "./manual-review-drawer";
 import {
   getDefaultJobProfile,
   getJobProfiles,
@@ -172,6 +173,23 @@ export function filterTaskLogContent(
     .join("\n");
 }
 
+/**
+ * 「待你处理」磁贴的外观。
+ *
+ * 抽出来是因为这条规则正是它能待在磁贴区的前提：0 条时必须安静得像块背景板，
+ * 有数时必须一眼扎到人。哪天被改成恒定配色，功能就悄悄退化成没人看的角落，
+ * 而界面照样正常渲染，谁都不会发现
+ */
+export function describePendingReview(count: number): Pick<StatTile, "value" | "subtitle" | "color" | "bg"> {
+  const urgent = count > 0;
+  return {
+    value: `${count}`,
+    subtitle: urgent ? "点击查看并接手" : "AI 都自己处理了",
+    color: urgent ? "#ef4444" : "#64748b",
+    bg: urgent ? "rgba(239,68,68,0.1)" : "rgba(148,163,184,0.1)",
+  };
+}
+
 export function getTaskProfileLabel(task: Pick<JobTaskInfo, "mode" | "profile_id" | "profile_name">): string {
   if ((task.mode === "reply_unread" || task.mode === "polling_reply") && !task.profile_id) {
     return "按会话方案自动路由";
@@ -259,16 +277,19 @@ interface StatTile {
   icon: React.ReactNode;
   color: string;
   bg: string;
+  onClick?: () => void;
 }
 
 /* ────────── Component ────────── */
 
 const WorkspacePage = ({
   config,
+  onOpenConversation,
 }: {
   config: AppRuntimeConfig;
   onNavigate?: (tab: "job-data") => void;
   onOpenConfig?: (group: "resume" | "llm" | "job" | "greet" | "reply" | "browser") => void;
+  onOpenConversation?: (jobId: string) => void;
 }) => {
   const [environmentStates, setEnvironmentStates] = useState<
     Record<PlatformKind, PlatformEnvState>
@@ -288,6 +309,8 @@ const WorkspacePage = ({
   const [intervalMinutes, setIntervalMinutes] = useState<number>(DEFAULT_INTERVAL_MINUTES);
   const [selectedProfileId, setSelectedProfileId] = useState<string>(() => getDefaultJobProfile(config).id);
   const [platform, setPlatform] = useState<PlatformKind>("boss");
+  const [reviewDrawerOpen, setReviewDrawerOpen] = useState(false);
+  const manualReview = useManualReview();
   const [modalPlatform, setModalPlatform] = useState<PlatformKind>("boss");
   const [pendingStartPlatforms, setPendingStartPlatforms] = useState<
     Partial<Record<PlatformKind, boolean>>
@@ -538,6 +561,7 @@ const WorkspacePage = ({
   const repliedCount = jobs.filter((j) => j.is_reply).length;
   const replyRate = totalJobs > 0 ? `${((repliedCount / totalJobs) * 100).toFixed(0)}%` : "—";
   const runningModeLabel = `${taskCounts.running} / ${taskOverview.max_parallel_tasks}`;
+  const pendingReviewCount = manualReview.records.length;
 
   const statTiles: StatTile[] = [
     {
@@ -576,6 +600,12 @@ const WorkspacePage = ({
       color: "#10b981",
       bg: "rgba(16,185,129,0.1)",
     },
+    {
+      label: "待你处理",
+      ...describePendingReview(pendingReviewCount),
+      icon: <ExclamationCircleOutlined style={{ fontSize: 18 }} />,
+      onClick: () => setReviewDrawerOpen(true),
+    },
   ];
 
   return (
@@ -588,8 +618,13 @@ const WorkspacePage = ({
           <Card
             key={tile.label}
             size="small"
+            hoverable={!!tile.onClick}
+            onClick={tile.onClick}
             styles={{ body: { padding: "14px 16px" } }}
-            style={{ background: "linear-gradient(135deg, #ffffff 0%, #f8fafc 100%)" }}
+            style={{
+              background: "linear-gradient(135deg, #ffffff 0%, #f8fafc 100%)",
+              cursor: tile.onClick ? "pointer" : undefined,
+            }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
               <div style={{ padding: 7, borderRadius: 8, background: tile.bg, color: tile.color }}>
@@ -603,11 +638,6 @@ const WorkspacePage = ({
             <Typography.Text type="secondary" style={{ fontSize: 11 }}>{tile.subtitle}</Typography.Text>
           </Card>
         ))}
-      </section>
-
-      {/* ── Conversations waiting on the user ── */}
-      <section>
-        <ManualReviewPanel />
       </section>
 
       {/* ── Platform card + task queue ── */}
@@ -982,6 +1012,23 @@ const WorkspacePage = ({
           </pre>
         )}
       </section>
+
+      <ManualReviewDrawer
+        open={reviewDrawerOpen}
+        onClose={() => setReviewDrawerOpen(false)}
+        records={manualReview.records}
+        loading={manualReview.loading}
+        onResolve={(record) => void manualReview.resolve(record)}
+        onClear={() => void manualReview.clear()}
+        onOpenConversation={
+          onOpenConversation
+            ? (jobId) => {
+                setReviewDrawerOpen(false);
+                onOpenConversation(jobId);
+              }
+            : undefined
+        }
+      />
     </div>
   );
 };
