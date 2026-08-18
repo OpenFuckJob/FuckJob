@@ -88,6 +88,10 @@ pub fn upsert(request: ReviewRequest<'_>) -> Result<()> {
     })
 }
 
+pub fn get(platform: &str, conversation_id: &str) -> Result<Option<ManualReviewRecord>> {
+    store().get_by_id(&ManualReviewRecord::build_id(platform, conversation_id))
+}
+
 /// 按最近触发时间倒序返回。最新卡住的排在最前面
 pub fn list() -> Result<Vec<ManualReviewRecord>> {
     let mut records = store().load_all()?;
@@ -113,17 +117,20 @@ pub fn clear() -> Result<()> {
 /// 时间晚于挂起时刻，且不是 AI 发的。AI 发的那些在自动发送流水里有据可查，
 /// 所以这里只要 `last_auto_sent_at` 就够——它之后的己方消息必然出自人手。
 ///
+/// `held_at` 传记录的 `updated_at` 而不是 `created_at`：会话可能反复挂起，
+/// 该比对的是最近一次挂起，否则一次久远的处理会把之后的所有挂起都消掉。
+///
 /// 纯函数，时间戳全部由调用方给出：这条判据一旦算错，要么把用户还没处理的
 /// 会话悄悄消掉，要么让处理过的会话永远赖在列表里，两种都得能单测。
 pub fn should_auto_resolve(
-    created_at: i64,
+    held_at: i64,
     last_own_message_at: Option<i64>,
     last_auto_sent_at: Option<i64>,
 ) -> bool {
     let Some(own) = last_own_message_at else {
         return false;
     };
-    if own <= created_at {
+    if own <= held_at {
         return false;
     }
     match last_auto_sent_at {
