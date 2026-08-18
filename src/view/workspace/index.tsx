@@ -4,7 +4,6 @@ import {
   Button,
   Card,
   Image,
-  InputNumber,
   Modal,
   Radio,
   Select,
@@ -46,6 +45,7 @@ import {
 } from "../../types/rpa";
 import type { JobDetail } from "../../types/job-detail";
 import { getDefaultJobProfile, getJobProfiles, type AppRuntimeConfig } from "../../types/app-config";
+import { NumberField } from "../../components/NumberField";
 
 type CheckPhase = "idle" | "checking" | "done";
 
@@ -179,6 +179,10 @@ const TASK_STATE_ORDER: Record<JobTaskInfo["status"], number> = {
 
 const PLATFORM_ORDER: PlatformKind[] = ["boss", "liepin"];
 
+const DEFAULT_INTERVAL_MINUTES = 30;
+const MIN_INTERVAL_MINUTES = 1;
+const MAX_INTERVAL_MINUTES = 1440;
+
 export function sortTasksForQueue(tasks: JobTaskInfo[]): JobTaskInfo[] {
   return [...tasks].sort((left, right) => {
     const stateOrder = TASK_STATE_ORDER[left.status] - TASK_STATE_ORDER[right.status];
@@ -268,7 +272,7 @@ const WorkspacePage = ({
   const [logContent, setLogContent] = useState("");
   const [startModalOpen, setStartModalOpen] = useState(false);
   const [selectedMode, setSelectedMode] = useState<FlowMode>("job_hunting");
-  const [intervalMinutes, setIntervalMinutes] = useState<number>(30);
+  const [intervalMinutes, setIntervalMinutes] = useState<number>(DEFAULT_INTERVAL_MINUTES);
   const [selectedProfileId, setSelectedProfileId] = useState<string>(() => getDefaultJobProfile(config).id);
   const [platform, setPlatform] = useState<PlatformKind>("boss");
   const [modalPlatform, setModalPlatform] = useState<PlatformKind>("boss");
@@ -851,11 +855,13 @@ const WorkspacePage = ({
           {selectedMode === "periodic_job_hunting" && (
             <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 12px", background: "#f8fafc", borderRadius: 8 }}>
               <Typography.Text style={{ fontSize: 13 }}>每轮投递间隔时间</Typography.Text>
-              <InputNumber
-                min={1}
-                max={1440}
+              <NumberField
+                min={MIN_INTERVAL_MINUTES}
+                max={MAX_INTERVAL_MINUTES}
+                precision={0}
+                fallback={DEFAULT_INTERVAL_MINUTES}
                 value={intervalMinutes}
-                onChange={(v) => setIntervalMinutes(v ?? 30)}
+                onChange={setIntervalMinutes}
                 addonAfter="分钟"
                 style={{ width: 160 }}
               />

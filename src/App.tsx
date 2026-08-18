@@ -3,7 +3,7 @@ import { Alert, Button, ConfigProvider, Spin, Tabs, Typography } from "antd";
 import { RocketOutlined } from "@ant-design/icons";
 import "./App.css";
 import { useAppConfig } from "@/hooks/useAppConfig";
-import { copyJobProfile, getAnalysisConfig, getDefaultJobProfile, getJobProfiles, selectProfileAfterRemoval, type AnalysisConfig, type AppRuntimeConfig, type BrowserConfig, type GreetConfig, type GreetResource, type JobFilterConfig, type JobProfile, type RegexRule, type ReplayConfig, type ReplyResource, type ReplyTemplate, type ResumeConfig } from "@/types/app-config";
+import { copyJobProfile, DEFAULT_REGEX_RULE_LIMIT, getAnalysisConfig, getDefaultJobProfile, getJobProfiles, selectProfileAfterRemoval, type AnalysisConfig, type AppRuntimeConfig, type BrowserConfig, type GreetConfig, type GreetResource, type JobFilterConfig, type JobProfile, type RegexRule, type ReplayConfig, type ReplyResource, type ReplyTemplate, type ResumeConfig } from "@/types/app-config";
 import type { JobDetail } from "@/types/job-detail";
 import { Onboarding } from "@/view/onboarding";
 import { ConfigPage } from "@/view/config";
@@ -127,7 +127,7 @@ function MainShell({ config, update, save, status, message, dirty, importConfig,
     removeGreetDefaultResource={(i: number) => updateActiveProfile((p) => ({ ...p, greet_config: { ...p.greet_config, default_template: p.greet_config.default_template.filter((_, x) => x !== i) } }))}
     updateReplay={(v: Partial<ReplayConfig>) => updateProfileSection("replay_config", v)}
     updateReplyTemplate={(i: number, v: Partial<ReplyTemplate>) => updateActiveProfile((p) => ({ ...p, replay_config: { ...p.replay_config, templates: updateAt(p.replay_config.templates, i, v) } }))}
-    addReplyTemplate={() => updateActiveProfile((p) => ({ ...p, replay_config: { ...p.replay_config, templates: [...p.replay_config.templates, { regex_rule: { name: "", pattern: "", limit: 5 }, content: [{ resource_type: "Text", content: "" }] }] } }))}
+    addReplyTemplate={() => updateActiveProfile((p) => ({ ...p, replay_config: { ...p.replay_config, templates: [...p.replay_config.templates, { regex_rule: { name: "", pattern: "", limit: DEFAULT_REGEX_RULE_LIMIT }, content: [{ resource_type: "Text", content: "" }] }] } }))}
     removeReplyTemplate={(i: number) => updateActiveProfile((p) => ({ ...p, replay_config: { ...p.replay_config, templates: p.replay_config.templates.filter((_, x) => x !== i) } }))}
     updateReplyResource={(ti: number, ri: number, v: Partial<ReplyResource>) => updateActiveProfile((p) => ({ ...p, replay_config: { ...p.replay_config, templates: p.replay_config.templates.map((t, i) => i === ti ? { ...t, content: updateAt(t.content, ri, v) } : t) } }))}
     addReplyResource={(ti: number) => updateActiveProfile((p) => ({ ...p, replay_config: { ...p.replay_config, templates: p.replay_config.templates.map((t, i) => i === ti ? { ...t, content: [...t.content, { resource_type: "Text", content: "" }] } : t) } }))}

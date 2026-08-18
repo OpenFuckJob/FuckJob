@@ -1,7 +1,6 @@
 import {
   Form,
   Input,
-  InputNumber,
   Select,
   Switch,
   Button,
@@ -45,10 +44,14 @@ import {
   getJobProfiles,
   DEFAULT_MAX_AUTO_REPLIES,
   DEFAULT_MAX_REPLY_CHARS,
+  DEFAULT_REGEX_RULE_LIMIT,
+  DEFAULT_MAX_PARALLEL_TASKS,
   DEFAULT_HIGH_MATCH_SCORE,
   MIN_HIGH_MATCH_SCORE,
+  DEFAULT_MAX_ANALYSIS_PER_TASK,
   MAX_ANALYSIS_PER_TASK,
 } from "@/types/app-config";
+import { NumberField } from "@/components/NumberField";
 import {
   jobTypeOptions,
   salaryOptions,
@@ -1409,13 +1412,15 @@ export function ConfigPage(props: ConfigPageProps) {
                       每次求职任务最多自动分析多少个岗位，0 表示不限制
                     </Text>
                   </div>
-                  <InputNumber
+                  <NumberField
                     aria-label="单次任务分析上限"
                     min={0}
                     max={MAX_ANALYSIS_PER_TASK}
+                    precision={0}
+                    fallback={DEFAULT_MAX_ANALYSIS_PER_TASK}
                     value={analysis.max_per_task}
                     onChange={(value) =>
-                      props.updateAnalysis({ max_per_task: Number(value ?? 0) })
+                      props.updateAnalysis({ max_per_task: value })
                     }
                   />
                 </div>
@@ -1432,15 +1437,15 @@ export function ConfigPage(props: ConfigPageProps) {
                     分析得分达到该值的岗位计入求职数据概览的「高匹配岗位」
                   </Text>
                 </div>
-                <InputNumber
+                <NumberField
                   aria-label="高匹配分数线"
                   min={MIN_HIGH_MATCH_SCORE}
                   max={100}
+                  precision={0}
+                  fallback={DEFAULT_HIGH_MATCH_SCORE}
                   value={analysis.high_match_score}
                   onChange={(value) =>
-                    props.updateAnalysis({
-                      high_match_score: Number(value ?? DEFAULT_HIGH_MATCH_SCORE),
-                    })
+                    props.updateAnalysis({ high_match_score: value })
                   }
                 />
               </div>
@@ -1620,15 +1625,13 @@ export function ConfigPage(props: ConfigPageProps) {
                           extra="累计回复达到该条数后转人工，避免和 HR 无限客套。"
                           className="!mb-0"
                         >
-                          <InputNumber
+                          <NumberField
                             min={1}
                             precision={0}
+                            fallback={DEFAULT_MAX_AUTO_REPLIES}
                             style={{ width: "100%" }}
                             onChange={(value) =>
-                              props.updateReplay({
-                                max_auto_replies:
-                                  value ?? DEFAULT_MAX_AUTO_REPLIES,
-                              })
+                              props.updateReplay({ max_auto_replies: value })
                             }
                           />
                         </Form.Item>
@@ -1640,15 +1643,13 @@ export function ConfigPage(props: ConfigPageProps) {
                           extra="超长的求职消息本身就不像真人写的。超出后会自动截断，并尽量断在句末。"
                           className="!mb-0"
                         >
-                          <InputNumber
+                          <NumberField
                             min={1}
                             precision={0}
+                            fallback={DEFAULT_MAX_REPLY_CHARS}
                             style={{ width: "100%" }}
                             onChange={(value) =>
-                              props.updateReplay({
-                                max_reply_chars:
-                                  value ?? DEFAULT_MAX_REPLY_CHARS,
-                              })
+                              props.updateReplay({ max_reply_chars: value })
                             }
                           />
                         </Form.Item>
@@ -1756,16 +1757,17 @@ export function ConfigPage(props: ConfigPageProps) {
                                 <Text className="text-[10px] text-slate-500 font-bold block mb-1">
                                   匹配最近聊天条数
                                 </Text>
-                                <InputNumber
+                                <NumberField
                                   size="small"
                                   min={1}
                                   precision={0}
+                                  fallback={DEFAULT_REGEX_RULE_LIMIT}
                                   value={template.regex_rule.limit}
                                   onChange={(value) =>
                                     props.updateReplyTemplate(index, {
                                       regex_rule: {
                                         ...template.regex_rule,
-                                        limit: value ?? 1,
+                                        limit: value,
                                       },
                                     })
                                   }
@@ -1981,13 +1983,14 @@ export function ConfigPage(props: ConfigPageProps) {
               name={["browser_config", "max_parallel_tasks"]}
               extra="默认为 2, BOSS 与猎聘可各运行一个任务、同一平台的后续任务会排队。"
             >
-              <InputNumber
+              <NumberField
                 min={1}
                 max={2}
                 precision={0}
+                fallback={DEFAULT_MAX_PARALLEL_TASKS}
                 style={{ width: "100%" }}
                 onChange={(value) =>
-                  props.updateBrowser({ max_parallel_tasks: value ?? 2 })
+                  props.updateBrowser({ max_parallel_tasks: value })
                 }
               />
             </Form.Item>

@@ -154,6 +154,8 @@ export interface ReplayConfig {
 /** 与 Rust 侧 ReplayConfig 的 serde 默认值保持一致 */
 export const DEFAULT_MAX_AUTO_REPLIES = 5;
 export const DEFAULT_MAX_REPLY_CHARS = 200;
+/** 新建正则模板时匹配最近多少条聊天 */
+export const DEFAULT_REGEX_RULE_LIMIT = 5;
 
 /** 自动触发岗位分析的时机，一次只能生效一个 */
 export type AnalysisTrigger = "off" | "filter_passed" | "greet_sent" | "reply_received";
@@ -186,6 +188,9 @@ export interface BrowserConfig {
   chrome_exe_path: string | null;
   max_parallel_tasks: number;
 }
+
+/** BOSS 与猎聘可各跑一个任务，再多就排队 */
+export const DEFAULT_MAX_PARALLEL_TASKS = 2;
 
 export interface ResumeConfig {
   inject_llm_context: boolean;

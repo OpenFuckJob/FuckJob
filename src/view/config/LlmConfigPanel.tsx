@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Alert, AutoComplete, Button, Card, Collapse, Divider, Form, Input, InputNumber, Modal, Select, Space, Switch, Tag, Typography } from "antd";
+import { Alert, AutoComplete, Button, Card, Collapse, Divider, Form, Input, Modal, Select, Space, Switch, Tag, Typography } from "antd";
 import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, PlusOutlined } from "@ant-design/icons";
 import {
   MAX_NETWORK_RETRY_ATTEMPTS,
@@ -11,6 +11,7 @@ import {
   type LlmProviderPreset,
   type LlmRetryConfig,
 } from "@/types/app-config";
+import { NumberField } from "@/components/NumberField";
 import {
   clearLlmApiKey,
   clearLlmApiKeyFor,
@@ -511,23 +512,25 @@ export function LlmConfigPanel({
           <Divider style={{ marginTop: 24 }} />
           <Typography.Title level={5} style={{ marginTop: 0 }}>重试策略</Typography.Title>
           <Form.Item label="网络故障重试次数" extra="仅对网络连接失败重试；请求超时和密钥错误不会重试。重试次数用尽后才会降级到下一个服务。">
-            <InputNumber
+            <NumberField
               aria-label="网络故障重试次数"
               min={0}
               max={MAX_NETWORK_RETRY_ATTEMPTS}
               precision={0}
+              fallback={0}
               value={retryConfig.network_retry_attempts}
               onChange={(value) => onRetryConfigChange({ ...retryConfig, network_retry_attempts: clampRetryAttempts(value) })}
             />
           </Form.Item>
           <Form.Item label="首次重试等待" extra="之后按指数退避，第二次等待翻倍。">
-            <InputNumber
+            <NumberField
               aria-label="首次重试等待"
               min={MIN_RETRY_BASE_DELAY_MS}
               max={MAX_RETRY_BASE_DELAY_MS}
               step={100}
               precision={0}
               addonAfter="毫秒"
+              fallback={MIN_RETRY_BASE_DELAY_MS}
               value={retryConfig.retry_base_delay_ms}
               onChange={(value) => onRetryConfigChange({ ...retryConfig, retry_base_delay_ms: clampRetryBaseDelay(value) })}
             />
