@@ -789,9 +789,10 @@ const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled, 
           open
           onCancel={() => setCurrentJob(null)}
           footer={null}
-          width={920}
+          width="min(1180px, 94vw)"
+          centered
           destroyOnHidden
-          styles={{ body: { maxHeight: "70vh", overflowY: "auto", padding: "16px 24px" } }}
+          styles={{ body: { height: "min(74vh, 860px)", overflowY: "auto", padding: "16px 24px" } }}
         >
           <AnalysisReport
             job={currentJob}
