@@ -1595,6 +1595,28 @@ mod tests {
         }
     }
 
+    /// 老用户的配置文件里没有轮询这几块字段。它们全靠 serde 默认值补齐，
+    /// 所以 schema 版本不用 bump——但这条依赖一旦断掉，表现是升级后轮询
+    /// 参数全为 0：间隔 0 分钟变忙循环、活跃时段 0-0、单轮上限 0 条永不处理。
+    /// 配置读取整体不报错，只是行为静默失常，所以这里把它钉死
+    #[test]
+    fn configs_written_before_polling_existed_fall_back_to_defaults() {
+        let mut value = serde_yaml::to_value(default_app_config()).unwrap();
+        let root = value.as_mapping_mut().unwrap();
+        root.remove(serde_yaml::Value::String("reply_polling_config".into()));
+        root.get_mut(serde_yaml::Value::String("replay_config".into()))
+            .and_then(serde_yaml::Value::as_mapping_mut)
+            .unwrap()
+            .remove(serde_yaml::Value::String("auto_reply_window_hours".into()));
+
+        let config: AppRuntimeConfig = serde_yaml::from_value(value).unwrap();
+
+        assert_eq!(config.reply_polling_config, ReplyPollingConfig::default());
+        assert_eq!(config.replay_config.auto_reply_window_hours, 24);
+        assert_eq!(config.reply_polling_config.interval_minutes, 5);
+        assert_eq!(config.reply_polling_config.max_conversations_per_round, 10);
+    }
+
     #[test]
     fn future_schema_versions_are_rejected_instead_of_downgraded() {
         let error = parse_config_content(&format!(
