@@ -5,8 +5,9 @@ use rust_drission::utils::sleep_random_ms;
 
 use crate::{
     agent::{tasks::ReplyDecisionTask, AgentRunner},
+    auto_analysis,
     browser,
-    config::AppRuntimeConfig,
+    config::{AnalysisTrigger, AppRuntimeConfig},
     dao::{chat_message_dao, job_detail_dao, profile_snapshot_dao},
     logger,
     rpa::{
@@ -179,6 +180,14 @@ async fn handle_conversation(
         }
         profile_snapshot_dao::ResolutionSource::DefaultProfile => {
             logger::warning("会话没有可恢复的求职方案归属，按默认方案回复")?;
+        }
+    }
+
+    // 登记要在自动回复的开关判断之前：对方回没回和这轮要不要自动回复是两件事，
+    // 只开分析、不开自动回复也应该拿得到分析报告
+    if let Some(job) = job.as_ref() {
+        if messages.iter().any(|message| message.received) {
+            auto_analysis::schedule(job, AnalysisTrigger::ReplyReceived, &conversation_config);
         }
     }
 

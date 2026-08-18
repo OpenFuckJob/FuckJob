@@ -1,0 +1,206 @@
+.job-data-page {
+  --jd-border: #e8ecf2;
+  --jd-muted: #64748b;
+  --jd-ink: #0f172a;
+}
+
+.match-tag {
+  margin: 0;
+  font-weight: 600;
+}
+
+.match-tag.is-empty {
+  border-color: #e2e8f0;
+  background: #f8fafc;
+  color: #94a3b8;
+  font-weight: 400;
+}
+
+/* ── 看板 ── */
+.kanban-board {
+  display: flex;
+  flex: 1 1 0;
+  gap: 14px;
+  min-height: 0;
+  padding-bottom: 4px;
+  overflow-x: auto;
+}
+
+.kanban-lane {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 280px;
+  border: 1px solid var(--jd-border);
+  border-radius: 16px;
+  background: #f8fafc;
+}
+
+.kanban-lane-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px 10px;
+}
+
+.kanban-lane-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.kanban-lane-title {
+  color: var(--jd-ink);
+  font-size: 13.5px;
+  font-weight: 650;
+}
+
+.kanban-lane-count {
+  margin-left: auto;
+  padding: 1px 9px;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: inset 0 0 0 1px var(--jd-border);
+  color: var(--jd-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.kanban-lane-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 10px 12px;
+  overflow-y: auto;
+}
+
+.kanban-empty {
+  display: grid;
+  gap: 6px;
+  padding: 28px 0;
+  justify-items: center;
+  color: #b6c2d2;
+  font-size: 12px;
+}
+
+.kanban-empty .anticon {
+  font-size: 18px;
+}
+
+/* ── 岗位卡片 ── */
+.job-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px 13px;
+  border: 1px solid var(--jd-border);
+  border-radius: 13px;
+  background: #ffffff;
+  cursor: pointer;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.job-card:hover {
+  transform: translateY(-1px);
+  border-color: #cfe0ff;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.07);
+}
+
+.job-card-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.job-card-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--jd-ink);
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.job-card-company {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--jd-muted);
+  font-size: 12px;
+}
+
+.job-card-company .platform-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+.job-card-company span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.job-card-tags .ant-tag {
+  margin: 0;
+  font-size: 11px;
+}
+
+.job-card-chip {
+  padding: 1px 8px;
+  border-radius: 6px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.job-card-chip.salary {
+  background: rgba(22, 119, 255, 0.08);
+  color: #1677ff;
+}
+
+.job-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+  padding-top: 8px;
+  border-top: 1px dashed #eef2f7;
+}
+
+.job-card-time {
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+/* 操作按钮平时隐去，hover 或键盘聚焦时才出现，卡片信息不被按钮淹没 */
+.job-card-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.job-card:hover .job-card-actions,
+.job-card:focus-within .job-card-actions {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .job-card-actions {
+    opacity: 1;
+  }
+}

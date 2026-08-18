@@ -6,8 +6,9 @@ use serde::Deserialize;
 
 use crate::{
     agent::{tasks::ReplyDecisionTask, AgentRunner},
+    auto_analysis,
     browser,
-    config::AppRuntimeConfig,
+    config::{AnalysisTrigger, AppRuntimeConfig},
     dao::{chat_message_dao, job_detail_dao, model::JobDetail, profile_snapshot_dao},
     logger,
     rpa::{
@@ -208,6 +209,14 @@ async fn handle_conversation(
                 "猎聘会话「{}」无法可靠映射到历史岗位，按默认方案回复",
                 name
             ))?;
+        }
+    }
+
+    // 登记要在自动回复的开关判断之前：对方回没回和这轮要不要自动回复是两件事，
+    // 只开分析、不开自动回复也应该拿得到分析报告
+    if let Some(job) = owned_job.as_ref() {
+        if messages.iter().any(|message| message.received) {
+            auto_analysis::schedule(job, AnalysisTrigger::ReplyReceived, &conversation_config);
         }
     }
 

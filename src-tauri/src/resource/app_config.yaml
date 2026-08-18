@@ -103,6 +103,12 @@ replay_config: &default_replay
   background_context: |-
     一本院校毕业
     一年工作经验，主要做AI智能客服
+analysis_config: &default_analysis
+  # 必须带引号：YAML 会把裸 off 当成布尔 false
+  trigger: "off"
+  skip_analyzed: true
+  max_per_task: 20
+  high_match_score: 80
 browser_config:
   user_data_dir: ""
   chrome_exe_path: ""
@@ -127,3 +133,4 @@ job_profiles:
     resume_config: *default_resume
     greet_config: *default_greet
     replay_config: *default_replay
+    analysis_config: *default_analysis

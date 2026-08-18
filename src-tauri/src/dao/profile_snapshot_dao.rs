@@ -85,6 +85,7 @@ fn resolve_from_sources(
             config.resume_config = profile.resume_config.clone();
             config.greet_config = profile.greet_config.clone();
             config.replay_config = profile.replay_config.clone();
+            config.analysis_config = profile.analysis_config.clone();
             config.active_job_profile = None;
             return Ok((config, ResolutionSource::CurrentProfile));
         }

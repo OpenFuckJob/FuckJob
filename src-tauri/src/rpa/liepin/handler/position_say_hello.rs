@@ -3,8 +3,9 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::{
+    auto_analysis,
     browser,
-    config::{AppRuntimeConfig, ReplayResourceType, ReplyResource},
+    config::{AnalysisTrigger, AppRuntimeConfig, ReplayResourceType, ReplyResource},
     dao::{job_detail_dao, model::JobDetail},
     logger,
     rpa::{
@@ -125,6 +126,12 @@ pub async fn position_say_hello_on_page(
                 }
             }
 
+            // 「筛选通过即分析」不关心后面招呼发没发出去，所以在进入打招呼之前就登记
+            auto_analysis::schedule(
+                &build_job_detail(&job, &config),
+                AnalysisTrigger::FilterPassed,
+                &config,
+            );
             match greet_job(connection, job.clone(), config.clone()).await {
                 Ok(false) => {
                     stats.skipped_hold += 1;
@@ -595,7 +602,8 @@ async fn greet_job(
             }
             SendVerdict::Send(resources) => send_resources(&page, resources)?,
         }
-        save_job_detail(&job, &config);
+        let saved = save_job_detail(&job, &config);
+        auto_analysis::schedule(&saved, AnalysisTrigger::GreetSent, &config);
         logger::info(format!("猎聘 {} 初次沟通成功", job.title))?;
         Ok(true)
     }
@@ -1096,10 +1104,12 @@ fn build_send_text_script(text: &str) -> String {
     )
 }
 
-fn save_job_detail(job: &RpaJob, config: &AppRuntimeConfig) {
+/// 按当前任务上下文拼出岗位记录。
+/// 打招呼后落库和「筛选通过即分析」共用它——后者触发时岗位还没入库，只能拿这份内存数据去分析。
+fn build_job_detail(job: &RpaJob, config: &AppRuntimeConfig) -> JobDetail {
     let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let active = config.active_job_profile.as_ref();
-    let job_detail = JobDetail {
+    JobDetail {
         id: format!("liepin:{}", job.platform_job_id),
         platform: "liepin".to_string(),
         source_task_id: crate::rpa::run_flow::current_job_task_id(),
@@ -1116,11 +1126,16 @@ fn save_job_detail(job: &RpaJob, config: &AppRuntimeConfig) {
         created_at: now.clone(),
         resume_sent_at: None,
         updated_at: now,
-    };
+    }
+}
 
-    if let Err(e) = job_detail_dao::create(job_detail) {
+fn save_job_detail(job: &RpaJob, config: &AppRuntimeConfig) -> JobDetail {
+    let job_detail = build_job_detail(job, config);
+
+    if let Err(e) = job_detail_dao::create(job_detail.clone()) {
         let _ = logger::warning(format!("保存猎聘岗位数据失败: {}", e));
     }
+    job_detail
 }
 
 fn scroll_next(page: &Page) -> Result<bool, anyhow::Error> {

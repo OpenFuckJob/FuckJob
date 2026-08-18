@@ -39,9 +39,15 @@ import {
   ResumeConfig,
   RegexRule,
   JobProfile,
+  AnalysisConfig,
+  AnalysisTrigger,
+  getAnalysisConfig,
   getJobProfiles,
   DEFAULT_MAX_AUTO_REPLIES,
   DEFAULT_MAX_REPLY_CHARS,
+  DEFAULT_HIGH_MATCH_SCORE,
+  MIN_HIGH_MATCH_SCORE,
+  MAX_ANALYSIS_PER_TASK,
 } from "@/types/app-config";
 import {
   jobTypeOptions,
@@ -76,6 +82,7 @@ import {
   EditOutlined,
   StarOutlined,
   InboxOutlined,
+  ThunderboltOutlined,
 } from "@ant-design/icons";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -241,6 +248,7 @@ export interface ConfigPageProps {
   ) => void;
   addReplyResource: (templateIndex: number) => void;
   removeReplyResource: (templateIndex: number, resourceIndex: number) => void;
+  updateAnalysis: (next: Partial<AnalysisConfig>) => void;
   updateBrowser: (next: Partial<BrowserConfig>) => void;
   updateResume: (next: Partial<ResumeConfig>) => void;
   updateRule: (index: number, next: Partial<RegexRule>) => void;
@@ -259,6 +267,39 @@ export interface ConfigPageProps {
   onDeleteProfile: () => void;
 }
 
+/** 自动分析的触发时机，一次只生效一个 */
+const ANALYSIS_TRIGGER_OPTIONS: Array<{
+  value: AnalysisTrigger;
+  label: string;
+  description: string;
+  needsLlm: boolean;
+}> = [
+  {
+    value: "off",
+    label: "关闭自动分析",
+    description: "只在岗位详情页或岗位管理页的批量入口手动分析",
+    needsLlm: false,
+  },
+  {
+    value: "greet_sent",
+    label: "打招呼发送成功后",
+    description: "只分析真正投出去的岗位，最省模型额度，推荐日常使用",
+    needsLlm: true,
+  },
+  {
+    value: "filter_passed",
+    label: "通过筛选规则后",
+    description: "规则命中即分析，覆盖最全；被模型判定不该投的岗位也会消耗额度",
+    needsLlm: true,
+  },
+  {
+    value: "reply_received",
+    label: "收到 HR 回复后",
+    description: "对方回复了才分析，此时聊天记录已有内容，报告最贴合面试准备",
+    needsLlm: true,
+  },
+];
+
 const configGroupKeys = [
   "browser",
   "llm",
@@ -266,6 +307,7 @@ const configGroupKeys = [
   "resume",
   "greet",
   "reply",
+  "analysis",
   "data",
   "about",
 ] as const;
@@ -290,7 +332,7 @@ const menuItems = [
   ] },
 ];
 
-const profileGroupKeys = ["job", "resume", "greet", "reply"] as const;
+const profileGroupKeys = ["job", "resume", "greet", "reply", "analysis"] as const;
 type ProfileGroup = (typeof profileGroupKeys)[number];
 const isProfileGroup = (group: VisibleConfigGroup): group is ProfileGroup =>
   profileGroupKeys.includes(group as ProfileGroup);
@@ -300,6 +342,7 @@ const profileTabItems = [
   { key: "resume", icon: <FilePdfOutlined />, label: "简历配置" },
   { key: "greet", icon: <CommentOutlined />, label: "打招呼" },
   { key: "reply", icon: <CommentOutlined />, label: "自动回复" },
+  { key: "analysis", icon: <ThunderboltOutlined />, label: "岗位分析" },
 ];
 
 export function ConfigPage(props: ConfigPageProps) {
@@ -1271,6 +1314,145 @@ export function ConfigPage(props: ConfigPageProps) {
             </div>
           </Space>
         );
+      case "analysis": {
+        const analysis = getAnalysisConfig(props.config);
+        const llmConfigured = !!props.config.llm_config;
+        return (
+          <Space direction="vertical" size="large" className="w-full">
+            <div>
+              <Title
+                level={4}
+                className="text-slate-900! m-0! flex items-center gap-2"
+              >
+                <ThunderboltOutlined className="text-sky-500" />
+                岗位分析
+              </Title>
+              <Text className="text-slate-500 text-xs uppercase font-bold tracking-widest">
+                让 AI 自动评估岗位匹配度，不必逐个手动分析
+              </Text>
+            </div>
+            <Divider className="!my-0 opacity-10" />
+            <AiFeatureGate configured={llmConfigured} onConfigure={props.onOpenLlmConfig}><></></AiFeatureGate>
+
+            <div className="rounded-2xl border border-slate-200/80 bg-white/85 p-6 space-y-5">
+              <div>
+                <Text className="text-slate-900 font-bold block">分析时机</Text>
+                <Text className="text-slate-500 text-xs">
+                  一个岗位在一轮流程里只会被一个时机命中，分析在后台进行，不会拖慢求职任务
+                </Text>
+              </div>
+
+              <Radio.Group
+                value={analysis.trigger}
+                onChange={(e) =>
+                  props.updateAnalysis({ trigger: e.target.value as AnalysisTrigger })
+                }
+                className="w-full"
+              >
+                <div className="flex flex-col gap-2 w-full">
+                  {ANALYSIS_TRIGGER_OPTIONS.map((option) => (
+                    <Radio
+                      key={option.value}
+                      value={option.value}
+                      disabled={option.needsLlm && !llmConfigured}
+                      className="items-start! rounded-xl border border-slate-200/80 px-4 py-3 m-0! hover:border-sky-300"
+                    >
+                      <Text className="text-slate-900 font-bold block">
+                        {option.label}
+                      </Text>
+                      <Text className="text-slate-500 text-xs">
+                        {option.description}
+                      </Text>
+                    </Radio>
+                  ))}
+                </div>
+              </Radio.Group>
+
+              {!llmConfigured && (
+                <Text className="text-slate-400 text-xs block">
+                  自动分析需要先配置模型服务后才能选择。
+                </Text>
+              )}
+            </div>
+
+            {analysis.trigger !== "off" && (
+              <div className="rounded-2xl border border-slate-200/80 bg-white/85 p-6 space-y-5">
+                <div>
+                  <Text className="text-slate-900 font-bold block">额度护栏</Text>
+                  <Text className="text-slate-500 text-xs">
+                    一次分析就是一次完整的大模型调用，这两项决定它最多能花多少
+                  </Text>
+                </div>
+
+                <div className="flex items-center justify-between gap-6 rounded-xl border border-slate-200/80 px-4 py-3">
+                  <div>
+                    <Text className="text-slate-900 font-bold block">
+                      跳过已分析过的岗位
+                    </Text>
+                    <Text className="text-slate-500 text-xs">
+                      关掉后同一个岗位会被反复分析并覆盖旧报告；解析失败的报告不受此项影响，始终会重跑
+                    </Text>
+                  </div>
+                  <Switch
+                    aria-label="跳过已分析过的岗位"
+                    checked={analysis.skip_analyzed}
+                    onChange={(value) => props.updateAnalysis({ skip_analyzed: value })}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-6 rounded-xl border border-slate-200/80 px-4 py-3">
+                  <div>
+                    <Text className="text-slate-900 font-bold block">
+                      单次任务分析上限
+                    </Text>
+                    <Text className="text-slate-500 text-xs">
+                      每次求职任务最多自动分析多少个岗位，0 表示不限制
+                    </Text>
+                  </div>
+                  <InputNumber
+                    aria-label="单次任务分析上限"
+                    min={0}
+                    max={MAX_ANALYSIS_PER_TASK}
+                    value={analysis.max_per_task}
+                    onChange={(value) =>
+                      props.updateAnalysis({ max_per_task: Number(value ?? 0) })
+                    }
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="rounded-2xl border border-slate-200/80 bg-white/85 p-6 space-y-5">
+              <div className="flex items-center justify-between gap-6">
+                <div>
+                  <Text className="text-slate-900 font-bold block">
+                    高匹配分数线
+                  </Text>
+                  <Text className="text-slate-500 text-xs">
+                    分析得分达到该值的岗位计入求职数据概览的「高匹配岗位」
+                  </Text>
+                </div>
+                <InputNumber
+                  aria-label="高匹配分数线"
+                  min={MIN_HIGH_MATCH_SCORE}
+                  max={100}
+                  value={analysis.high_match_score}
+                  onChange={(value) =>
+                    props.updateAnalysis({
+                      high_match_score: Number(value ?? DEFAULT_HIGH_MATCH_SCORE),
+                    })
+                  }
+                />
+              </div>
+              <Alert
+                type="info"
+                showIcon
+                message="分析报告在岗位管理页打开岗位即可查看，也可以在那里勾选多个岗位批量分析存量数据。"
+              />
+            </div>
+          </Space>
+        );
+      }
       case "reply": {
         const replayStrategy = replyStrategyOf(props.config.replay_config);
         const llmConfigured = !!props.config.llm_config;

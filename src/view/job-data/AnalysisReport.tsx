@@ -39,12 +39,15 @@ const scoreColor = (s: number): string => {
 
 interface AnalysisReportProps {
   job: JobDetail;
-  onBack: () => void;
+  /** 整页形态下的返回入口。放在弹窗里时不传，标题与关闭都交给弹窗 */
+  onBack?: () => void;
   aiConfigured: boolean;
   onConfigureAi: () => void;
+  /** 分析完成后通知外部刷新列表上的匹配度 */
+  onAnalyzed?: (analysis: InterviewJobAnalysis) => void;
 }
 
-const AnalysisReport = ({ job, onBack, aiConfigured, onConfigureAi }: AnalysisReportProps) => {
+const AnalysisReport = ({ job, onBack, aiConfigured, onConfigureAi, onAnalyzed }: AnalysisReportProps) => {
   const [analysis, setAnalysis] = useState<InterviewJobAnalysis | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisChecking, setAnalysisChecking] = useState(false);
@@ -86,6 +89,7 @@ const AnalysisReport = ({ job, onBack, aiConfigured, onConfigureAi }: AnalysisRe
         return;
       }
       setAnalysis(result.data);
+      onAnalyzed?.(result.data);
       if (result.data.parse_error) {
         messageApi.warning("分析完成，但结果解析不完整");
       } else {
@@ -98,42 +102,59 @@ const AnalysisReport = ({ job, onBack, aiConfigured, onConfigureAi }: AnalysisRe
     } finally {
       setAnalysisLoading(false);
     }
-  }, [aiConfigured, job.id, messageApi]);
+  }, [aiConfigured, job.id, messageApi, onAnalyzed]);
+
+  const analyzeButton = (
+    <AiFeatureGate configured={aiConfigured} onConfigure={onConfigureAi}>
+      <Button
+        type="primary"
+        icon={<ThunderboltOutlined />}
+        loading={analysisLoading}
+        onClick={() => void handleRunAnalyze()}
+      >
+        {analysis ? "重新分析" : "开始分析"}
+      </Button>
+    </AiFeatureGate>
+  );
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflowY: "auto", gap: 16 }}>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: onBack ? "100%" : undefined,
+        overflowY: onBack ? "auto" : undefined,
+        gap: 16,
+      }}
+    >
       {contextHolder}
 
-      {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
-        <Space>
-          <Button icon={<ArrowLeftOutlined />} onClick={onBack}>返回</Button>
-          <Typography.Title level={5} style={{ margin: 0 }}>
-            {job.title} - 面试分析报告
-          </Typography.Title>
-        </Space>
-        <Space>
-          <AiFeatureGate configured={aiConfigured} onConfigure={onConfigureAi}><Button
-            type="primary"
-            icon={<ThunderboltOutlined />}
-            loading={analysisLoading}
-            onClick={() => void handleRunAnalyze()}
-          >
-            {analysis ? "重新分析" : "开始分析"}
-          </Button></AiFeatureGate>
-        </Space>
-      </div>
+      {/* Header：弹窗形态下标题与关闭都由弹窗负责，这一行整体省掉 */}
+      {onBack && (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
+          <Space>
+            <Button icon={<ArrowLeftOutlined />} onClick={onBack}>返回</Button>
+            <Typography.Title level={5} style={{ margin: 0 }}>
+              {job.title} - 面试分析报告
+            </Typography.Title>
+          </Space>
+          <Space>{analyzeButton}</Space>
+        </div>
+      )}
 
       {/* Job Info Card */}
       <Card size="small" style={{ flexShrink: 0 }}>
-        <Descriptions size="small" column={4}>
-          <Descriptions.Item label="公司">{job.company_name}</Descriptions.Item>
-          <Descriptions.Item label="薪资">{job.salary || "-"}</Descriptions.Item>
-          <Descriptions.Item label="地点">{job.location || "-"}</Descriptions.Item>
-          <Descriptions.Item label="状态">
-            {job.is_send_resume ? <Tag color="blue">已投递</Tag> : <Tag>未投递</Tag>}
-          </Descriptions.Item>
-        </Descriptions>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <Descriptions size="small" column={onBack ? 4 : 3} style={{ flex: 1 }}>
+            <Descriptions.Item label="公司">{job.company_name}</Descriptions.Item>
+            <Descriptions.Item label="薪资">{job.salary || "-"}</Descriptions.Item>
+            <Descriptions.Item label="地点">{job.location || "-"}</Descriptions.Item>
+            <Descriptions.Item label="状态">
+              {job.is_send_resume ? <Tag color="blue">已投递</Tag> : <Tag>未投递</Tag>}
+            </Descriptions.Item>
+          </Descriptions>
+          {!onBack && analyzeButton}
+        </div>
       </Card>
 
       {/* Analysis Content */}
@@ -171,27 +192,35 @@ const AnalysisReport = ({ job, onBack, aiConfigured, onConfigureAi }: AnalysisRe
   );
 };
 
+/** 报告里所有条目列表共用的行距，逐条读起来不至于挤在一起 */
+const bulletListStyle = { margin: 0, paddingLeft: 20, lineHeight: 1.9 } as const;
+
 const OverviewTab = ({ a }: { a: InterviewJobAnalysis }) => (
   <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-    <Row gutter={16} align="middle">
-      <Col>
-        <Progress
-          type="circle"
-          percent={a.match_score}
-          size={100}
-          strokeColor={scoreColor(a.match_score)}
-          format={(p) => `${p}`}
-        />
-      </Col>
-      <Col flex={1}>
-        <Typography.Text strong style={{ fontSize: 15 }}>匹配度总结</Typography.Text>
-        <div style={{ marginTop: 4, lineHeight: 1.8 }}>{a.fit_summary}</div>
-      </Col>
-    </Row>
+    <Card size="small">
+      <Row gutter={20} align="middle" wrap={false}>
+        <Col flex="none">
+          <Progress
+            type="circle"
+            percent={a.match_score}
+            size={116}
+            strokeColor={scoreColor(a.match_score)}
+            format={(p) => `${p}`}
+          />
+        </Col>
+        <Col flex="auto">
+          <Typography.Text strong style={{ fontSize: 15 }}>匹配度总结</Typography.Text>
+          <div style={{ marginTop: 6, lineHeight: 1.9 }}>{a.fit_summary}</div>
+          <Typography.Text type="secondary" style={{ display: "block", marginTop: 8, fontSize: 12 }}>
+            分析时间：{a.analyzed_at}
+          </Typography.Text>
+        </Col>
+      </Row>
+    </Card>
 
     {a.strengths.length > 0 && (
       <Card size="small" title={<Typography.Text strong style={{ color: "#52c41a" }}>优势项</Typography.Text>}>
-        <ul style={{ margin: 0, paddingLeft: 20 }}>
+        <ul style={bulletListStyle}>
           {a.strengths.map((s, i) => <li key={i}>{s}</li>)}
         </ul>
       </Card>
@@ -199,7 +228,7 @@ const OverviewTab = ({ a }: { a: InterviewJobAnalysis }) => (
 
     {a.risks.length > 0 && (
       <Card size="small" title={<Typography.Text strong style={{ color: "#ff4d4f" }}>风险项</Typography.Text>}>
-        <ul style={{ margin: 0, paddingLeft: 20 }}>
+        <ul style={bulletListStyle}>
           {a.risks.map((r, i) => <li key={i}>{r}</li>)}
         </ul>
       </Card>
@@ -207,7 +236,7 @@ const OverviewTab = ({ a }: { a: InterviewJobAnalysis }) => (
 
     {a.questions_to_ask_interviewer.length > 0 && (
       <Card size="small" title={<Typography.Text strong>建议反问面试官</Typography.Text>}>
-        <ul style={{ margin: 0, paddingLeft: 20 }}>
+        <ul style={bulletListStyle}>
           {a.questions_to_ask_interviewer.map((q, i) => <li key={i}>{q}</li>)}
         </ul>
       </Card>
@@ -292,10 +321,10 @@ const SkillMatrixTab = ({ a }: { a: InterviewJobAnalysis }) => {
               style: { cursor: "pointer" },
             })}
             columns={[
-              { title: "JD 要求", dataIndex: "requirement", ellipsis: true },
-              { title: "简历证据", dataIndex: "resume_evidence", ellipsis: true },
-              { title: "差距", dataIndex: "gap", ellipsis: true },
-              { title: "补强建议", dataIndex: "prep_action", ellipsis: true },
+              { title: "JD 要求", dataIndex: "requirement", ellipsis: true, width: "26%" },
+              { title: "简历证据", dataIndex: "resume_evidence", ellipsis: true, width: "28%" },
+              { title: "差距", dataIndex: "gap", ellipsis: true, width: "20%" },
+              { title: "补强建议", dataIndex: "prep_action", ellipsis: true, width: "26%" },
             ]}
           />
           <Modal
@@ -331,15 +360,16 @@ const InterviewQuestionsTab = ({ a }: { a: InterviewJobAnalysis }) => {
         <>
           <Typography.Text type="secondary">点击问题卡片查看完整内容</Typography.Text>
           {a.likely_questions.map((q, i) => (
-            <Card
-              key={i}
-              size="small"
-              hoverable
-              onClick={() => setSelected(q)}
-              title={<Space><Tag>{q.category}</Tag>{q.question}</Space>}
-            >
-              <Typography.Text type="secondary">提问意图：{q.why}</Typography.Text>
-              <div style={{ marginTop: 4, lineHeight: 1.8 }}>{q.answer_outline}</div>
+            // 问题本身可能很长，放进 title 会被压成一行；这里统一在正文里排版
+            <Card key={i} size="small" hoverable onClick={() => setSelected(q)}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                <Tag style={{ margin: 0, flexShrink: 0 }}>{q.category}</Tag>
+                <Typography.Text strong style={{ lineHeight: 1.7 }}>{q.question}</Typography.Text>
+              </div>
+              <Typography.Text type="secondary" style={{ display: "block", marginTop: 8 }}>
+                提问意图：{q.why}
+              </Typography.Text>
+              <div style={{ marginTop: 4, lineHeight: 1.9 }}>{q.answer_outline}</div>
             </Card>
           ))}
           <Modal

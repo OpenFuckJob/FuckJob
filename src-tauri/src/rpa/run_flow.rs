@@ -430,6 +430,8 @@ pub fn try_start_job_task() -> Result<JobTaskRunningGuard, String> {
         return Err("求职任务正在运行".to_string());
     };
     JOB_TASK_STOP_REQUESTED.store(false, Ordering::SeqCst);
+    // 自动分析的限额按「一次求职任务」计，新任务开始时归零
+    crate::auto_analysis::reset_task_counter();
     Ok(JobTaskRunningGuard)
 }
 

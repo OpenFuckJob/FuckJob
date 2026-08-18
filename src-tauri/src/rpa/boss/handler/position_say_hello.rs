@@ -2,8 +2,9 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use crate::{
+    auto_analysis,
     browser,
-    config::{AppRuntimeConfig, JobFilterConfig, ReplyResource},
+    config::{AnalysisTrigger, AppRuntimeConfig, JobFilterConfig, ReplyResource},
     dao::{job_detail_dao, model::JobDetail},
     logger,
     rpa::{
@@ -143,6 +144,16 @@ pub async fn position_say_hello_on_page(
                     }
                 }
             }
+            // 「筛选通过即分析」不关心后面招呼发没发出去，所以在进入打招呼之前就登记
+            auto_analysis::schedule(
+                &build_job_detail(
+                    &greet_job.platform_job_id,
+                    &greet_job,
+                    &app_runtime_config,
+                ),
+                AnalysisTrigger::FilterPassed,
+                &app_runtime_config,
+            );
             match handle_greet(connection, greet_job.clone(), app_runtime_config.clone()).await {
                 Ok(()) => {}
                 Err(error) => {
@@ -634,10 +645,12 @@ fn extract_job_id(url: &str) -> Option<&str> {
     Some(&url[start..end])
 }
 
-fn save_job_detail(job_id: &str, greet_job: &GreetJob, config: &AppRuntimeConfig) {
+/// 按当前任务上下文拼出岗位记录。
+/// 打招呼后落库和「筛选通过即分析」共用它——后者触发时岗位还没入库，只能拿这份内存数据去分析。
+fn build_job_detail(job_id: &str, greet_job: &GreetJob, config: &AppRuntimeConfig) -> JobDetail {
     let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let active = config.active_job_profile.as_ref();
-    let job_detail = JobDetail {
+    JobDetail {
         id: job_id.to_string(),
         platform: "boss".to_string(),
         source_task_id: crate::rpa::run_flow::current_job_task_id(),
@@ -654,11 +667,16 @@ fn save_job_detail(job_id: &str, greet_job: &GreetJob, config: &AppRuntimeConfig
         created_at: now.clone(),
         resume_sent_at: None,
         updated_at: now,
-    };
+    }
+}
 
-    if let Err(e) = job_detail_dao::create(job_detail) {
+fn save_job_detail(job_id: &str, greet_job: &GreetJob, config: &AppRuntimeConfig) -> JobDetail {
+    let job_detail = build_job_detail(job_id, greet_job, config);
+
+    if let Err(e) = job_detail_dao::create(job_detail.clone()) {
         let _ = logger::warning(format!("保存岗位数据失败: {}", e));
     }
+    job_detail
 }
 
 fn greet_failure_message(title: &str, company_name: &str, error: &anyhow::Error) -> String {
@@ -1003,7 +1021,8 @@ async fn handle_send_message_on_chat_page(
     }
 
     // 保存该岗位至本地数据库
-    save_job_detail(&greet_job.platform_job_id, &greet_job, &config);
+    let saved = save_job_detail(&greet_job.platform_job_id, &greet_job, &config);
+    auto_analysis::schedule(&saved, AnalysisTrigger::GreetSent, &config);
 
     sleep_random_ms(1200, 2000);
 
