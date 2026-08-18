@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { copyJobProfile, getDefaultJobProfile, getJobProfiles, selectProfileAfterRemoval, type AppRuntimeConfig } from "./app-config";
+import {
+  copyJobProfile,
+  getDefaultJobProfile,
+  getJobProfiles,
+  getReplyPollingConfig,
+  selectProfileAfterRemoval,
+  DEFAULT_AUTO_REPLY_WINDOW_HOURS,
+  DEFAULT_REPLY_POLLING_CONFIG,
+  type AppRuntimeConfig,
+} from "./app-config";
 
 const legacyConfig = {
   default_job_profile_id: undefined,
@@ -65,5 +74,39 @@ describe("job profile compatibility", () => {
 
     expect(selectProfileAfterRemoval(profiles, "removed")?.id).toBe("active");
     expect(selectProfileAfterRemoval([profiles[0]], "removed")).toBeNull();
+  });
+});
+
+describe("reply polling config", () => {
+  it("falls back to the default cadence when the block is missing entirely", () => {
+    expect(getReplyPollingConfig({ reply_polling_config: undefined }))
+      .toEqual(DEFAULT_REPLY_POLLING_CONFIG);
+  });
+
+  // 部分字段缺失时只补缺的那几个，用户已经调过的值不能被默认值盖掉
+  it("keeps user-tuned fields while filling in the missing ones", () => {
+    const merged = getReplyPollingConfig({
+      reply_polling_config: { interval_minutes: 15 } as never,
+    });
+
+    expect(merged.interval_minutes).toBe(15);
+    expect(merged.max_conversations_per_round)
+      .toBe(DEFAULT_REPLY_POLLING_CONFIG.max_conversations_per_round);
+  });
+
+  // 默认值必须和 Rust 侧的 serde default 对齐。对不上时表现是「界面显示一套、
+  // 实际跑另一套」，而两边都不报错
+  it("mirrors the serde defaults declared on the Rust side", () => {
+    expect(DEFAULT_REPLY_POLLING_CONFIG).toEqual({
+      interval_minutes: 5,
+      jitter_seconds: 120,
+      active_hours_enabled: true,
+      active_start_hour: 9,
+      active_end_hour: 22,
+      max_conversations_per_round: 10,
+      humanize_delay_min_seconds: 30,
+      humanize_delay_max_seconds: 120,
+    });
+    expect(DEFAULT_AUTO_REPLY_WINDOW_HOURS).toBe(24);
   });
 });

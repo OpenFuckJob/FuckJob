@@ -4,6 +4,7 @@ import {
   countJobTasks,
   getActiveTaskForPlatform,
   isActiveJobTask,
+  isLongRunningMode,
 } from "./rpa";
 
 function task(
@@ -53,4 +54,18 @@ describe("job task overview helpers", () => {
 
     expect(counts).toEqual({ active: 2, running: 1, queued: 1 });
   });
+});
+
+describe("long running modes", () => {
+  // 长驻判定决定「同平台不许开第二个」这条约束覆盖到谁，也决定界面上要不要
+  // 提示用户任务不会自己结束。漏掉一个模式，用户会排一个永远跑不起来的队
+  it.each(["periodic_job_hunting", "polling_reply"] as const)(
+    "treats %s as long running",
+    (mode) => expect(isLongRunningMode(mode)).toBe(true),
+  );
+
+  it.each(["job_hunting", "reply_unread", "sync_chat_history"] as const)(
+    "treats %s as a one-shot run",
+    (mode) => expect(isLongRunningMode(mode)).toBe(false),
+  );
 });

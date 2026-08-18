@@ -143,8 +143,10 @@ export interface ReplayConfig {
   background_context: string | null;
   /** 关掉后模型仍会判断投递时机，但只回消息，投递交回人工 */
   enable_auto_send_resume: boolean;
-  /** 没有上限时模型会和 HR 无限客套下去 */
+  /** 时间窗内单会话最多自动回复几条，用完挂起转人工 */
   max_auto_replies: number;
+  /** 上限所依据的滚动时间窗长度，窗口滑走后额度自动恢复 */
+  auto_reply_window_hours?: number;
   /** 超长的求职消息本身就不像真人写的 */
   max_reply_chars: number;
   /** 演练模式：判断与生成照常，但不实际发送，只写日志 */
@@ -153,6 +155,7 @@ export interface ReplayConfig {
 
 /** 与 Rust 侧 ReplayConfig 的 serde 默认值保持一致 */
 export const DEFAULT_MAX_AUTO_REPLIES = 5;
+export const DEFAULT_AUTO_REPLY_WINDOW_HOURS = 24;
 export const DEFAULT_MAX_REPLY_CHARS = 200;
 /** 新建正则模板时匹配最近多少条聊天 */
 export const DEFAULT_REGEX_RULE_LIMIT = 5;
@@ -181,6 +184,38 @@ export const DEFAULT_ANALYSIS_CONFIG: AnalysisConfig = {
   skip_analyzed: true,
   max_per_task: DEFAULT_MAX_ANALYSIS_PER_TASK,
   high_match_score: DEFAULT_HIGH_MATCH_SCORE,
+};
+
+/**
+ * 自动回复的轮询节奏。全局唯一，不随求职方案变化——
+ * 一轮轮询会跨越多个岗位、命中多张方案卡，节奏却只能有一套。
+ */
+export interface ReplyPollingConfig {
+  /** 两轮回复之间的基础间隔 */
+  interval_minutes: number;
+  /** 在基础间隔上叠加的随机抖动上限，精确到秒的固定节律本身就是机器特征 */
+  jitter_seconds: number;
+  active_hours_enabled: boolean;
+  /** 活跃时段起止（0-23，左闭右开）。只约束回复，不约束投递 */
+  active_start_hour: number;
+  active_end_hour: number;
+  /** 单轮最多处理多少个会话，超出的留给下一轮 */
+  max_conversations_per_round: number;
+  /** 「对方发出消息到我方回复」的目标间隔，轮询间隔本身通常已经填满 */
+  humanize_delay_min_seconds: number;
+  humanize_delay_max_seconds: number;
+}
+
+/** 与 Rust 侧 ReplyPollingConfig 的 serde 默认值保持一致 */
+export const DEFAULT_REPLY_POLLING_CONFIG: ReplyPollingConfig = {
+  interval_minutes: 5,
+  jitter_seconds: 120,
+  active_hours_enabled: true,
+  active_start_hour: 9,
+  active_end_hour: 22,
+  max_conversations_per_round: 10,
+  humanize_delay_min_seconds: 30,
+  humanize_delay_max_seconds: 120,
 };
 
 export interface BrowserConfig {
@@ -224,6 +259,8 @@ export interface AppRuntimeConfig {
   greet_config: GreetConfig;
   replay_config: ReplayConfig;
   analysis_config?: AnalysisConfig;
+  /** 旧配置没有这块，读取时请使用 getReplyPollingConfig 兜底 */
+  reply_polling_config?: ReplyPollingConfig;
   browser_config: BrowserConfig;
   resume_config: ResumeConfig;
   /** 旧配置/测试 mock 可能暂时不包含这两个字段，读取时请使用 getJobProfiles。 */
@@ -236,6 +273,11 @@ export function getAnalysisConfig(
   source: Pick<AppRuntimeConfig, "analysis_config"> | Pick<JobProfile, "analysis_config">,
 ): AnalysisConfig {
   return { ...DEFAULT_ANALYSIS_CONFIG, ...(source.analysis_config ?? {}) };
+}
+
+/** 读取轮询节奏，旧配置缺这块时回落到默认节奏。 */
+export function getReplyPollingConfig(config: Pick<AppRuntimeConfig, "reply_polling_config">): ReplyPollingConfig {
+  return { ...DEFAULT_REPLY_POLLING_CONFIG, ...(config.reply_polling_config ?? {}) };
 }
 
 /** 把旧版顶层求职配置投影为默认方案，供迁移期 UI 安全读取。 */

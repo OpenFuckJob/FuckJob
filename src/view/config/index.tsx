@@ -40,8 +40,11 @@ import {
   JobProfile,
   AnalysisConfig,
   AnalysisTrigger,
+  ReplyPollingConfig,
   getAnalysisConfig,
   getJobProfiles,
+  getReplyPollingConfig,
+  DEFAULT_AUTO_REPLY_WINDOW_HOURS,
   DEFAULT_MAX_AUTO_REPLIES,
   DEFAULT_MAX_REPLY_CHARS,
   DEFAULT_REGEX_RULE_LIMIT,
@@ -52,6 +55,7 @@ import {
   MAX_ANALYSIS_PER_TASK,
 } from "@/types/app-config";
 import { NumberField } from "@/components/NumberField";
+import ReplyPollingSection from "./ReplyPollingSection";
 import {
   jobTypeOptions,
   salaryOptions,
@@ -252,6 +256,7 @@ export interface ConfigPageProps {
   addReplyResource: (templateIndex: number) => void;
   removeReplyResource: (templateIndex: number, resourceIndex: number) => void;
   updateAnalysis: (next: Partial<AnalysisConfig>) => void;
+  updatePolling: (next: Partial<ReplyPollingConfig>) => void;
   updateBrowser: (next: Partial<BrowserConfig>) => void;
   updateResume: (next: Partial<ResumeConfig>) => void;
   updateRule: (index: number, next: Partial<RegexRule>) => void;
@@ -1618,11 +1623,11 @@ export function ConfigPage(props: ConfigPageProps) {
                     </div>
 
                     <Row gutter={[24, 16]}>
-                      <Col xs={24} md={12}>
+                      <Col xs={24} md={8}>
                         <Form.Item
-                          label="单会话自动回复上限"
+                          label="单会话回复上限"
                           name={["replay_config", "max_auto_replies"]}
-                          extra="累计回复达到该条数后转人工，避免和 HR 无限客套。"
+                          extra="同一个会话在下面这段时间内最多自动回几条，用完后交给你接手。"
                           className="!mb-0"
                         >
                           <NumberField
@@ -1636,7 +1641,26 @@ export function ConfigPage(props: ConfigPageProps) {
                           />
                         </Form.Item>
                       </Col>
-                      <Col xs={24} md={12}>
+                      <Col xs={24} md={8}>
+                        <Form.Item
+                          label="额度计算时段"
+                          name={["replay_config", "auto_reply_window_hours"]}
+                          extra="滚动计算。时间过去之后额度自动恢复，不必手工重置。"
+                          className="!mb-0"
+                        >
+                          <NumberField
+                            min={1}
+                            precision={0}
+                            fallback={DEFAULT_AUTO_REPLY_WINDOW_HOURS}
+                            style={{ width: "100%" }}
+                            addonAfter="小时"
+                            onChange={(value) =>
+                              props.updateReplay({ auto_reply_window_hours: value })
+                            }
+                          />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={8}>
                         <Form.Item
                           label="单条回复字数上限"
                           name={["replay_config", "max_reply_chars"]}
@@ -1658,6 +1682,11 @@ export function ConfigPage(props: ConfigPageProps) {
                   </div>
                 </div>
               )}
+
+              <ReplyPollingSection
+                config={getReplyPollingConfig(props.config)}
+                onChange={props.updatePolling}
+              />
             </div>
 
             {usesTemplateReply && (

@@ -44,7 +44,13 @@ import {
   isActiveJobTask,
 } from "../../types/rpa";
 import type { JobDetail } from "../../types/job-detail";
-import { getDefaultJobProfile, getJobProfiles, type AppRuntimeConfig } from "../../types/app-config";
+import ManualReviewPanel from "./manual-review-panel";
+import {
+  getDefaultJobProfile,
+  getJobProfiles,
+  getReplyPollingConfig,
+  type AppRuntimeConfig,
+} from "../../types/app-config";
 import { NumberField } from "../../components/NumberField";
 
 type CheckPhase = "idle" | "checking" | "done";
@@ -139,7 +145,12 @@ const FLOW_MODE_OPTIONS: FlowModeOption[] = [
   {
     key: "periodic_job_hunting",
     label: "周期投递",
-    description: "每轮完成后按设定间隔继续下一轮。",
+    description: "每轮完成后按设定间隔继续下一轮，等待期间自动回复未读消息。",
+  },
+  {
+    key: "polling_reply",
+    label: "轮询回复",
+    description: "持续盯着未读消息自动回复，不投递岗位。停止前一直运行。",
   },
 ];
 
@@ -162,7 +173,9 @@ export function filterTaskLogContent(
 }
 
 export function getTaskProfileLabel(task: Pick<JobTaskInfo, "mode" | "profile_id" | "profile_name">): string {
-  if (task.mode === "reply_unread" && !task.profile_id) return "按会话方案自动路由";
+  if ((task.mode === "reply_unread" || task.mode === "polling_reply") && !task.profile_id) {
+    return "按会话方案自动路由";
+  }
   if (task.mode === "sync_chat_history" && !task.profile_id) return "不使用求职方案";
   return task.profile_name || "默认求职方案";
 }
@@ -592,6 +605,11 @@ const WorkspacePage = ({
         ))}
       </section>
 
+      {/* ── Conversations waiting on the user ── */}
+      <section>
+        <ManualReviewPanel />
+      </section>
+
       {/* ── Platform card + task queue ── */}
       <section
         style={{
@@ -865,6 +883,17 @@ const WorkspacePage = ({
                 addonAfter="分钟"
                 style={{ width: 160 }}
               />
+            </div>
+          )}
+          {selectedMode === "polling_reply" && (
+            <div style={{ padding: "8px 12px", background: "#f8fafc", borderRadius: 8 }}>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                每 {getReplyPollingConfig(config).interval_minutes} 分钟检查一次新消息
+                {getReplyPollingConfig(config).active_hours_enabled
+                  ? `，只在 ${getReplyPollingConfig(config).active_start_hour}:00 - ${getReplyPollingConfig(config).active_end_hour}:00 之间回复`
+                  : "，全天回复"}
+                。节奏可在「设置 · 自动回复」里调整。
+              </Typography.Text>
             </div>
           )}
           {(selectedMode === "job_hunting" || selectedMode === "periodic_job_hunting") ? (
