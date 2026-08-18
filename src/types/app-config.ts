@@ -11,6 +11,7 @@ export type ConfigGroup =
   | "llm"
   | "greet"
   | "reply"
+  | "analysis"
   | "browser"
   | "resume"
   | "rules"
@@ -154,6 +155,32 @@ export interface ReplayConfig {
 export const DEFAULT_MAX_AUTO_REPLIES = 5;
 export const DEFAULT_MAX_REPLY_CHARS = 200;
 
+/** 自动触发岗位分析的时机，一次只能生效一个 */
+export type AnalysisTrigger = "off" | "filter_passed" | "greet_sent" | "reply_received";
+
+export interface AnalysisConfig {
+  trigger: AnalysisTrigger;
+  /** 已有分析结果的岗位不再重复分析 */
+  skip_analyzed: boolean;
+  /** 单个求职任务内最多自动分析多少个岗位，0 表示不限制 */
+  max_per_task: number;
+  /** 达到该匹配分才算高匹配岗位，求职数据概览按这个口径统计 */
+  high_match_score: number;
+}
+
+/** 与 Rust 侧 AnalysisConfig 的 serde 默认值保持一致 */
+export const DEFAULT_HIGH_MATCH_SCORE = 80;
+export const MIN_HIGH_MATCH_SCORE = 50;
+export const DEFAULT_MAX_ANALYSIS_PER_TASK = 20;
+export const MAX_ANALYSIS_PER_TASK = 500;
+
+export const DEFAULT_ANALYSIS_CONFIG: AnalysisConfig = {
+  trigger: "off",
+  skip_analyzed: true,
+  max_per_task: DEFAULT_MAX_ANALYSIS_PER_TASK,
+  high_match_score: DEFAULT_HIGH_MATCH_SCORE,
+};
+
 export interface BrowserConfig {
   user_data_dir: string;
   chrome_exe_path: string | null;
@@ -177,6 +204,8 @@ export interface JobProfile {
   resume_config: ResumeConfig;
   greet_config: GreetConfig;
   replay_config: ReplayConfig;
+  /** 旧配置没有这块，读取时请使用 getAnalysisConfig 兜底 */
+  analysis_config?: AnalysisConfig;
 }
 
 export interface AppRuntimeConfig {
@@ -189,11 +218,19 @@ export interface AppRuntimeConfig {
   llm_retry_config: LlmRetryConfig;
   greet_config: GreetConfig;
   replay_config: ReplayConfig;
+  analysis_config?: AnalysisConfig;
   browser_config: BrowserConfig;
   resume_config: ResumeConfig;
   /** 旧配置/测试 mock 可能暂时不包含这两个字段，读取时请使用 getJobProfiles。 */
   job_profiles?: JobProfile[];
   default_job_profile_id?: string;
+}
+
+/** 读取分析配置，旧配置缺这块时回落到「不自动分析」。 */
+export function getAnalysisConfig(
+  source: Pick<AppRuntimeConfig, "analysis_config"> | Pick<JobProfile, "analysis_config">,
+): AnalysisConfig {
+  return { ...DEFAULT_ANALYSIS_CONFIG, ...(source.analysis_config ?? {}) };
 }
 
 /** 把旧版顶层求职配置投影为默认方案，供迁移期 UI 安全读取。 */
@@ -209,6 +246,7 @@ export function getJobProfiles(config: AppRuntimeConfig): JobProfile[] {
     resume_config: config.resume_config,
     greet_config: config.greet_config,
     replay_config: config.replay_config,
+    analysis_config: getAnalysisConfig(config),
   }];
 }
 

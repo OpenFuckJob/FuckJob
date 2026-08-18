@@ -1,13 +1,13 @@
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
-    AppRuntimeConfig, GreetConfig, JobFilterConfig, PlatformFilterConfig, ReplayConfig,
-    ResumeConfig,
+    AnalysisConfig, AppRuntimeConfig, GreetConfig, JobFilterConfig, PlatformFilterConfig,
+    ReplayConfig, ResumeConfig,
 };
 
 /// 一次求职任务实际使用的不可变方案内容。
 ///
-/// 这里只保存方案拥有的五块策略，不复制浏览器、模型提供商等全局配置。
+/// 这里只保存方案拥有的策略，不复制浏览器、模型提供商等全局配置。
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct JobProfileSnapshot {
     pub snapshot_id: String,
@@ -18,6 +18,9 @@ pub struct JobProfileSnapshot {
     pub greet_config: GreetConfig,
     pub replay_config: ReplayConfig,
     pub resume_config: ResumeConfig,
+    /// 升级前的快照没有这块，按「不自动分析」恢复
+    #[serde(default)]
+    pub analysis_config: AnalysisConfig,
 }
 
 impl JobProfileSnapshot {
@@ -32,6 +35,7 @@ impl JobProfileSnapshot {
             greet_config: config.greet_config.clone(),
             replay_config: config.replay_config.clone(),
             resume_config: config.resume_config.clone(),
+            analysis_config: config.analysis_config.clone(),
         })
     }
 
@@ -42,6 +46,7 @@ impl JobProfileSnapshot {
         config.greet_config = self.greet_config.clone();
         config.replay_config = self.replay_config.clone();
         config.resume_config = self.resume_config.clone();
+        config.analysis_config = self.analysis_config.clone();
         config.active_job_profile = Some(crate::config::ActiveJobProfile {
             id: self.profile_id.clone(),
             name: self.profile_name.clone(),

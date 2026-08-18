@@ -82,6 +82,7 @@ pub fn default_app_config() -> AppRuntimeConfig {
         resume_config: resume_config.clone(),
         greet_config: greet_config.clone(),
         replay_config: replay_config.clone(),
+        analysis_config: AnalysisConfig::default(),
     };
 
     AppRuntimeConfig {
@@ -97,6 +98,7 @@ pub fn default_app_config() -> AppRuntimeConfig {
         platform_filter_config,
         greet_config,
         replay_config,
+        analysis_config: AnalysisConfig::default(),
         browser_config: BrowserConfig {
             user_data_dir: "".to_string(),
             chrome_exe_path: None,
@@ -391,6 +393,7 @@ pub fn validate_and_normalize(config: &mut AppRuntimeConfig) -> Result<(), Strin
 
     normalize_llm_retry_config(&mut config.llm_retry_config);
     normalize_llm_fallbacks(&mut config.llm_fallbacks)?;
+    normalize_analysis_config(&mut config.analysis_config);
     normalize_job_profiles(config)?;
     config.browser_config.max_parallel_tasks = config
         .browser_config
@@ -596,6 +599,10 @@ pub struct AppRuntimeConfig {
     /// 自动回复配置
     pub replay_config: ReplayConfig,
 
+    /// 岗位自动分析配置
+    #[serde(default)]
+    pub analysis_config: AnalysisConfig,
+
     /// 浏览器运行配置
     pub browser_config: BrowserConfig,
 
@@ -622,6 +629,9 @@ pub struct JobProfile {
     pub resume_config: ResumeConfig,
     pub greet_config: GreetConfig,
     pub replay_config: ReplayConfig,
+    /// 岗位自动分析策略。旧配置没有这块时按「不自动分析」处理
+    #[serde(default)]
+    pub analysis_config: AnalysisConfig,
 }
 
 impl JobProfile {
@@ -636,6 +646,7 @@ impl JobProfile {
             resume_config: config.resume_config.clone(),
             greet_config: config.greet_config.clone(),
             replay_config: config.replay_config.clone(),
+            analysis_config: config.analysis_config.clone(),
         }
     }
 }
@@ -684,6 +695,7 @@ pub fn resolve_job_profile(
     snapshot.resume_config = profile.resume_config;
     snapshot.greet_config = profile.greet_config;
     snapshot.replay_config = profile.replay_config;
+    snapshot.analysis_config = profile.analysis_config;
     snapshot.active_job_profile = Some(active);
 
     Ok(ResolvedJobProfile {
@@ -705,6 +717,7 @@ fn job_profile_snapshot_id(profile: &JobProfile) -> Result<String, String> {
         &profile.resume_config,
         &profile.greet_config,
         &profile.replay_config,
+        &profile.analysis_config,
     ))
     .map_err(|error| error.to_string())?;
     // FNV-1a 是跨进程、跨平台确定的内容指纹；这里只用于识别相同执行内容，不承担安全用途。
@@ -1169,6 +1182,80 @@ fn default_max_reply_chars() -> usize {
     200
 }
 
+// ================================
+// 岗位分析配置
+//
+// 一次分析就是一次完整的大模型调用，成本比筛选高一个量级，所以触发时机做成单选：
+// 同一个岗位在一轮流程里只会被一个时机命中，不会出现两条路径重复烧 token。
+// ================================
+
+/// 自动触发岗位分析的时机
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AnalysisTrigger {
+    /// 不自动分析，只保留岗位详情页和批量入口的手动触发
+    #[default]
+    Off,
+    /// 岗位通过筛选规则后立即分析，无论后续是否真的发出招呼
+    FilterPassed,
+    /// 打招呼发送成功、岗位入库后异步分析
+    GreetSent,
+    /// 收到招聘方首次回复后分析，此时聊天记录已有内容，判断依据最全
+    ReplyReceived,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct AnalysisConfig {
+    #[serde(default)]
+    pub trigger: AnalysisTrigger,
+
+    /// 已有分析结果的岗位不再重复分析
+    #[serde(default = "default_skip_analyzed")]
+    pub skip_analyzed: bool,
+
+    /// 单个求职任务内最多自动分析多少个岗位，0 表示不限制
+    #[serde(default = "default_max_analysis_per_task")]
+    pub max_per_task: usize,
+
+    /// 达到该匹配分才算高匹配岗位，求职数据概览按这个口径统计
+    #[serde(default = "default_high_match_score")]
+    pub high_match_score: u8,
+}
+
+impl Default for AnalysisConfig {
+    fn default() -> Self {
+        Self {
+            trigger: AnalysisTrigger::default(),
+            skip_analyzed: default_skip_analyzed(),
+            max_per_task: default_max_analysis_per_task(),
+            high_match_score: default_high_match_score(),
+        }
+    }
+}
+
+impl AnalysisConfig {
+    /// 该时机是否应该触发自动分析
+    pub fn triggers_on(&self, trigger: AnalysisTrigger) -> bool {
+        trigger != AnalysisTrigger::Off && self.trigger == trigger
+    }
+}
+
+fn default_skip_analyzed() -> bool {
+    true
+}
+
+fn default_max_analysis_per_task() -> usize {
+    20
+}
+
+pub const DEFAULT_HIGH_MATCH_SCORE: u8 = 80;
+pub const MIN_HIGH_MATCH_SCORE: u8 = 50;
+pub const MAX_ANALYSIS_PER_TASK: usize = 500;
+
+fn default_high_match_score() -> u8 {
+    DEFAULT_HIGH_MATCH_SCORE
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ReplyTemplate {
     /// 正则规则
@@ -1251,6 +1338,13 @@ pub struct BrowserConfig {
     pub max_parallel_tasks: usize,
 }
 
+fn normalize_analysis_config(analysis: &mut AnalysisConfig) {
+    analysis.high_match_score = analysis
+        .high_match_score
+        .clamp(MIN_HIGH_MATCH_SCORE, 100);
+    analysis.max_per_task = analysis.max_per_task.min(MAX_ANALYSIS_PER_TASK);
+}
+
 fn normalize_job_profiles(config: &mut AppRuntimeConfig) -> Result<(), String> {
     // 备份导入等旧路径可能直接把 v0-v2 YAML 反序列化为 AppRuntimeConfig，绕过
     // parse_config_content。这里补上同等迁移；v3 显式保存空列表仍按无效配置拒绝。
@@ -1274,6 +1368,8 @@ fn normalize_job_profiles(config: &mut AppRuntimeConfig) -> Result<(), String> {
             .take()
             .map(|description| description.trim().to_string())
             .filter(|description| !description.is_empty());
+
+        normalize_analysis_config(&mut profile.analysis_config);
 
         if profile.id.is_empty() {
             return Err("求职方案标识不能为空".to_string());
@@ -1519,6 +1615,62 @@ llm_config:
             .work_year_code
             .is_none());
         assert!(config.platform_filter_config.liepin.comp_tag.is_empty());
+    }
+
+    /// 内置 YAML 解析失败时 `bundled_app_config` 会静默回落，问题不会自己冒出来。
+    /// 尤其是 `trigger: off` 一旦漏了引号就会被 YAML 当成布尔值，这里显式守住。
+    #[test]
+    fn bundled_config_parses_the_analysis_block() {
+        let config = parse_config_content(DEFAULT_CONFIG_YAML).expect("内置配置必须可解析");
+
+        assert_eq!(config.analysis_config.trigger, AnalysisTrigger::Off);
+        assert!(config.analysis_config.skip_analyzed);
+        assert_eq!(
+            config.analysis_config.high_match_score,
+            DEFAULT_HIGH_MATCH_SCORE
+        );
+        let profile = config.job_profile(None).expect("默认方案必须存在");
+        assert_eq!(profile.analysis_config.trigger, AnalysisTrigger::Off);
+    }
+
+    /// 升级前的配置文件没有这一块，读进来要按「不自动分析」兜底而不是报错
+    #[test]
+    fn config_without_analysis_block_falls_back_to_defaults() {
+        let mut config = default_app_config();
+        config.analysis_config.trigger = AnalysisTrigger::GreetSent;
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let stripped: String = yaml
+            .lines()
+            .filter(|line| !line.contains("analysis_config") && !line.contains("trigger:"))
+            .filter(|line| {
+                !line.contains("skip_analyzed")
+                    && !line.contains("max_per_task")
+                    && !line.contains("high_match_score")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let parsed = parse_config_content(&stripped).expect("缺少分析配置仍应可解析");
+        assert_eq!(parsed.analysis_config.trigger, AnalysisTrigger::Off);
+        assert_eq!(
+            parsed.analysis_config.high_match_score,
+            DEFAULT_HIGH_MATCH_SCORE
+        );
+    }
+
+    /// 分数线和限额都必须落在可用区间内，避免手改配置文件把统计口径改坏
+    #[test]
+    fn analysis_config_is_clamped_to_a_usable_range() {
+        let mut config = default_app_config();
+        config.analysis_config.high_match_score = 5;
+        config.analysis_config.max_per_task = 9_999;
+        config.job_profiles[0].analysis_config.high_match_score = 200;
+
+        validate_and_normalize(&mut config).unwrap();
+
+        assert_eq!(config.analysis_config.high_match_score, MIN_HIGH_MATCH_SCORE);
+        assert_eq!(config.analysis_config.max_per_task, MAX_ANALYSIS_PER_TASK);
+        assert_eq!(config.job_profiles[0].analysis_config.high_match_score, 100);
     }
 
     #[test]

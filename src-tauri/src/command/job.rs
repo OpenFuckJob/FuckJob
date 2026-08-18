@@ -128,6 +128,8 @@ pub struct OverviewMetrics {
     pub reply_rate: f64,
     pub resume_sent_jobs: usize,
     pub high_match_jobs: usize,
+    /// 窗口内已经跑过 AI 分析的岗位数，用于区分「没数据」和「匹配度低」
+    pub analyzed_jobs: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -170,12 +172,28 @@ pub struct JobSearchOverview {
     pub daily_activity: Vec<OverviewDailyActivity>,
     pub source_distribution: Vec<OverviewSourceSlice>,
     pub active_conversations: Vec<OverviewConversation>,
+    /// 高匹配的判定分数线，取自默认求职方案的岗位分析配置
+    pub high_match_score: u8,
 }
 
 /// `days` 为 0 表示只统计今日（自然日），其余表示最近 N 天
 #[tauri::command]
-pub fn job_search_overview(days: Option<u32>) -> CommandResult<JobSearchOverview> {
-    match build_job_search_overview(days.unwrap_or(30).clamp(0, 365)) {
+pub fn job_search_overview(
+    app_handle: tauri::AppHandle,
+    days: Option<u32>,
+) -> CommandResult<JobSearchOverview> {
+    // 概览是跨方案的全局视图，阈值取默认方案；读不到配置时回落到内置默认值
+    let high_match_score = config::load_app_config_inner(app_handle)
+        .ok()
+        .and_then(|app_config| {
+            app_config
+                .job_profile(None)
+                .ok()
+                .map(|profile| profile.analysis_config.high_match_score)
+        })
+        .unwrap_or(config::DEFAULT_HIGH_MATCH_SCORE);
+
+    match build_job_search_overview(days.unwrap_or(30).clamp(0, 365), high_match_score) {
         Ok(overview) => CommandResult::ok(overview),
         Err(error) => CommandResult::err(error.to_string()),
     }
@@ -193,6 +211,7 @@ fn collect_period<'a>(
     jobs: &'a [JobDetail],
     messages: &'a [ChatMessageRecord],
     high_match_ids: &HashSet<&str>,
+    analyzed_ids: &HashSet<&str>,
     start: chrono::DateTime<Local>,
     end: chrono::DateTime<Local>,
 ) -> PeriodSnapshot<'a> {
@@ -267,6 +286,10 @@ fn collect_period<'a>(
             .iter()
             .filter(|job| high_match_ids.contains(job.id.as_str()))
             .count(),
+        analyzed_jobs: selected_jobs
+            .iter()
+            .filter(|job| analyzed_ids.contains(job.id.as_str()))
+            .count(),
     };
 
     PeriodSnapshot {
@@ -316,7 +339,10 @@ fn build_source_distribution(jobs: &[&JobDetail]) -> Vec<OverviewSourceSlice> {
     slices
 }
 
-fn build_job_search_overview(days: u32) -> anyhow::Result<JobSearchOverview> {
+fn build_job_search_overview(
+    days: u32,
+    high_match_score: u8,
+) -> anyhow::Result<JobSearchOverview> {
     let jobs = job_detail_dao::list()?;
     let messages = chat_message_dao::list()?;
     let analyses = analysis_dao::list()?;
@@ -333,12 +359,23 @@ fn build_job_search_overview(days: u32) -> anyhow::Result<JobSearchOverview> {
 
     let high_match_ids: HashSet<&str> = analyses
         .iter()
-        .filter(|analysis| analysis.match_score >= 80)
+        .filter(|analysis| analysis.match_score >= high_match_score)
+        .map(|analysis| analysis.job_id.as_str())
+        .collect();
+    let analyzed_ids: HashSet<&str> = analyses
+        .iter()
         .map(|analysis| analysis.job_id.as_str())
         .collect();
 
-    let current = collect_period(&jobs, &messages, &high_match_ids, start, end);
-    let previous = collect_period(&jobs, &messages, &high_match_ids, start - span, start);
+    let current = collect_period(&jobs, &messages, &high_match_ids, &analyzed_ids, start, end);
+    let previous = collect_period(
+        &jobs,
+        &messages,
+        &high_match_ids,
+        &analyzed_ids,
+        start - span,
+        start,
+    );
     let source_distribution = build_source_distribution(&current.jobs);
 
     // 趋势图独立于统计窗口取全量数据，保证「今日」视图仍能看到走势
@@ -432,6 +469,7 @@ fn build_job_search_overview(days: u32) -> anyhow::Result<JobSearchOverview> {
         daily_activity,
         source_distribution,
         active_conversations,
+        high_match_score,
     })
 }
 
@@ -562,6 +600,93 @@ pub async fn job_analyze(
         Err(e) => return CommandResult::err(format!("加载配置失败: {}", e)),
     };
 
+    match analyze_job(&job, &app_config).await {
+        Ok(analysis) => CommandResult::ok(analysis),
+        Err(error) => CommandResult::err(error.to_string()),
+    }
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct BatchAnalysisResult {
+    pub analyzed: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    /// 「岗位名：原因」形式的失败摘要，界面直接展示
+    pub failures: Vec<String>,
+}
+
+/// 批量分析选中的岗位。
+///
+/// 串行执行：分析是重调用，并发跑既容易触发服务端限流，也会和求职任务抢配额。
+#[tauri::command]
+pub async fn job_analyze_batch(
+    app_handle: tauri::AppHandle,
+    job_ids: Vec<String>,
+    skip_analyzed: Option<bool>,
+) -> CommandResult<BatchAnalysisResult> {
+    let app_config = match config::load_app_config_inner(app_handle) {
+        Ok(c) => c,
+        Err(e) => return CommandResult::err(format!("加载配置失败: {}", e)),
+    };
+    if app_config.llm_chain().is_empty() {
+        return CommandResult::err("请先配置大模型服务".to_string());
+    }
+    let skip_analyzed = skip_analyzed.unwrap_or(true);
+
+    let mut result = BatchAnalysisResult::default();
+    for job_id in job_ids {
+        let job = match job_detail_dao::get_by_id(&job_id) {
+            Ok(Some(job)) => job,
+            Ok(None) => {
+                result.failed += 1;
+                result.failures.push(format!("{job_id}：岗位不存在"));
+                continue;
+            }
+            Err(error) => {
+                result.failed += 1;
+                result.failures.push(format!("{job_id}：{error}"));
+                continue;
+            }
+        };
+        if skip_analyzed
+            && matches!(analysis_dao::get_by_job_id(&job_id), Ok(Some(existing)) if existing.parse_error.is_none())
+        {
+            result.skipped += 1;
+            continue;
+        }
+        match analyze_job(&job, &app_config).await {
+            Ok(analysis) if analysis.parse_error.is_none() => {
+                result.analyzed += 1;
+                let _ = crate::logger::info(format!(
+                    "已分析岗位「{}」，匹配度 {} 分",
+                    job.title, analysis.match_score
+                ));
+            }
+            Ok(_) => {
+                result.failed += 1;
+                result
+                    .failures
+                    .push(format!("{}：模型输出解析不完整", job.title));
+            }
+            Err(error) => {
+                result.failed += 1;
+                result.failures.push(format!("{}：{error}", job.title));
+            }
+        }
+    }
+
+    CommandResult::ok(result)
+}
+
+/// 跑一次岗位分析并落库。
+///
+/// 界面手动触发和 RPA 自动触发共用这条路径，区别只在于谁提供配置快照——
+/// 自动触发时配置来自任务绑定的方案快照，不能再回头去读当前界面上的配置。
+pub async fn analyze_job(
+    job: &JobDetail,
+    app_config: &config::AppRuntimeConfig,
+) -> anyhow::Result<InterviewJobAnalysis> {
+    let job_id = job.id.clone();
     let resume_context = app_config
         .resume_config
         .resume_content
@@ -577,11 +702,11 @@ pub async fn job_analyze(
             messages.sort_by_key(|message| message.time);
             messages
         }
-        Err(e) => return CommandResult::err(format!("加载沟通记录失败: {}", e)),
+        Err(e) => anyhow::bail!("加载沟通记录失败: {}", e),
     };
     let chat_context = format_chat_context(&chat_messages);
 
-    let prompt_template = build_analysis_prompt(&job);
+    let prompt_template = build_analysis_prompt(job);
     let params = serde_json::json!({
         "resume_context": resume_context,
         "background_context": background_context,
@@ -589,9 +714,9 @@ pub async fn job_analyze(
     });
     // 与其他所有模型用途一样走统一的 Agent 循环：流式采集、重试降级、输出净化
     let task = crate::agent::tasks::TemplateTask::new("岗位面试分析", &prompt_template, params);
-    let raw = match crate::agent::run(&task, &app_config).await {
+    let raw = match crate::agent::run(&task, app_config).await {
         Ok(outcome) => outcome.output,
-        Err(e) => return CommandResult::err(format!("生成分析失败: {}", e)),
+        Err(e) => anyhow::bail!("生成分析失败: {}", e),
     };
     let analyzed_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
@@ -636,8 +761,8 @@ pub async fn job_analyze(
         Err(e) => Err(e),
     };
     if let Err(e) = save_result {
-        return CommandResult::err(format!("保存分析结果失败: {}", e));
+        anyhow::bail!("保存分析结果失败: {}", e);
     }
 
-    CommandResult::ok(analysis)
+    Ok(analysis)
 }

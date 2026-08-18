@@ -133,6 +133,18 @@
   font-size: 13px;
 }
 
+.metric-label.has-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: help;
+}
+
+.metric-label.has-hint .anticon {
+  color: #c3cddb;
+  font-size: 11px;
+}
+
 .metric-value {
   margin: 10px 0 8px;
   color: var(--overview-ink);

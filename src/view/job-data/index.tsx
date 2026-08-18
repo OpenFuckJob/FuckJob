@@ -17,6 +17,7 @@ import {
   EyeOutlined,
   MessageOutlined,
   SearchOutlined,
+  ThunderboltOutlined,
 } from "@ant-design/icons";
 import { invoke } from "@tauri-apps/api/core";
 import type { ColumnsType } from "antd/es/table";
@@ -28,6 +29,14 @@ import type {
   JobDetail,
   JobListItem,
 } from "../../types/job-detail";
+
+/** 与 Rust 侧 BatchAnalysisResult 对应 */
+interface BatchAnalysisResult {
+  analyzed: number;
+  skipped: number;
+  failed: number;
+  failures: string[];
+}
 import AnalysisReport from "./AnalysisReport";
 
 const getJobPlatform = (job: JobDetail): "boss" | "liepin" =>
@@ -432,6 +441,8 @@ const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled }
   const [currentJob, setCurrentJob] = useState<JobDetail | null>(null);
   const [chatJob, setChatJob] = useState<JobDetail | null>(null);
   const [viewMode, setViewMode] = useState<"table" | "kanban">("table");
+  const [selectedJobIds, setSelectedJobIds] = useState<React.Key[]>([]);
+  const [batchAnalyzing, setBatchAnalyzing] = useState(false);
   const [messageApi, contextHolder] = message.useMessage();
 
   const loadJobs = useCallback(async () => {
@@ -497,6 +508,44 @@ const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled }
   const handleBackFromReport = useCallback(() => {
     setCurrentJob(null);
   }, []);
+
+  /// 批量分析在后端串行执行，这里只等一个总结果
+  const handleBatchAnalyze = useCallback(async () => {
+    if (!aiConfigured) {
+      onConfigureAi();
+      return;
+    }
+    setBatchAnalyzing(true);
+    try {
+      const result = await invoke<CommandResult<BatchAnalysisResult>>(
+        "job_analyze_batch",
+        { jobIds: selectedJobIds.map(String), skipAnalyzed: true },
+      );
+      if (!result.success || !result.data) {
+        messageApi.error(commandErrorMessage(result.error, "批量分析失败"));
+        return;
+      }
+      const { analyzed, skipped, failed, failures } = result.data;
+      const summary = [
+        `已分析 ${analyzed} 个`,
+        skipped ? `跳过 ${skipped} 个已分析` : "",
+        failed ? `失败 ${failed} 个` : "",
+      ]
+        .filter(Boolean)
+        .join("，");
+      if (failed > 0) {
+        messageApi.warning(`${summary}。${failures.slice(0, 2).join("；")}`);
+      } else {
+        messageApi.success(summary);
+      }
+      setSelectedJobIds([]);
+      void loadJobs();
+    } catch (error: unknown) {
+      messageApi.error(error instanceof Error ? error.message : "批量分析失败");
+    } finally {
+      setBatchAnalyzing(false);
+    }
+  }, [aiConfigured, loadJobs, messageApi, onConfigureAi, selectedJobIds]);
 
   /* ── detail fallback ── */
   if (currentJob) {
@@ -647,6 +696,16 @@ const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled }
           岗位数据
         </Typography.Title>
         <Space wrap>
+          {viewMode === "table" && selectedJobIds.length > 0 && (
+            <Button
+              type="primary"
+              icon={<ThunderboltOutlined />}
+              loading={batchAnalyzing}
+              onClick={() => void handleBatchAnalyze()}
+            >
+              批量 AI 分析（{selectedJobIds.length}）
+            </Button>
+          )}
           <Segmented
             value={viewMode}
             onChange={(val) => setViewMode(val as "table" | "kanban")}
@@ -700,7 +759,12 @@ const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled }
             rowKey="id"
             columns={columns}
             dataSource={filteredJobs}
-            loading={loading}
+            loading={loading || batchAnalyzing}
+            rowSelection={{
+              selectedRowKeys: selectedJobIds,
+              onChange: setSelectedJobIds,
+              preserveSelectedRowKeys: true,
+            }}
             size="middle"
             scroll={{ x: 1300, y: "calc(100vh - 290px)" }}
             pagination={{

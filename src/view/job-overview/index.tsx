@@ -26,6 +26,8 @@ interface OverviewMetrics {
   reply_rate: number;
   resume_sent_jobs: number;
   high_match_jobs: number;
+  /** 窗口内已经跑过 AI 分析的岗位数 */
+  analyzed_jobs: number;
 }
 
 interface DailyActivity {
@@ -60,6 +62,8 @@ interface JobSearchOverview {
   daily_activity: DailyActivity[];
   source_distribution: SourceSlice[];
   active_conversations: ActiveConversation[];
+  /** 高匹配的判定分数线，取自默认求职方案 */
+  high_match_score: number;
 }
 
 type MetricKey = "total_jobs" | "communicated_jobs" | "reply_rate" | "resume_sent_jobs" | "high_match_jobs";
@@ -70,6 +74,8 @@ interface MetricCard {
   icon: ReactNode;
   color: string;
   suffix?: string;
+  /** 口径说明，鼠标悬浮在标签上时展示 */
+  hint?: (overview: JobSearchOverview) => string;
   /** 卡片右下角迷你趋势线取数 */
   series: (item: DailyActivity) => number;
 }
@@ -86,7 +92,15 @@ const METRIC_CARDS: MetricCard[] = [
     series: (item) => (item.communicated ? (item.replies * 100) / item.communicated : 0),
   },
   { key: "resume_sent_jobs", label: "简历交换", icon: <FileDoneOutlined />, color: "#fa8c16", series: (item) => item.resume_sent },
-  { key: "high_match_jobs", label: "高匹配岗位", icon: <StarOutlined />, color: "#52c41a", series: (item) => item.high_match },
+  {
+    key: "high_match_jobs",
+    label: "高匹配岗位",
+    icon: <StarOutlined />,
+    color: "#52c41a",
+    hint: (overview) =>
+      `AI 分析得分 ≥ ${overview.high_match_score} 分的岗位；未分析过的岗位不计入，可在「配置中心 → 求职方案 → 岗位分析」开启自动分析`,
+    series: (item) => item.high_match,
+  },
 ];
 
 const RANGES = [
@@ -368,7 +382,7 @@ function sourceColor(source: string, index: number) {
 }
 
 /** 建议卡片的跳转目标：岗位管理页，或配置中心的某个分组 */
-type SuggestionTarget = "job-data" | "greet" | "job";
+type SuggestionTarget = "job-data" | "greet" | "job" | "analysis";
 
 interface Suggestion {
   key: string;
@@ -437,7 +451,17 @@ export default function JobOverviewPage({ onNavigate, onOpenConversation }: {
         target: "greet",
       });
     }
-    if (metrics.high_match_jobs < 5) {
+    // 一个岗位都没分析过时说「匹配度低」是误导，真实原因是没有数据
+    if (metrics.analyzed_jobs === 0) {
+      items.push({
+        key: "no-analysis",
+        tone: "primary",
+        icon: <ThunderboltFilled />,
+        title: "还没有岗位做过 AI 匹配分析",
+        detail: "开启自动分析，或在岗位管理页批量分析存量岗位，才能得到高匹配数据。",
+        target: "analysis",
+      });
+    } else if (metrics.high_match_jobs < 5) {
       items.push({
         key: "high-match",
         tone: "primary",
@@ -526,9 +550,18 @@ export default function JobOverviewPage({ onNavigate, onOpenConversation }: {
                   <span className="metric-icon" style={{ color: card.color, background: `${card.color}14` }}>
                     {card.icon}
                   </span>
-                  <Typography.Text type="secondary" className="metric-label">
-                    {card.label}
-                  </Typography.Text>
+                  {card.hint ? (
+                    <Tooltip title={card.hint(overview)}>
+                      <Typography.Text type="secondary" className="metric-label has-hint">
+                        {card.label}
+                        <InfoCircleOutlined />
+                      </Typography.Text>
+                    </Tooltip>
+                  ) : (
+                    <Typography.Text type="secondary" className="metric-label">
+                      {card.label}
+                    </Typography.Text>
+                  )}
                 </div>
                 <div className="metric-value">
                   {value}
