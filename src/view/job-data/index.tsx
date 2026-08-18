@@ -15,6 +15,7 @@ import {
 import {
   DeleteOutlined,
   EyeOutlined,
+  InboxOutlined,
   MessageOutlined,
   SearchOutlined,
   ThunderboltOutlined,
@@ -29,6 +30,10 @@ import type {
   JobDetail,
   JobListItem,
 } from "../../types/job-detail";
+import type { InterviewJobAnalysis } from "../../types/analysis";
+import { DEFAULT_HIGH_MATCH_SCORE } from "../../types/app-config";
+import AnalysisReport from "./AnalysisReport";
+import "./style.css";
 
 /** 与 Rust 侧 BatchAnalysisResult 对应 */
 interface BatchAnalysisResult {
@@ -37,12 +42,32 @@ interface BatchAnalysisResult {
   failed: number;
   failures: string[];
 }
-import AnalysisReport from "./AnalysisReport";
 
 const getJobPlatform = (job: JobDetail): "boss" | "liepin" =>
   job.platform === "liepin" || job.id.startsWith("liepin:")
     ? "liepin"
     : "boss";
+
+type AnalysisFilter = "all" | "analyzed" | "not_analyzed" | "high_match";
+
+/** 与分析报告里的评分配色保持一致 */
+const matchScoreColor = (score: number): string =>
+  score >= 80 ? "green" : score >= 60 ? "gold" : "red";
+
+/** 列表和看板共用的匹配度展示：没分析过要一眼看得出来 */
+function MatchScoreTag({ analysis }: { analysis?: InterviewJobAnalysis }) {
+  if (!analysis) {
+    return <Tag className="match-tag is-empty">未分析</Tag>;
+  }
+  if (analysis.parse_error) {
+    return <Tag color="orange">解析失败</Tag>;
+  }
+  return (
+    <Tag color={matchScoreColor(analysis.match_score)} className="match-tag">
+      {analysis.match_score} 分
+    </Tag>
+  );
+}
 
 const COMMUNICATION_STATUS_META: Record<
   CommunicationStatus,
@@ -177,47 +202,63 @@ interface KanbanLane {
   key: string;
   label: string;
   color: string;
-  bg: string;
-  border: string;
-  filter: (job: JobDetail) => boolean;
+  hint: string;
+  filter: (job: JobListItem) => boolean;
 }
 
+/// 泳道按求职推进顺序排列，且互斥：一个岗位只会落在其中一列
 const KANBAN_LANES: KanbanLane[] = [
   {
     key: "not_sent",
-    label: "未投递",
-    color: "#64748b",
-    bg: "#f8fafc",
-    border: "#e2e8f0",
-    filter: (j) => !j.is_send_resume,
+    label: "待投递",
+    color: "#94a3b8",
+    hint: "还没投出简历的岗位",
+    filter: (job) => !job.is_send_resume && !job.is_reply,
   },
   {
     key: "sent",
     label: "已投递",
     color: "#1677ff",
-    bg: "rgba(22,119,255,0.04)",
-    border: "rgba(22,119,255,0.25)",
-    filter: (j) => j.is_send_resume && !j.is_reply,
+    hint: "等待招聘方回应",
+    filter: (job) => job.is_send_resume && job.communication_status !== "replied" && job.communication_status !== "rejected",
   },
   {
     key: "replied",
     label: "已回复",
     color: "#10b981",
-    bg: "rgba(16,185,129,0.04)",
-    border: "rgba(16,185,129,0.25)",
-    filter: (j) => j.is_reply,
+    hint: "招聘方已回应，优先跟进",
+    filter: (job) => job.communication_status === "replied",
+  },
+  {
+    key: "rejected",
+    label: "已婉拒",
+    color: "#f97316",
+    hint: "对方明确表示不合适",
+    filter: (job) => job.communication_status === "rejected",
   },
 ];
+
+/** 没被前面的泳道接住的岗位归到「待投递」，避免看板漏掉数据 */
+function groupByLane(jobs: JobListItem[]): Array<KanbanLane & { jobs: JobListItem[] }> {
+  const lanes = KANBAN_LANES.map((lane) => ({ ...lane, jobs: [] as JobListItem[] }));
+  for (const job of jobs) {
+    const lane = lanes.find((candidate) => candidate.filter(job)) ?? lanes[0];
+    lane.jobs.push(job);
+  }
+  return lanes;
+}
 
 /* ────────── Job card renderer ────────── */
 
 function JobKanbanCard({
   job,
+  analysis,
   onView,
   onChat,
   onDelete,
 }: {
   job: JobListItem;
+  analysis?: InterviewJobAnalysis;
   onView: (job: JobDetail) => void;
   onChat: (job: JobDetail) => void;
   onDelete: (id: string) => void;
@@ -232,94 +273,64 @@ function JobKanbanCard({
 
   return (
     <div
-      style={{
-        background: "#ffffff",
-        borderRadius: 10,
-        border: "1px solid #e2e8f0",
-        padding: 12,
-        display: "flex",
-        flexDirection: "column",
-        gap: 8,
-        transition: "box-shadow 0.2s",
-        cursor: "default",
-      }}
-      onMouseEnter={(e) => {
-        (e.currentTarget as HTMLDivElement).style.boxShadow = "0 4px 12px rgba(0,0,0,0.06)";
-      }}
-      onMouseLeave={(e) => {
-        (e.currentTarget as HTMLDivElement).style.boxShadow = "none";
+      className="job-card"
+      role="button"
+      tabIndex={0}
+      title="查看面试分析报告"
+      onClick={() => onView(job)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onView(job);
+        }
       }}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-        <Typography.Text strong style={{ fontSize: 14, lineHeight: 1.4, flex: 1 }}>
-          {job.title}
-        </Typography.Text>
-        <Tag
-          color={platform === "liepin" ? "purple" : "green"}
-          style={{ margin: 0, flexShrink: 0, fontSize: 11 }}
-        >
-          {platform === "liepin" ? "猎聘" : "BOSS"}
-        </Tag>
+      <div className="job-card-top">
+        <div className="job-card-title">{job.title}</div>
+        <MatchScoreTag analysis={analysis} />
       </div>
 
-      <Typography.Text type="secondary" style={{ fontSize: 12.5 }}>
-        {job.company_name}
-      </Typography.Text>
-
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        {renderCommunicationStatus(job.communication_status)}
-        {job.salary && (
-          <Tag
-            style={{
-              margin: 0,
-              fontSize: 11,
-              background: "rgba(22,119,255,0.06)",
-              color: "#1677ff",
-              border: "none",
-            }}
-          >
-            {job.salary}
-          </Tag>
-        )}
-        {job.location && (
-          <Tag
-            style={{
-              margin: 0,
-              fontSize: 11,
-              background: "#f8fafc",
-              color: "#64748b",
-              border: "none",
-            }}
-          >
-            {job.location}
-          </Tag>
-        )}
+      <div className="job-card-company">
+        <span
+          className="platform-dot"
+          style={{ background: platform === "liepin" ? "#722ed1" : "#52c41a" }}
+          title={platform === "liepin" ? "猎聘" : "BOSS 直聘"}
+        />
+        <span>{job.company_name}</span>
       </div>
 
-      <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-        {time}
-      </Typography.Text>
+      <div className="job-card-tags">
+        {job.salary && <span className="job-card-chip salary">{job.salary}</span>}
+        {job.location && <span className="job-card-chip">{job.location}</span>}
+        {job.is_send_resume && <span className="job-card-chip">已投简历</span>}
+      </div>
 
-      {/* actions */}
-      <div style={{ display: "flex", gap: 4, marginTop: 2 }}>
-        <Button size="small" type="text" icon={<EyeOutlined />} onClick={() => onView(job)}>
-          详情
-        </Button>
-        <Button size="small" type="text" icon={<MessageOutlined />} onClick={() => onChat(job)}>
-          沟通
-        </Button>
-        <Popconfirm
-          title="确认删除"
-          description={`确定要删除「${job.title}」吗？`}
-          onConfirm={() => onDelete(job.id)}
-          okText="确认删除"
-          cancelText="取消"
-          okButtonProps={{ danger: true }}
+      <div className="job-card-foot">
+        <span className="job-card-time">{time}</span>
+        {/* 阻止冒泡：这些按钮各有各的动作，不该顺带打开详情 */}
+        <div
+          className="job-card-actions"
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => event.stopPropagation()}
         >
-          <Button size="small" type="text" danger icon={<DeleteOutlined />}>
-            删除
-          </Button>
-        </Popconfirm>
+          <Button
+            size="small"
+            type="text"
+            icon={<MessageOutlined />}
+            title="沟通记录"
+            onClick={() => onChat(job)}
+          />
+          <Popconfirm
+            title="确认删除"
+            description={`确定要删除「${job.title}」吗？`}
+            onConfirm={() => onDelete(job.id)}
+            okText="确认删除"
+            cancelText="取消"
+            okButtonProps={{ danger: true }}
+          >
+            <Button size="small" type="text" danger icon={<DeleteOutlined />} title="删除" />
+          </Popconfirm>
+        </div>
       </div>
     </div>
   );
@@ -329,87 +340,40 @@ function JobKanbanCard({
 
 function KanbanView({
   jobs,
+  analyses,
   onView,
   onChat,
   onDelete,
 }: {
   jobs: JobListItem[];
+  analyses: Record<string, InterviewJobAnalysis>;
   onView: (job: JobDetail) => void;
   onChat: (job: JobDetail) => void;
   onDelete: (id: string) => void;
 }) {
-  const lanes = useMemo(
-    () =>
-      KANBAN_LANES.map((lane) => ({
-        ...lane,
-        jobs: jobs.filter(lane.filter),
-      })),
-    [jobs],
-  );
+  const lanes = useMemo(() => groupByLane(jobs), [jobs]);
 
   return (
-    <div
-      style={{
-        flex: "1 1 0",
-        minHeight: 0,
-        display: "flex",
-        gap: 16,
-        overflowX: "auto",
-        paddingBottom: 4,
-      }}
-    >
+    <div className="kanban-board">
       {lanes.map((lane) => (
-        <div
-          key={lane.key}
-          style={{
-            flex: 1,
-            minWidth: 260,
-            display: "flex",
-            flexDirection: "column",
-            background: lane.bg,
-            borderRadius: 14,
-            border: `1px solid ${lane.border}`,
-          }}
-        >
-          {/* lane header */}
-          <div
-            style={{
-              padding: "10px 14px",
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-            }}
-          >
-            <Typography.Text strong style={{ color: lane.color, fontSize: 14 }}>
-              {lane.label}
-            </Typography.Text>
-            <Tag color="default" style={{ margin: 0 }}>
-              {lane.jobs.length}
-            </Tag>
+        <div className="kanban-lane" key={lane.key}>
+          <div className="kanban-lane-head" title={lane.hint}>
+            <span className="kanban-lane-dot" style={{ background: lane.color }} />
+            <span className="kanban-lane-title">{lane.label}</span>
+            <span className="kanban-lane-count">{lane.jobs.length}</span>
           </div>
-          {/* lane cards */}
-          <div
-            style={{
-              flex: 1,
-              overflowY: "auto",
-              padding: "0 10px 10px",
-              display: "flex",
-              flexDirection: "column",
-              gap: 10,
-            }}
-          >
+          <div className="kanban-lane-body">
             {lane.jobs.length === 0 ? (
-              <Typography.Text
-                type="secondary"
-                style={{ textAlign: "center", padding: 24, fontSize: 12 }}
-              >
-                暂无
-              </Typography.Text>
+              <div className="kanban-empty">
+                <InboxOutlined />
+                <span>{lane.hint}</span>
+              </div>
             ) : (
               lane.jobs.map((job) => (
                 <JobKanbanCard
                   key={job.id}
                   job={job}
+                  analysis={analyses[job.id]}
                   onView={onView}
                   onChat={onChat}
                   onDelete={onDelete}
@@ -425,19 +389,23 @@ function KanbanView({
 
 /* ────────── Page ────────── */
 
-const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled }: {
+const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled, highMatchScore = DEFAULT_HIGH_MATCH_SCORE }: {
   aiConfigured: boolean;
   onConfigureAi: () => void;
   /** 从其他页面跳转过来时需要直接打开沟通记录的岗位 */
   focusJobId?: string;
   onFocusHandled?: () => void;
+  /** 高匹配的判定分数线，与求职方案的岗位分析配置一致 */
+  highMatchScore?: number;
 }) => {
   const [jobs, setJobs] = useState<JobListItem[]>([]);
   // 初始即为加载中，避免首次挂载时把待跳转的岗位当成「不存在」
   const [loading, setLoading] = useState(true);
   const [keyword, setKeyword] = useState("");
+  const [analyses, setAnalyses] = useState<Record<string, InterviewJobAnalysis>>({});
   const [communicationStatusFilter, setCommunicationStatusFilter] =
     useState<CommunicationStatus | "all">("all");
+  const [analysisFilter, setAnalysisFilter] = useState<AnalysisFilter>("all");
   const [currentJob, setCurrentJob] = useState<JobDetail | null>(null);
   const [chatJob, setChatJob] = useState<JobDetail | null>(null);
   const [viewMode, setViewMode] = useState<"table" | "kanban">("table");
@@ -470,9 +438,23 @@ const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled }
     }
   }, [messageApi]);
 
+  /// 分析结果只是列表上的附加信息，取不到不该影响岗位管理本身
+  const loadAnalyses = useCallback(async () => {
+    try {
+      const result = await invoke<CommandResult<InterviewJobAnalysis[]>>("analysis_list");
+      if (!result.success || !result.data) return;
+      setAnalyses(
+        Object.fromEntries(result.data.map((item) => [item.job_id, item])),
+      );
+    } catch {
+      setAnalyses({});
+    }
+  }, []);
+
   useEffect(() => {
     void loadJobs();
-  }, [loadJobs]);
+    void loadAnalyses();
+  }, [loadAnalyses, loadJobs]);
 
   useEffect(() => {
     if (!focusJobId || loading) return;
@@ -505,9 +487,6 @@ const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled }
     [loadJobs, messageApi],
   );
 
-  const handleBackFromReport = useCallback(() => {
-    setCurrentJob(null);
-  }, []);
 
   /// 批量分析在后端串行执行，这里只等一个总结果
   const handleBatchAnalyze = useCallback(async () => {
@@ -540,31 +519,36 @@ const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled }
       }
       setSelectedJobIds([]);
       void loadJobs();
+      void loadAnalyses();
     } catch (error: unknown) {
       messageApi.error(error instanceof Error ? error.message : "批量分析失败");
     } finally {
       setBatchAnalyzing(false);
     }
-  }, [aiConfigured, loadJobs, messageApi, onConfigureAi, selectedJobIds]);
-
-  /* ── detail fallback ── */
-  if (currentJob) {
-    return (
-      <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-        {contextHolder}
-        <AnalysisReport job={currentJob} onBack={handleBackFromReport} aiConfigured={aiConfigured} onConfigureAi={onConfigureAi} />
-      </div>
-    );
-  }
+  }, [aiConfigured, loadAnalyses, loadJobs, messageApi, onConfigureAi, selectedJobIds]);
 
   const normalizedKeyword = keyword.trim().toLowerCase();
+  const matchesAnalysisFilter = (job: JobListItem) => {
+    const analysis = analyses[job.id];
+    switch (analysisFilter) {
+      case "analyzed":
+        return !!analysis;
+      case "not_analyzed":
+        return !analysis;
+      case "high_match":
+        return !!analysis && !analysis.parse_error && analysis.match_score >= highMatchScore;
+      default:
+        return true;
+    }
+  };
   const filteredJobs = jobs.filter(
     (job) =>
       (!normalizedKeyword ||
         job.title.toLowerCase().includes(normalizedKeyword) ||
         job.company_name.toLowerCase().includes(normalizedKeyword)) &&
       (communicationStatusFilter === "all" ||
-        job.communication_status === communicationStatusFilter),
+        job.communication_status === communicationStatusFilter) &&
+      matchesAnalysisFilter(job),
   );
 
   /* ── table columns ── */
@@ -582,6 +566,16 @@ const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled }
       key: "company_name",
       ellipsis: true,
       width: 160,
+    },
+    {
+      title: "匹配度",
+      key: "match_score",
+      width: 100,
+      sorter: (a, b) =>
+        (analyses[a.id]?.match_score ?? -1) - (analyses[b.id]?.match_score ?? -1),
+      render: (_: unknown, record: JobListItem) => (
+        <MatchScoreTag analysis={analyses[record.id]} />
+      ),
     },
     {
       title: "沟通状态",
@@ -725,6 +719,17 @@ const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled }
               { label: "已回复", value: "replied" },
             ]}
           />
+          <Select
+            value={analysisFilter}
+            style={{ width: 150 }}
+            onChange={setAnalysisFilter}
+            options={[
+              { label: "全部分析状态", value: "all" },
+              { label: "已分析", value: "analyzed" },
+              { label: "未分析", value: "not_analyzed" },
+              { label: `高匹配（≥${highMatchScore}）`, value: "high_match" },
+            ]}
+          />
           <Input
             placeholder="搜索岗位或公司"
             prefix={<SearchOutlined />}
@@ -740,6 +745,7 @@ const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled }
       {viewMode === "kanban" ? (
         <KanbanView
           jobs={filteredJobs}
+          analyses={analyses}
           onView={setCurrentJob}
           onChat={setChatJob}
           onDelete={(id) => void handleDelete(id)}
@@ -774,6 +780,28 @@ const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled }
             }}
           />
         </div>
+      )}
+
+      {/* ── analysis modal ── */}
+      {currentJob && (
+        <Modal
+          title={`${currentJob.title} - 面试分析报告`}
+          open
+          onCancel={() => setCurrentJob(null)}
+          footer={null}
+          width={920}
+          destroyOnHidden
+          styles={{ body: { maxHeight: "70vh", overflowY: "auto", padding: "16px 24px" } }}
+        >
+          <AnalysisReport
+            job={currentJob}
+            aiConfigured={aiConfigured}
+            onConfigureAi={onConfigureAi}
+            onAnalyzed={(analysis) =>
+              setAnalyses((current) => ({ ...current, [analysis.job_id]: analysis }))
+            }
+          />
+        </Modal>
       )}
 
       {/* ── chat modal ── */}

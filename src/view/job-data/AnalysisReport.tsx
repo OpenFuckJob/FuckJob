@@ -39,12 +39,15 @@ const scoreColor = (s: number): string => {
 
 interface AnalysisReportProps {
   job: JobDetail;
-  onBack: () => void;
+  /** 整页形态下的返回入口。放在弹窗里时不传，标题与关闭都交给弹窗 */
+  onBack?: () => void;
   aiConfigured: boolean;
   onConfigureAi: () => void;
+  /** 分析完成后通知外部刷新列表上的匹配度 */
+  onAnalyzed?: (analysis: InterviewJobAnalysis) => void;
 }
 
-const AnalysisReport = ({ job, onBack, aiConfigured, onConfigureAi }: AnalysisReportProps) => {
+const AnalysisReport = ({ job, onBack, aiConfigured, onConfigureAi, onAnalyzed }: AnalysisReportProps) => {
   const [analysis, setAnalysis] = useState<InterviewJobAnalysis | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisChecking, setAnalysisChecking] = useState(false);
@@ -86,6 +89,7 @@ const AnalysisReport = ({ job, onBack, aiConfigured, onConfigureAi }: AnalysisRe
         return;
       }
       setAnalysis(result.data);
+      onAnalyzed?.(result.data);
       if (result.data.parse_error) {
         messageApi.warning("分析完成，但结果解析不完整");
       } else {
@@ -98,42 +102,59 @@ const AnalysisReport = ({ job, onBack, aiConfigured, onConfigureAi }: AnalysisRe
     } finally {
       setAnalysisLoading(false);
     }
-  }, [aiConfigured, job.id, messageApi]);
+  }, [aiConfigured, job.id, messageApi, onAnalyzed]);
+
+  const analyzeButton = (
+    <AiFeatureGate configured={aiConfigured} onConfigure={onConfigureAi}>
+      <Button
+        type="primary"
+        icon={<ThunderboltOutlined />}
+        loading={analysisLoading}
+        onClick={() => void handleRunAnalyze()}
+      >
+        {analysis ? "重新分析" : "开始分析"}
+      </Button>
+    </AiFeatureGate>
+  );
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflowY: "auto", gap: 16 }}>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: onBack ? "100%" : undefined,
+        overflowY: onBack ? "auto" : undefined,
+        gap: 16,
+      }}
+    >
       {contextHolder}
 
-      {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
-        <Space>
-          <Button icon={<ArrowLeftOutlined />} onClick={onBack}>返回</Button>
-          <Typography.Title level={5} style={{ margin: 0 }}>
-            {job.title} - 面试分析报告
-          </Typography.Title>
-        </Space>
-        <Space>
-          <AiFeatureGate configured={aiConfigured} onConfigure={onConfigureAi}><Button
-            type="primary"
-            icon={<ThunderboltOutlined />}
-            loading={analysisLoading}
-            onClick={() => void handleRunAnalyze()}
-          >
-            {analysis ? "重新分析" : "开始分析"}
-          </Button></AiFeatureGate>
-        </Space>
-      </div>
+      {/* Header：弹窗形态下标题与关闭都由弹窗负责，这一行整体省掉 */}
+      {onBack && (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
+          <Space>
+            <Button icon={<ArrowLeftOutlined />} onClick={onBack}>返回</Button>
+            <Typography.Title level={5} style={{ margin: 0 }}>
+              {job.title} - 面试分析报告
+            </Typography.Title>
+          </Space>
+          <Space>{analyzeButton}</Space>
+        </div>
+      )}
 
       {/* Job Info Card */}
       <Card size="small" style={{ flexShrink: 0 }}>
-        <Descriptions size="small" column={4}>
-          <Descriptions.Item label="公司">{job.company_name}</Descriptions.Item>
-          <Descriptions.Item label="薪资">{job.salary || "-"}</Descriptions.Item>
-          <Descriptions.Item label="地点">{job.location || "-"}</Descriptions.Item>
-          <Descriptions.Item label="状态">
-            {job.is_send_resume ? <Tag color="blue">已投递</Tag> : <Tag>未投递</Tag>}
-          </Descriptions.Item>
-        </Descriptions>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <Descriptions size="small" column={onBack ? 4 : 3} style={{ flex: 1 }}>
+            <Descriptions.Item label="公司">{job.company_name}</Descriptions.Item>
+            <Descriptions.Item label="薪资">{job.salary || "-"}</Descriptions.Item>
+            <Descriptions.Item label="地点">{job.location || "-"}</Descriptions.Item>
+            <Descriptions.Item label="状态">
+              {job.is_send_resume ? <Tag color="blue">已投递</Tag> : <Tag>未投递</Tag>}
+            </Descriptions.Item>
+          </Descriptions>
+          {!onBack && analyzeButton}
+        </div>
       </Card>
 
       {/* Analysis Content */}
