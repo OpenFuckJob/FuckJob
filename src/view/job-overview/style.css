@@ -458,6 +458,14 @@
   font-size: 12.5px;
 }
 
+.conversation-table.is-clickable .ant-table-tbody > tr {
+  cursor: pointer;
+}
+
+.conversation-table.is-clickable .ant-table-tbody > tr:hover > td {
+  background: #f6faff;
+}
+
 .conversation-company {
   display: flex;
   align-items: center;

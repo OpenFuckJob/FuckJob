@@ -416,9 +416,16 @@ function KanbanView({
 
 /* ────────── Page ────────── */
 
-const JobDataPage = ({ aiConfigured, onConfigureAi }: { aiConfigured: boolean; onConfigureAi: () => void }) => {
+const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled }: {
+  aiConfigured: boolean;
+  onConfigureAi: () => void;
+  /** 从其他页面跳转过来时需要直接打开沟通记录的岗位 */
+  focusJobId?: string;
+  onFocusHandled?: () => void;
+}) => {
   const [jobs, setJobs] = useState<JobListItem[]>([]);
-  const [loading, setLoading] = useState(false);
+  // 初始即为加载中，避免首次挂载时把待跳转的岗位当成「不存在」
+  const [loading, setLoading] = useState(true);
   const [keyword, setKeyword] = useState("");
   const [communicationStatusFilter, setCommunicationStatusFilter] =
     useState<CommunicationStatus | "all">("all");
@@ -455,6 +462,18 @@ const JobDataPage = ({ aiConfigured, onConfigureAi }: { aiConfigured: boolean; o
   useEffect(() => {
     void loadJobs();
   }, [loadJobs]);
+
+  useEffect(() => {
+    if (!focusJobId || loading) return;
+    const target = jobs.find((job) => job.id === focusJobId);
+    if (target) {
+      setCurrentJob(null);
+      setChatJob(target);
+    } else if (jobs.length > 0) {
+      messageApi.warning("未找到该岗位，可能已被删除");
+    }
+    onFocusHandled?.();
+  }, [focusJobId, jobs, loading, messageApi, onFocusHandled]);
 
   const handleDelete = useCallback(
     async (id: string) => {

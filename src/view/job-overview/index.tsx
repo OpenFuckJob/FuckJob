@@ -379,7 +379,11 @@ interface Suggestion {
   target?: SuggestionTarget;
 }
 
-export default function JobOverviewPage({ onNavigate }: { onNavigate?: (target: SuggestionTarget) => void } = {}) {
+export default function JobOverviewPage({ onNavigate, onOpenConversation }: {
+  onNavigate?: (target: SuggestionTarget) => void;
+  /** 打开某个岗位的沟通记录 */
+  onOpenConversation?: (jobId: string) => void;
+} = {}) {
   const [days, setDays] = useState(30);
   const [overview, setOverview] = useState<JobSearchOverview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -662,10 +666,14 @@ export default function JobOverviewPage({ onNavigate }: { onNavigate?: (target: 
             <Table
               rowKey="job_id"
               size="small"
-              className="conversation-table"
+              className={`conversation-table${onOpenConversation ? " is-clickable" : ""}`}
               pagination={false}
               dataSource={overview.active_conversations}
               locale={{ emptyText: "当前时间范围内暂无沟通记录" }}
+              onRow={(item: ActiveConversation) => ({
+                onClick: () => onOpenConversation?.(item.job_id),
+                title: onOpenConversation ? "查看该岗位的沟通记录" : undefined,
+              })}
               columns={[
                 {
                   title: "公司 / 岗位",
