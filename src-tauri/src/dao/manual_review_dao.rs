@@ -95,7 +95,7 @@ pub fn get(platform: &str, conversation_id: &str) -> Result<Option<ManualReviewR
 /// 按最近触发时间倒序返回。最新卡住的排在最前面
 pub fn list() -> Result<Vec<ManualReviewRecord>> {
     let mut records = store().load_all()?;
-    records.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    records.sort_by_key(|record| std::cmp::Reverse(record.updated_at));
     Ok(records)
 }
 
