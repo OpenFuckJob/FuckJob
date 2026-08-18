@@ -8,7 +8,11 @@ use crate::{
     auto_analysis,
     browser,
     config::{AnalysisTrigger, AppRuntimeConfig},
-    dao::{chat_message_dao, job_detail_dao, profile_snapshot_dao},
+    dao::{
+        auto_reply_log_dao, chat_message_dao, job_detail_dao,
+        model::{AutoReplyAction, ManualReviewReason},
+        profile_snapshot_dao,
+    },
     logger,
     rpa::{
         boss::{
@@ -20,6 +24,7 @@ use crate::{
             self, ConversationActions, ConversationContext, GateVerdict, ReplyAction, ReplyLimits,
             ReplyRoute, ResumeState,
         },
+        reply_effects::{hold_for_review, record_auto_send, release_if_handled, wait_before_reply},
         run_flow::{is_job_task_stop_requested, PlatformKind},
     },
 };
@@ -52,10 +57,23 @@ pub async fn reply_unread_on_page(
     // 后面的才会补上来。handled 只是最后一道防线，兜住「处理完仍赖在列表里」的
     // 会话，免得同一张卡片被无限重试
     let mut handled: HashSet<String> = HashSet::new();
+    // 未读堆积时不能一口气全处理完：单轮耗时一旦超过轮询间隔，
+    // 后面每一轮都在追赶上一轮的尾巴，节奏彻底乱掉。剩下的留给下一轮
+    let max_per_round = app_runtime_config
+        .reply_polling_config
+        .max_conversations_per_round
+        .max(1);
     loop {
         if is_job_task_stop_requested() {
             logger::info("沟通任务已结束")?;
             return Ok(Vec::new());
+        }
+
+        if handled.len() >= max_per_round {
+            logger::info(format!(
+                "本轮已处理 {max_per_round} 个会话，达到单轮上限，其余留待下一轮"
+            ))?;
+            break;
         }
 
         let cards = match chat_list::reload_label(page, "未读", Duration::from_secs(15))? {
@@ -91,7 +109,7 @@ pub async fn reply_unread_on_page(
             ))?;
             break;
         };
-        handled.insert(key);
+        handled.insert(key.clone());
 
         let history_listener = page.listen_url("zpchat/geek/historyMsg")?;
         let boss_data_listener = page.listen_url("zpchat/geek/getBossData")?;
@@ -126,7 +144,7 @@ pub async fn reply_unread_on_page(
 
         // 处理这一个会话时出的错不该让整轮未读中断：后面还有别的会话等着
         if let Err(error) =
-            handle_conversation(page, &app_runtime_config, job_id.as_deref(), fresh).await
+            handle_conversation(page, &app_runtime_config, job_id.as_deref(), &key, fresh).await
         {
             logger::warning(format!("处理会话失败，跳过该会话继续：{error}"))?;
         }
@@ -146,12 +164,24 @@ async fn handle_conversation(
     page: &rust_drission::Page,
     app_runtime_config: &AppRuntimeConfig,
     job_id: Option<&str>,
+    card_key: &str,
     fresh: Vec<ChatMessage>,
 ) -> Result<(), anyhow::Error> {
     let Some(job_id) = job_id else {
         // 拿不到 jobId 就没有稳定的会话标识，落库和历史合并都无从谈起。
-        // 这种会话交给「读取聊天消息」任务补齐，不在这里猜
-        logger::warning("未获取到 jobId，本会话跳过自动回复")?;
+        // 这种会话交给「读取聊天消息」任务补齐，不在这里猜。
+        //
+        // 但消息已经被点成已读了，就这么放着等于把它从手机上的未读里抹掉却没人回。
+        // 卡片自己的标识足够在待办列表里定位到这个会话，用它挂起——只用于挂待办，
+        // 不能拿来当聊天记录的主键，那会和正常路径的 jobId 主键格式撞成两份记录
+        logger::warning("未获取到 jobId，本会话挂起等待人工处理")?;
+        hold_for_review(
+            PLATFORM,
+            card_key,
+            conversation::review_draft(None, &fresh),
+            ManualReviewReason::MissingJobId,
+            "会话标识读取失败，自动回复无法进行".to_string(),
+        );
         return Ok(());
     };
 
@@ -198,7 +228,20 @@ async fn handle_conversation(
 
     let actions = BossActions;
     let limits = ReplyLimits::from_config(&conversation_config.replay_config);
+
+    // 用户在平台里自己回过之后，待办就该消掉，不必等他回应用里手工点一次
+    release_if_handled(PLATFORM, job_id, &messages);
+
     let resume_state = actions.resume_state(page)?;
+
+    // 查不到流水按 0 算：节流数据缺失不该让整个会话卡死，
+    // 最坏后果是多回一条，比该回的不回轻得多
+    let auto_replies_in_window = auto_reply_log_dao::count_replies_within(
+        PLATFORM,
+        job_id,
+        limits.auto_reply_window_hours,
+    )
+    .unwrap_or(0);
 
     let context = ConversationContext {
         platform: PlatformKind::Boss,
@@ -206,6 +249,7 @@ async fn handle_conversation(
         job,
         messages,
         resume_state,
+        auto_replies_in_window,
     };
 
     logger::info(format!(
@@ -219,8 +263,15 @@ async fn handle_conversation(
             logger::info(format!("本会话跳过：{reason}"))?;
             return Ok(());
         }
-        GateVerdict::Escalate(reason) => {
+        GateVerdict::Escalate { reason, kind } => {
             logger::warning(format!("本会话转人工，未自动处理：{reason}"))?;
+            hold_for_review(
+                PLATFORM,
+                job_id,
+                conversation::review_draft(context.job.as_ref(), &context.messages),
+                kind,
+                reason,
+            );
             return Ok(());
         }
         GateVerdict::Proceed => {}
@@ -234,6 +285,7 @@ async fn handle_conversation(
         } else if actions.accept_resume_request(page)? {
             logger::info("对方索要简历，已同意并发送")?;
             mark_resume_sent(job_id);
+            record_auto_send(PLATFORM, job_id, job_id, AutoReplyAction::Resume, 0);
         }
     }
 
@@ -253,6 +305,7 @@ async fn handle_conversation(
             // 拿它截断或否决用户写死的原话，只会让「固定回复」变得不固定
             send_messages(page, hit.resources)?;
             logger::info(format!("已按回复规则「{rule}」发送 {count} 条内容"))?;
+            record_auto_send(PLATFORM, job_id, job_id, AutoReplyAction::Template, 0);
             return Ok(());
         }
         ReplyRoute::Skip(reason) => {
@@ -285,6 +338,15 @@ async fn handle_conversation(
         Ok(text) => text,
         Err(reason) => {
             logger::warning(format!("生成的回复未通过发送前体检，已放弃发送：{reason}"))?;
+            // 模型确实生成了内容，只是不能发。会话已经被点成已读，
+            // 不挂起的话这条消息就彻底没人管了
+            hold_for_review(
+                PLATFORM,
+                job_id,
+                conversation::review_draft(context.job.as_ref(), &context.messages),
+                ManualReviewReason::VetRejected,
+                format!("生成的回复未通过发送前体检：{reason}"),
+            );
             return Ok(());
         }
     };
@@ -297,17 +359,24 @@ async fn handle_conversation(
         return Ok(());
     }
 
+    if !wait_before_reply(&app_runtime_config.reply_polling_config, &context).await {
+        logger::info("等待发送时机时任务已停止，本条回复未发送")?;
+        return Ok(());
+    }
+
     if !actions.send_text(page, &text)? {
         logger::warning("回复发送失败")?;
         return Ok(());
     }
     logger::info(format!("回复已发送（{} 字）", text.chars().count()))?;
+    record_auto_send(PLATFORM, job_id, job_id, AutoReplyAction::Reply, text.chars().count());
 
     if action == ReplyAction::ReplyAndSendResume {
         sleep_random_ms(800, 1200);
         if actions.send_resume(page)? {
             logger::info("已主动投递简历")?;
             mark_resume_sent(job_id);
+            record_auto_send(PLATFORM, job_id, job_id, AutoReplyAction::Resume, 0);
         } else {
             logger::warning("简历投递入口不可用，本轮只发送了回复")?;
         }

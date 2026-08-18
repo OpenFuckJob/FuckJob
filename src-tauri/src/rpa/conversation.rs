@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::output;
 use crate::config::{ReplayConfig, ReplayResourceType, ReplyResource, ReplyTemplate};
-use crate::dao::model::JobDetail;
+use crate::dao::manual_review_dao::ReviewRequest;
+use crate::dao::model::{JobDetail, ManualReviewReason};
 use crate::rpa::common::ChatMessage;
 use crate::rpa::run_flow::PlatformKind;
 
@@ -27,20 +28,17 @@ pub struct ConversationContext {
     /// 按时间升序的完整历史（平台接口本页 ∪ 本地库历史，按 mid 去重）
     pub messages: Vec<ChatMessage>,
     pub resume_state: ResumeState,
+    /// 本会话在节流时间窗内已经自动回复的条数，由调用方查流水后填入。
+    ///
+    /// 不在这里现查，是为了让 [`gate`] 保持纯函数。这个文件的判断逻辑全靠单测
+    /// 兜着，一旦让它依赖全局 store，那些测试就得先搭一套数据目录才能跑
+    pub auto_replies_in_window: usize,
 }
 
 impl ConversationContext {
     /// 对方（HR）发来的最后一条消息
     pub fn last_received(&self) -> Option<&ChatMessage> {
         self.messages.iter().rev().find(|message| message.received)
-    }
-
-    /// 我方已经发出的消息条数，用于判断是否聊得过久该转人工
-    pub fn sent_count(&self) -> usize {
-        self.messages
-            .iter()
-            .filter(|message| !message.received)
-            .count()
     }
 
     /// 渲染成喂给模型的对话记录。带角色前缀，模型才分得清谁说的
@@ -155,9 +153,14 @@ pub trait ConversationActions {
 /// 自动回复的边界参数。集中一处，两个平台不会各配一套
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReplyLimits {
-    /// 单个会话累计自动回复条数上限，超过转人工。
+    /// 滚动时间窗内单个会话的自动回复条数上限，超过挂起转人工。
     /// 没有这条限制时，模型可以和 HR 无限客套下去
     pub max_auto_replies: usize,
+    /// 上限所依据的滚动时间窗长度（小时）。
+    ///
+    /// 按「会话终身累计」计数在一次性任务下无感，轮询开起来后却是致命的：
+    /// 几轮下来所有会话都撞顶挂起，轮询随即退化成空转。窗口滑走后额度自动恢复
+    pub auto_reply_window_hours: u64,
     /// 单条回复的字数上限
     pub max_reply_chars: usize,
     /// 是否允许模型自主决定投递简历
@@ -170,6 +173,7 @@ impl ReplyLimits {
     pub fn from_config(config: &ReplayConfig) -> Self {
         Self {
             max_auto_replies: config.max_auto_replies,
+            auto_reply_window_hours: config.auto_reply_window_hours,
             max_reply_chars: config.max_reply_chars,
             allow_auto_send_resume: config.enable_auto_send_resume,
             dry_run: config.dry_run,
@@ -184,8 +188,12 @@ pub enum GateVerdict {
     Proceed,
     /// 本轮什么都不做
     Skip(String),
-    /// 转人工，附原因
-    Escalate(String),
+    /// 挂起转人工。`kind` 让两个平台的 handler 能统一落进待办列表，
+    /// 不必各自从文案里反猜是哪种情况
+    Escalate {
+        reason: String,
+        kind: ManualReviewReason,
+    },
 }
 
 /// 会触发转人工的话题。
@@ -232,11 +240,14 @@ pub fn gate(context: &ConversationContext, limits: &ReplyLimits) -> GateVerdict 
         return GateVerdict::Skip("对方尚未回复，不重复发送".to_string());
     }
 
-    if context.sent_count() >= limits.max_auto_replies {
-        return GateVerdict::Escalate(format!(
-            "本会话已自动回复 {} 条，达到上限，转人工接手",
-            context.sent_count()
-        ));
+    if context.auto_replies_in_window >= limits.max_auto_replies {
+        return GateVerdict::Escalate {
+            reason: format!(
+                "本会话 {} 小时内已自动回复 {} 条，额度用尽，转人工接手",
+                limits.auto_reply_window_hours, context.auto_replies_in_window
+            ),
+            kind: ManualReviewReason::ThrottleExhausted,
+        };
     }
 
     if let Some(message) = context.last_received() {
@@ -244,11 +255,79 @@ pub fn gate(context: &ConversationContext, limits: &ReplyLimits) -> GateVerdict 
             .iter()
             .find(|keyword| message.text.contains(**keyword))
         {
-            return GateVerdict::Escalate(format!("对方消息涉及「{keyword}」，需人工确认"));
+            return GateVerdict::Escalate {
+                reason: format!("对方消息涉及「{keyword}」，需人工确认"),
+                kind: ManualReviewReason::RiskKeyword,
+            };
         }
     }
 
     GateVerdict::Proceed
+}
+
+/// 待办条目里跟着会话走的那几个展示字段。
+///
+/// 纯数据，构造过程不碰库：两个平台挂起会话时必须给出一样的字段口径、
+/// 一样的摘要长度、一样的岗位归属兜底，分头写两遍的结果是列表里
+/// BOSS 和猎聘的条目长得不一样
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewDraft {
+    pub job_id: String,
+    pub job_name: String,
+    pub company_name: String,
+    pub last_message: String,
+}
+
+/// 待办列表里消息摘要的长度上限。
+///
+/// 列表是拿来一眼扫过的，整段 JD 或长篇自我介绍贴进去只会把它撑爆
+const REVIEW_MESSAGE_CHARS: usize = 60;
+
+/// 取 `job` 和 `messages` 而不是整个 [`ConversationContext`]：拿不到会话标识时
+/// 上下文根本构造不出来，而那种会话恰恰最需要挂进待办——它已经被点成已读了
+pub fn review_draft(job: Option<&JobDetail>, messages: &[ChatMessage]) -> ReviewDraft {
+    ReviewDraft {
+        job_id: job.map(|job| job.id.clone()).unwrap_or_default(),
+        job_name: job.map(|job| job.title.clone()).unwrap_or_default(),
+        company_name: job.map(|job| job.company_name.clone()).unwrap_or_default(),
+        last_message: messages
+            .iter()
+            .rev()
+            .find(|message| message.received)
+            .map(|message| truncate_chars(&message.text, REVIEW_MESSAGE_CHARS))
+            .unwrap_or_default(),
+    }
+}
+
+impl ReviewDraft {
+    pub fn to_request<'a>(
+        &'a self,
+        platform: &'a str,
+        conversation_id: &'a str,
+        reason: ManualReviewReason,
+        detail: String,
+    ) -> ReviewRequest<'a> {
+        ReviewRequest {
+            platform,
+            conversation_id,
+            job_id: &self.job_id,
+            job_name: &self.job_name,
+            company_name: &self.company_name,
+            reason,
+            detail,
+            last_message: self.last_message.clone(),
+        }
+    }
+}
+
+/// 按字符而不是字节截断。HR 的消息基本都是中文，按字节切会把汉字劈成两半
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let kept: String = trimmed.chars().take(max_chars).collect();
+    format!("{kept}…")
 }
 
 /// 把本地库里的历史与本轮接口消息合成完整上下文。
@@ -498,6 +577,7 @@ mod tests {
     fn limits() -> ReplyLimits {
         ReplyLimits {
             max_auto_replies: 5,
+            auto_reply_window_hours: 24,
             max_reply_chars: 200,
             allow_auto_send_resume: true,
             dry_run: false,
@@ -515,12 +595,20 @@ mod tests {
     }
 
     fn context(messages: Vec<ChatMessage>) -> ConversationContext {
+        context_with_window(messages, 0)
+    }
+
+    fn context_with_window(
+        messages: Vec<ChatMessage>,
+        auto_replies_in_window: usize,
+    ) -> ConversationContext {
         ConversationContext {
             platform: PlatformKind::Boss,
             conversation_id: "c1".to_string(),
             job: None,
             messages,
             resume_state: ResumeState::Sendable,
+            auto_replies_in_window,
         }
     }
 
@@ -539,15 +627,31 @@ mod tests {
 
     #[test]
     fn escalates_once_the_reply_budget_is_used_up() {
-        let mut messages = Vec::new();
-        for index in 0..5 {
-            messages.push(message(false, &format!("我方第 {index} 条")));
+        let verdict = gate(&context_with_window(vec![message(true, "还在吗")], 5), &limits());
+
+        match verdict {
+            GateVerdict::Escalate { reason, kind } => {
+                assert_eq!(kind, ManualReviewReason::ThrottleExhausted);
+                assert!(reason.contains("24 小时"));
+            }
+            other => panic!("额度用尽必须挂起，实际：{other:?}"),
         }
+    }
+
+    /// 额度按时间窗内的自动回复条数算，不再看历史里我方消息的总数。
+    ///
+    /// 老口径把打招呼和用户自己手工发的消息也算成额度消耗，一次性任务下无感，
+    /// 轮询开起来后却会让所有会话在几轮内集体撞顶，轮询随即退化成空转
+    #[test]
+    fn a_long_message_history_does_not_by_itself_exhaust_the_budget() {
+        let mut messages: Vec<ChatMessage> = (0..8)
+            .map(|index| message(false, &format!("我方第 {index} 条")))
+            .collect();
         messages.push(message(true, "还在吗"));
 
-        let verdict = gate(&context(messages), &limits());
+        let verdict = gate(&context_with_window(messages, 1), &limits());
 
-        assert!(matches!(verdict, GateVerdict::Escalate(_)));
+        assert_eq!(verdict, GateVerdict::Proceed);
     }
 
     /// 求职诈骗的常见开场，绝不能让模型自由发挥
@@ -559,9 +663,35 @@ mod tests {
         );
 
         match verdict {
-            GateVerdict::Escalate(reason) => assert!(reason.contains("身份证")),
+            GateVerdict::Escalate { reason, kind } => {
+                assert!(reason.contains("身份证"));
+                assert_eq!(kind, ManualReviewReason::RiskKeyword);
+            }
             other => panic!("敏感请求必须转人工，实际：{other:?}"),
         }
+    }
+
+    /// 摘要按字符切。按字节切会把汉字劈成两半，而 HR 的消息基本都是中文
+    #[test]
+    fn review_summaries_are_truncated_by_character_not_byte() {
+        let long = "很".repeat(REVIEW_MESSAGE_CHARS + 10);
+        let draft = review_draft(None, &[message(true, &long)]);
+
+        assert_eq!(
+            draft.last_message.chars().count(),
+            REVIEW_MESSAGE_CHARS + 1,
+            "截断后应当只多出一个省略号"
+        );
+        assert!(draft.last_message.ends_with('…'));
+    }
+
+    /// 会话里只有我方消息时摘要为空，而不是退而求其次贴上我自己说的话——
+    /// 待办列表要提示的是「对方说了什么等着你处理」
+    #[test]
+    fn review_summaries_ignore_my_own_messages() {
+        let draft = review_draft(None, &[message(false, "您好，我很感兴趣")]);
+
+        assert!(draft.last_message.is_empty());
     }
 
     #[test]

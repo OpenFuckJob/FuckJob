@@ -9,7 +9,11 @@ use crate::{
     auto_analysis,
     browser,
     config::{AnalysisTrigger, AppRuntimeConfig},
-    dao::{chat_message_dao, job_detail_dao, model::JobDetail, profile_snapshot_dao},
+    dao::{
+        auto_reply_log_dao, chat_message_dao, job_detail_dao,
+        model::{AutoReplyAction, JobDetail, ManualReviewReason},
+        profile_snapshot_dao,
+    },
     logger,
     rpa::{
         common::ChatMessage,
@@ -24,6 +28,7 @@ use crate::{
             },
             LIEPIN_USER_HOME_URL,
         },
+        reply_effects::{hold_for_review, record_auto_send, release_if_handled, wait_before_reply},
         run_flow::{is_job_task_stop_requested, PlatformKind},
     },
 };
@@ -77,10 +82,23 @@ pub async fn reply_unread_on_page(
     // 用会话 id 去重才不会漏处理或重复处理
     let mut handled: HashSet<String> = HashSet::new();
     let mut scrolled = 0usize;
+    // 未读堆积时不能一口气全处理完：单轮耗时一旦超过轮询间隔，
+    // 后面每一轮都在追赶上一轮的尾巴，节奏彻底乱掉。剩下的留给下一轮
+    let max_per_round = config
+        .reply_polling_config
+        .max_conversations_per_round
+        .max(1);
 
     loop {
         if is_job_task_stop_requested() {
             logger::info("猎聘沟通任务已结束")?;
+            return Ok(Vec::new());
+        }
+
+        if handled.len() >= max_per_round {
+            logger::info(format!(
+                "猎聘本轮已处理 {max_per_round} 个会话，达到单轮上限，其余留待下一轮"
+            ))?;
             return Ok(Vec::new());
         }
 
@@ -121,6 +139,13 @@ pub async fn reply_unread_on_page(
         for (index, contact) in pending.into_iter().enumerate() {
             if is_job_task_stop_requested() {
                 logger::info("猎聘沟通任务已结束")?;
+                return Ok(Vec::new());
+            }
+
+            if handled.len() >= max_per_round {
+                logger::info(format!(
+                    "猎聘本轮已处理 {max_per_round} 个会话，达到单轮上限，其余留待下一轮"
+                ))?;
                 return Ok(Vec::new());
             }
 
@@ -227,13 +252,28 @@ async fn handle_conversation(
 
     let limits = ReplyLimits::from_config(&conversation_config.replay_config);
     let actions = LiepinActions;
+
+    // 用户在平台里自己回过之后，待办就该消掉，不必等他回应用里手工点一次
+    release_if_handled(PLATFORM, &contact.imid, &messages);
+
     let resume_state = actions.resume_state(page)?;
+
+    // 查不到流水按 0 算：节流数据缺失不该让整个会话卡死，
+    // 最坏后果是多回一条，比该回的不回轻得多
+    let auto_replies_in_window = auto_reply_log_dao::count_replies_within(
+        PLATFORM,
+        &contact.imid,
+        limits.auto_reply_window_hours,
+    )
+    .unwrap_or(0);
+
     let context = ConversationContext {
         platform: PlatformKind::Liepin,
         conversation_id: contact.imid.clone(),
         job: owned_job,
         messages,
         resume_state,
+        auto_replies_in_window,
     };
 
     match gate(&context, &limits) {
@@ -243,8 +283,15 @@ async fn handle_conversation(
         }
         // 转人工就是不自动处理，连简历请求都留给用户自己拿主意 ——
         // 触发转人工的正是证件、账户这类不该由机器代答的话题
-        GateVerdict::Escalate(reason) => {
+        GateVerdict::Escalate { reason, kind } => {
             logger::warning(format!("猎聘会话「{}」转人工：{}", name, reason))?;
+            hold_for_review(
+                PLATFORM,
+                &contact.imid,
+                conversation::review_draft(context.job.as_ref(), &context.messages),
+                kind,
+                reason,
+            );
             return Ok(());
         }
         GateVerdict::Proceed => {}
@@ -257,6 +304,13 @@ async fn handle_conversation(
             logger::info("猎聘演练模式：对方索要简历，实际运行时会点同意")?;
         } else if actions.accept_resume_request(page)? {
             logger::info("猎聘对方索要简历，已点同意")?;
+            record_auto_send(
+                PLATFORM,
+                &contact.imid,
+                job_id_of(&context),
+                AutoReplyAction::Resume,
+                0,
+            );
         }
     }
 
@@ -285,6 +339,13 @@ async fn handle_conversation(
                 "猎聘命中回复规则「{}」，已发送 {} 条资源",
                 rule, count
             ))?;
+            record_auto_send(
+                PLATFORM,
+                &contact.imid,
+                job_id_of(&context),
+                AutoReplyAction::Template,
+                0,
+            );
             return Ok(());
         }
         ReplyRoute::Skip(reason) => {
@@ -323,6 +384,15 @@ async fn handle_conversation(
         Ok(text) => text,
         Err(reason) => {
             logger::warning(format!("猎聘回复正文未通过体检，不发送：{}", reason))?;
+            // 模型确实生成了内容，只是不能发。会话已经被点成已读，
+            // 不挂起的话这条消息就彻底没人管了
+            hold_for_review(
+                PLATFORM,
+                &contact.imid,
+                conversation::review_draft(context.job.as_ref(), &context.messages),
+                ManualReviewReason::VetRejected,
+                format!("生成的回复未通过发送前体检：{reason}"),
+            );
             return Ok(());
         }
     };
@@ -337,13 +407,27 @@ async fn handle_conversation(
         return Ok(());
     }
 
+    if !wait_before_reply(&config.reply_polling_config, &context).await {
+        logger::info("猎聘等待发送时机时任务已停止，本条回复未发送")?;
+        return Ok(());
+    }
+
     // 正文含求职者隐私，日志只留字数和理由
     match actions.send_text(page, &text) {
-        Ok(true) => logger::info(format!(
-            "猎聘回复已发送（正文 {} 字），理由：{}",
-            text.chars().count(),
-            decision.reason
-        ))?,
+        Ok(true) => {
+            logger::info(format!(
+                "猎聘回复已发送（正文 {} 字），理由：{}",
+                text.chars().count(),
+                decision.reason
+            ))?;
+            record_auto_send(
+                PLATFORM,
+                &contact.imid,
+                job_id_of(&context),
+                AutoReplyAction::Reply,
+                text.chars().count(),
+            );
+        }
         Ok(false) => logger::warning("猎聘回复正文为空，未发送")?,
         Err(error) => {
             logger::warning(format!("猎聘回复发送失败，跳过该会话：{}", error))?;
@@ -351,11 +435,31 @@ async fn handle_conversation(
         }
     }
 
-    if action == ReplyAction::ReplyAndSendResume && !actions.send_resume(page)? {
-        logger::info("猎聘没有主动投递简历的入口，本轮只回复了消息")?;
+    if action == ReplyAction::ReplyAndSendResume {
+        if actions.send_resume(page)? {
+            record_auto_send(
+                PLATFORM,
+                &contact.imid,
+                job_id_of(&context),
+                AutoReplyAction::Resume,
+                0,
+            );
+        } else {
+            logger::info("猎聘没有主动投递简历的入口，本轮只回复了消息")?;
+        }
     }
 
     Ok(())
+}
+
+/// 会话的岗位归属。猎聘经常映射不到岗位，流水里留空即可——
+/// 节流和消项都按会话标识走，不依赖岗位
+fn job_id_of(context: &ConversationContext) -> &str {
+    context
+        .job
+        .as_ref()
+        .map(|job| job.id.as_str())
+        .unwrap_or_default()
 }
 
 fn action_label(action: ReplyAction) -> &'static str {
@@ -1147,6 +1251,7 @@ mod tests {
             job: None,
             messages,
             resume_state: ResumeState::Unavailable,
+            auto_replies_in_window: 0,
         }
     }
 
