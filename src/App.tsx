@@ -3,7 +3,7 @@ import { Alert, Button, ConfigProvider, Spin, Tabs, Typography } from "antd";
 import { RocketOutlined } from "@ant-design/icons";
 import "./App.css";
 import { useAppConfig } from "@/hooks/useAppConfig";
-import { copyJobProfile, getAnalysisConfig, getDefaultJobProfile, getJobProfiles, selectProfileAfterRemoval, type AnalysisConfig, type AppRuntimeConfig, type BrowserConfig, type GreetConfig, type GreetResource, type JobFilterConfig, type JobProfile, type RegexRule, type ReplayConfig, type ReplyResource, type ReplyTemplate, type ResumeConfig } from "@/types/app-config";
+import { copyJobProfile, DEFAULT_REGEX_RULE_LIMIT, getAnalysisConfig, getDefaultJobProfile, getJobProfiles, getReplyPollingConfig, selectProfileAfterRemoval, type AnalysisConfig, type AppRuntimeConfig, type BrowserConfig, type GreetConfig, type GreetResource, type JobFilterConfig, type JobProfile, type RegexRule, type ReplayConfig, type ReplyPollingConfig, type ReplyResource, type ReplyTemplate, type ResumeConfig } from "@/types/app-config";
 import type { JobDetail } from "@/types/job-detail";
 import { Onboarding } from "@/view/onboarding";
 import { ConfigPage } from "@/view/config";
@@ -85,6 +85,9 @@ function MainShell({ config, update, save, status, message, dirty, importConfig,
   // 分析配置在旧方案里可能整块缺失，先补默认值再合并
   const updateAnalysis = (next: Partial<AnalysisConfig>) =>
     updateActiveProfile((profile) => ({ ...profile, analysis_config: { ...getAnalysisConfig(profile), ...next } }));
+  // 轮询节奏是顶层配置，但同样可能整块缺失，不能直接走 merge
+  const updatePolling = (next: Partial<ReplyPollingConfig>) =>
+    update((c) => ({ ...c, reply_polling_config: { ...getReplyPollingConfig(c), ...next } }));
   const updateProfiles = (nextProfiles: JobProfile[], defaultId = config.default_job_profile_id) => update((c) => ({
     ...c,
     job_profiles: nextProfiles,
@@ -127,12 +130,13 @@ function MainShell({ config, update, save, status, message, dirty, importConfig,
     removeGreetDefaultResource={(i: number) => updateActiveProfile((p) => ({ ...p, greet_config: { ...p.greet_config, default_template: p.greet_config.default_template.filter((_, x) => x !== i) } }))}
     updateReplay={(v: Partial<ReplayConfig>) => updateProfileSection("replay_config", v)}
     updateReplyTemplate={(i: number, v: Partial<ReplyTemplate>) => updateActiveProfile((p) => ({ ...p, replay_config: { ...p.replay_config, templates: updateAt(p.replay_config.templates, i, v) } }))}
-    addReplyTemplate={() => updateActiveProfile((p) => ({ ...p, replay_config: { ...p.replay_config, templates: [...p.replay_config.templates, { regex_rule: { name: "", pattern: "", limit: 5 }, content: [{ resource_type: "Text", content: "" }] }] } }))}
+    addReplyTemplate={() => updateActiveProfile((p) => ({ ...p, replay_config: { ...p.replay_config, templates: [...p.replay_config.templates, { regex_rule: { name: "", pattern: "", limit: DEFAULT_REGEX_RULE_LIMIT }, content: [{ resource_type: "Text", content: "" }] }] } }))}
     removeReplyTemplate={(i: number) => updateActiveProfile((p) => ({ ...p, replay_config: { ...p.replay_config, templates: p.replay_config.templates.filter((_, x) => x !== i) } }))}
     updateReplyResource={(ti: number, ri: number, v: Partial<ReplyResource>) => updateActiveProfile((p) => ({ ...p, replay_config: { ...p.replay_config, templates: p.replay_config.templates.map((t, i) => i === ti ? { ...t, content: updateAt(t.content, ri, v) } : t) } }))}
     addReplyResource={(ti: number) => updateActiveProfile((p) => ({ ...p, replay_config: { ...p.replay_config, templates: p.replay_config.templates.map((t, i) => i === ti ? { ...t, content: [...t.content, { resource_type: "Text", content: "" }] } : t) } }))}
     removeReplyResource={(ti: number, ri: number) => updateActiveProfile((p) => ({ ...p, replay_config: { ...p.replay_config, templates: p.replay_config.templates.map((t, i) => i === ti ? { ...t, content: t.content.filter((_, x) => x !== ri) } : t) } }))}
     updateAnalysis={updateAnalysis}
+    updatePolling={updatePolling}
     updateBrowser={(v: Partial<BrowserConfig>) => merge("browser_config", v)} updateResume={(v: Partial<ResumeConfig>) => updateProfileSection("resume_config", v)}
     updateRule={(i: number, v: Partial<RegexRule>) => updateActiveProfile((p) => ({ ...p, job_filter_config: { ...p.job_filter_config, regex_rules: updateAt(p.job_filter_config.regex_rules, i, v) } }))}
     addRule={() => updateActiveProfile((p) => ({ ...p, job_filter_config: { ...p.job_filter_config, regex_rules: [...p.job_filter_config.regex_rules, { name: "", pattern: "", target: "All", mode: "ACCEPT" }] } }))}
@@ -140,7 +144,7 @@ function MainShell({ config, update, save, status, message, dirty, importConfig,
     removeRule={(i: number) => updateActiveProfile((p) => ({ ...p, job_filter_config: { ...p.job_filter_config, regex_rules: p.job_filter_config.regex_rules.filter((_, x) => x !== i) } }))}
     importConfig={importConfig} exportConfig={exportConfig} />;
 
-  const content = activeTab === "workspace" ? <WorkspacePage config={config} onNavigate={(tab) => void navigate(tab)} onOpenConfig={openConfig} /> : activeTab === "job-overview" ? <JobOverviewPage onNavigate={(target) => target === "job-data" ? navigate("job-data") : openConfig(target)} onOpenConversation={openConversation} /> : activeTab === "job-data" ? <JobDataPage aiConfigured={!!config.llm_config} onConfigureAi={openLlm} focusJobId={focusJobId} onFocusHandled={clearFocusJob} highMatchScore={getAnalysisConfig(getDefaultJobProfile(config)).high_match_score} onStartInterview={startInterview} /> : activeTab === "conversation-debug" ? <ConversationDebugPage aiConfigured={!!config.llm_config} onConfigureAi={openLlm} /> : activeTab === "resume-optimizer" ? <ResumeOptimizerPage config={profileConfig} onOpenLlmConfig={openLlm} onUpdateResume={(resume_content) => updateProfileSection("resume_config", { resume_content })} pendingInterviewJob={interviewJob} onPendingInterviewHandled={clearInterviewJob} /> : configPage;
+  const content = activeTab === "workspace" ? <WorkspacePage config={config} onNavigate={(tab) => void navigate(tab)} onOpenConfig={openConfig} onOpenConversation={openConversation} /> : activeTab === "job-overview" ? <JobOverviewPage onNavigate={(target) => target === "job-data" ? navigate("job-data") : openConfig(target)} onOpenConversation={openConversation} /> : activeTab === "job-data" ? <JobDataPage aiConfigured={!!config.llm_config} onConfigureAi={openLlm} focusJobId={focusJobId} onFocusHandled={clearFocusJob} highMatchScore={getAnalysisConfig(getDefaultJobProfile(config)).high_match_score} onStartInterview={startInterview} /> : activeTab === "conversation-debug" ? <ConversationDebugPage aiConfigured={!!config.llm_config} onConfigureAi={openLlm} /> : activeTab === "resume-optimizer" ? <ResumeOptimizerPage config={profileConfig} onOpenLlmConfig={openLlm} onUpdateResume={(resume_content) => updateProfileSection("resume_config", { resume_content })} pendingInterviewJob={interviewJob} onPendingInterviewHandled={clearInterviewJob} /> : configPage;
   return (
     <main className="app-shell">
       <header className="app-header">
@@ -187,6 +191,18 @@ export default function App() {
             },
             Tabs: {
               cardBg: "#f8fafc",
+            },
+            Slider: {
+              railSize: 6,
+              handleSize: 12,
+              handleSizeHover: 14,
+              handleLineWidth: 3,
+              handleLineWidthHover: 4,
+              railBg: "#e2e8f0",
+              railHoverBg: "#cbd5e1",
+              // 默认的已选轨道是浅蓝，混在灰轨道里几乎看不出滑到了哪
+              trackBg: "#1677ff",
+              trackHoverBg: "#0958d9",
             },
           },
         }}

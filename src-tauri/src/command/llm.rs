@@ -99,6 +99,9 @@ pub async fn debug_generate_replay(
             .collect(),
         // 调试没有真实页面可读，按最保守的状态给：不允许预演里出现投递动作
         resume_state: ResumeState::Unknown,
+        // 调试页要看的就是模型会生成什么，不该被真实会话的节流额度挡住。
+        // 这里也不经过闸门，填 0 只是为了让结构完整
+        auto_replies_in_window: 0,
     };
 
     match crate::agent::run(&ReplyDecisionTask::new(&config, &context), &config).await {

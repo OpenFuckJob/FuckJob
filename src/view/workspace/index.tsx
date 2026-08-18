@@ -4,7 +4,6 @@ import {
   Button,
   Card,
   Image,
-  InputNumber,
   Modal,
   Radio,
   Select,
@@ -19,6 +18,7 @@ import {
   CheckCircleOutlined,
   CopyOutlined,
   DatabaseOutlined,
+  ExclamationCircleOutlined,
   EyeInvisibleOutlined,
   EyeOutlined,
   LoadingOutlined,
@@ -45,7 +45,14 @@ import {
   isActiveJobTask,
 } from "../../types/rpa";
 import type { JobDetail } from "../../types/job-detail";
-import { getDefaultJobProfile, getJobProfiles, type AppRuntimeConfig } from "../../types/app-config";
+import ManualReviewDrawer, { useManualReview } from "./manual-review-drawer";
+import {
+  getDefaultJobProfile,
+  getJobProfiles,
+  getReplyPollingConfig,
+  type AppRuntimeConfig,
+} from "../../types/app-config";
+import { NumberField } from "../../components/NumberField";
 
 type CheckPhase = "idle" | "checking" | "done";
 
@@ -139,7 +146,12 @@ const FLOW_MODE_OPTIONS: FlowModeOption[] = [
   {
     key: "periodic_job_hunting",
     label: "周期投递",
-    description: "每轮完成后按设定间隔继续下一轮。",
+    description: "每轮完成后按设定间隔继续下一轮，等待期间自动回复未读消息。",
+  },
+  {
+    key: "polling_reply",
+    label: "轮询回复",
+    description: "持续盯着未读消息自动回复，不投递岗位。停止前一直运行。",
   },
 ];
 
@@ -161,8 +173,27 @@ export function filterTaskLogContent(
     .join("\n");
 }
 
+/**
+ * 「待你处理」磁贴的外观。
+ *
+ * 抽出来是因为这条规则正是它能待在磁贴区的前提：0 条时必须安静得像块背景板，
+ * 有数时必须一眼扎到人。哪天被改成恒定配色，功能就悄悄退化成没人看的角落，
+ * 而界面照样正常渲染，谁都不会发现
+ */
+export function describePendingReview(count: number): Pick<StatTile, "value" | "subtitle" | "color" | "bg"> {
+  const urgent = count > 0;
+  return {
+    value: `${count}`,
+    subtitle: urgent ? "点击查看并接手" : "AI 都自己处理了",
+    color: urgent ? "#ef4444" : "#64748b",
+    bg: urgent ? "rgba(239,68,68,0.1)" : "rgba(148,163,184,0.1)",
+  };
+}
+
 export function getTaskProfileLabel(task: Pick<JobTaskInfo, "mode" | "profile_id" | "profile_name">): string {
-  if (task.mode === "reply_unread" && !task.profile_id) return "按会话方案自动路由";
+  if ((task.mode === "reply_unread" || task.mode === "polling_reply") && !task.profile_id) {
+    return "按会话方案自动路由";
+  }
   if (task.mode === "sync_chat_history" && !task.profile_id) return "不使用求职方案";
   return task.profile_name || "默认求职方案";
 }
@@ -178,6 +209,10 @@ const TASK_STATE_ORDER: Record<JobTaskInfo["status"], number> = {
 };
 
 const PLATFORM_ORDER: PlatformKind[] = ["boss", "liepin"];
+
+const DEFAULT_INTERVAL_MINUTES = 30;
+const MIN_INTERVAL_MINUTES = 1;
+const MAX_INTERVAL_MINUTES = 1440;
 
 export function sortTasksForQueue(tasks: JobTaskInfo[]): JobTaskInfo[] {
   return [...tasks].sort((left, right) => {
@@ -242,16 +277,19 @@ interface StatTile {
   icon: React.ReactNode;
   color: string;
   bg: string;
+  onClick?: () => void;
 }
 
 /* ────────── Component ────────── */
 
 const WorkspacePage = ({
   config,
+  onOpenConversation,
 }: {
   config: AppRuntimeConfig;
   onNavigate?: (tab: "job-data") => void;
   onOpenConfig?: (group: "resume" | "llm" | "job" | "greet" | "reply" | "browser") => void;
+  onOpenConversation?: (jobId: string) => void;
 }) => {
   const [environmentStates, setEnvironmentStates] = useState<
     Record<PlatformKind, PlatformEnvState>
@@ -268,9 +306,11 @@ const WorkspacePage = ({
   const [logContent, setLogContent] = useState("");
   const [startModalOpen, setStartModalOpen] = useState(false);
   const [selectedMode, setSelectedMode] = useState<FlowMode>("job_hunting");
-  const [intervalMinutes, setIntervalMinutes] = useState<number>(30);
+  const [intervalMinutes, setIntervalMinutes] = useState<number>(DEFAULT_INTERVAL_MINUTES);
   const [selectedProfileId, setSelectedProfileId] = useState<string>(() => getDefaultJobProfile(config).id);
   const [platform, setPlatform] = useState<PlatformKind>("boss");
+  const [reviewDrawerOpen, setReviewDrawerOpen] = useState(false);
+  const manualReview = useManualReview();
   const [modalPlatform, setModalPlatform] = useState<PlatformKind>("boss");
   const [pendingStartPlatforms, setPendingStartPlatforms] = useState<
     Partial<Record<PlatformKind, boolean>>
@@ -521,6 +561,7 @@ const WorkspacePage = ({
   const repliedCount = jobs.filter((j) => j.is_reply).length;
   const replyRate = totalJobs > 0 ? `${((repliedCount / totalJobs) * 100).toFixed(0)}%` : "—";
   const runningModeLabel = `${taskCounts.running} / ${taskOverview.max_parallel_tasks}`;
+  const pendingReviewCount = manualReview.records.length;
 
   const statTiles: StatTile[] = [
     {
@@ -559,6 +600,12 @@ const WorkspacePage = ({
       color: "#10b981",
       bg: "rgba(16,185,129,0.1)",
     },
+    {
+      label: "待你处理",
+      ...describePendingReview(pendingReviewCount),
+      icon: <ExclamationCircleOutlined style={{ fontSize: 18 }} />,
+      onClick: () => setReviewDrawerOpen(true),
+    },
   ];
 
   return (
@@ -571,8 +618,13 @@ const WorkspacePage = ({
           <Card
             key={tile.label}
             size="small"
+            hoverable={!!tile.onClick}
+            onClick={tile.onClick}
             styles={{ body: { padding: "14px 16px" } }}
-            style={{ background: "linear-gradient(135deg, #ffffff 0%, #f8fafc 100%)" }}
+            style={{
+              background: "linear-gradient(135deg, #ffffff 0%, #f8fafc 100%)",
+              cursor: tile.onClick ? "pointer" : undefined,
+            }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
               <div style={{ padding: 7, borderRadius: 8, background: tile.bg, color: tile.color }}>
@@ -851,14 +903,27 @@ const WorkspacePage = ({
           {selectedMode === "periodic_job_hunting" && (
             <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 12px", background: "#f8fafc", borderRadius: 8 }}>
               <Typography.Text style={{ fontSize: 13 }}>每轮投递间隔时间</Typography.Text>
-              <InputNumber
-                min={1}
-                max={1440}
+              <NumberField
+                min={MIN_INTERVAL_MINUTES}
+                max={MAX_INTERVAL_MINUTES}
+                precision={0}
+                fallback={DEFAULT_INTERVAL_MINUTES}
                 value={intervalMinutes}
-                onChange={(v) => setIntervalMinutes(v ?? 30)}
+                onChange={setIntervalMinutes}
                 addonAfter="分钟"
                 style={{ width: 160 }}
               />
+            </div>
+          )}
+          {selectedMode === "polling_reply" && (
+            <div style={{ padding: "8px 12px", background: "#f8fafc", borderRadius: 8 }}>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                每 {getReplyPollingConfig(config).interval_minutes} 分钟检查一次新消息
+                {getReplyPollingConfig(config).active_hours_enabled
+                  ? `，只在 ${getReplyPollingConfig(config).active_start_hour}:00 - ${getReplyPollingConfig(config).active_end_hour}:00 之间回复`
+                  : "，全天回复"}
+                。节奏可在「设置 · 自动回复」里调整。
+              </Typography.Text>
             </div>
           )}
           {(selectedMode === "job_hunting" || selectedMode === "periodic_job_hunting") ? (
@@ -947,6 +1012,23 @@ const WorkspacePage = ({
           </pre>
         )}
       </section>
+
+      <ManualReviewDrawer
+        open={reviewDrawerOpen}
+        onClose={() => setReviewDrawerOpen(false)}
+        records={manualReview.records}
+        loading={manualReview.loading}
+        onResolve={(record) => void manualReview.resolve(record)}
+        onClear={() => void manualReview.clear()}
+        onOpenConversation={
+          onOpenConversation
+            ? (jobId) => {
+                setReviewDrawerOpen(false);
+                onOpenConversation(jobId);
+              }
+            : undefined
+        }
+      />
     </div>
   );
 };

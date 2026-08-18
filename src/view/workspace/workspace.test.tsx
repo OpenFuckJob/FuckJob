@@ -6,6 +6,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import { invoke } from "@tauri-apps/api/core";
 import {
+  describePendingReview,
   filterTaskLogContent,
   filterTasksByPlatform,
   getTaskProfileLabel,
@@ -111,5 +112,25 @@ describe("workspace task API", () => {
     expect(getTaskProfileLabel(replyTask)).toBe("按会话方案自动路由");
     expect(getTaskProfileLabel({ ...replyTask, profile_name: "按会话自动选择" })).toBe("按会话方案自动路由");
     expect(getTaskProfileLabel({ ...replyTask, profile_id: "ai", profile_name: "AI 工程师" })).toBe("AI 工程师");
+  });
+});
+
+describe("pending review tile", () => {
+  // 磁贴能待在统计区的前提就是这条：没事时安静，有事时抢眼。
+  // 两种状态用同一套配色的话，用户根本不会注意到有会话在等他
+  it("stays muted at zero and turns alarming once anything is waiting", () => {
+    const idle = describePendingReview(0);
+    const waiting = describePendingReview(3);
+
+    expect(idle.value).toBe("0");
+    expect(waiting.value).toBe("3");
+    expect(idle.color).not.toBe(waiting.color);
+    expect(idle.bg).not.toBe(waiting.bg);
+  });
+
+  // 副标题要告诉用户接下来干什么，不能两种状态说同一句话
+  it("tells the user what to do next in each state", () => {
+    expect(describePendingReview(0).subtitle).not.toBe(describePendingReview(1).subtitle);
+    expect(describePendingReview(1).subtitle).toContain("点击");
   });
 });

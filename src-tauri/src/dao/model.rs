@@ -247,6 +247,119 @@ impl ChatMessageRecord {
     }
 }
 
+/// 一次自动发送动作的性质。
+///
+/// 节流只数 [`Self::Reply`]：模板回复是用户写死的固定话术，
+/// 同意简历请求是既定策略，两者都不该占「和 HR 客套了几轮」的额度。
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoReplyAction {
+    /// 模型生成的回复
+    Reply,
+    /// 命中正则模板发送的固定话术
+    Template,
+    /// 投递简历（主动投递或同意对方索要）
+    Resume,
+}
+
+/// 自动发送流水。
+///
+/// 存在的唯一理由是聊天记录区分不出「AI 发的」和「你手工发的」——
+/// `ChatMessageRecord.received == false` 对两者一视同仁。没有这张流水，
+/// 时间窗节流数不出 AI 到底自动回了几条，待办列表也判断不出你是否已经接手。
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct AutoReplyLogRecord {
+    /// 复合主键: "{platform}:{conversation_id}:{sent_at_ms}"
+    pub id: String,
+    pub platform: String,
+    pub conversation_id: String,
+    /// 归属岗位。猎聘映射不到岗位时为空
+    #[serde(default)]
+    pub job_id: String,
+    pub action: AutoReplyAction,
+    /// 发送时刻（毫秒时间戳）
+    pub sent_at: i64,
+    /// 发送字数。仅供排查，节流不看它
+    #[serde(default)]
+    pub chars: usize,
+}
+
+impl AutoReplyLogRecord {
+    pub fn build_id(platform: &str, conversation_id: &str, sent_at: i64) -> String {
+        format!("{platform}:{conversation_id}:{sent_at}")
+    }
+}
+
+/// 一个会话被挂起等待人工的原因。
+///
+/// 只有「消息已经被读掉、但一个字都没回出去」的情况才在这里出现。
+/// 模型主动判定无需回复不算——那是正常决策，不是待办。
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualReviewReason {
+    /// 对方消息涉及证件、转账一类的高风险话题
+    RiskKeyword,
+    /// 模型生成了内容，但没通过发送前体检
+    VetRejected,
+    /// 拿不到稳定的会话标识，整条链路无从进行
+    MissingJobId,
+    /// 时间窗内的自动回复额度已用完
+    ThrottleExhausted,
+}
+
+impl ManualReviewReason {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::RiskKeyword => "涉及敏感话题",
+            Self::VetRejected => "生成内容未通过体检",
+            Self::MissingJobId => "会话标识缺失",
+            Self::ThrottleExhausted => "自动回复额度用尽",
+        }
+    }
+}
+
+/// 待人工处理的会话。
+///
+/// 同一会话反复触发时更新同一条并累加 `hit_count`，不新增记录：
+/// 一个 HR 连发三条敏感消息应该是列表里的一行，不是三行。
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct ManualReviewRecord {
+    /// 复合主键: "{platform}:{conversation_id}"
+    pub id: String,
+    pub platform: String,
+    pub conversation_id: String,
+    #[serde(default)]
+    pub job_id: String,
+    /// 岗位名与公司名，列表里要能直接看懂是哪个机会
+    #[serde(default)]
+    pub job_name: String,
+    #[serde(default)]
+    pub company_name: String,
+    pub reason: ManualReviewReason,
+    /// 面向用户的一句话说明，可含具体命中的关键词
+    pub detail: String,
+    /// 触发时对方最后一条消息的摘要，用于在列表里唤起记忆
+    #[serde(default)]
+    pub last_message: String,
+    /// 首次触发时刻（毫秒时间戳）
+    pub created_at: i64,
+    /// 最近一次触发时刻（毫秒时间戳）
+    pub updated_at: i64,
+    /// 累计触发次数
+    #[serde(default = "default_hit_count")]
+    pub hit_count: usize,
+}
+
+fn default_hit_count() -> usize {
+    1
+}
+
+impl ManualReviewRecord {
+    pub fn build_id(platform: &str, conversation_id: &str) -> String {
+        format!("{platform}:{conversation_id}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

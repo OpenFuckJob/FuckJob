@@ -622,6 +622,7 @@ mod tests {
                 from_name: "招聘者".to_string(),
             }],
             resume_state,
+            auto_replies_in_window: 0,
         }
     }
 

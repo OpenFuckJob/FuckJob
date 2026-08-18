@@ -1,7 +1,6 @@
 import {
   Form,
   Input,
-  InputNumber,
   Select,
   Switch,
   Button,
@@ -41,14 +40,27 @@ import {
   JobProfile,
   AnalysisConfig,
   AnalysisTrigger,
+  ReplyPollingConfig,
   getAnalysisConfig,
   getJobProfiles,
+  getReplyPollingConfig,
+  DEFAULT_AUTO_REPLY_WINDOW_HOURS,
   DEFAULT_MAX_AUTO_REPLIES,
   DEFAULT_MAX_REPLY_CHARS,
+  DEFAULT_REGEX_RULE_LIMIT,
+  DEFAULT_MAX_PARALLEL_TASKS,
   DEFAULT_HIGH_MATCH_SCORE,
   MIN_HIGH_MATCH_SCORE,
+  DEFAULT_MAX_ANALYSIS_PER_TASK,
   MAX_ANALYSIS_PER_TASK,
 } from "@/types/app-config";
+import { NumberField } from "@/components/NumberField";
+import {
+  SettingGroup,
+  SettingSlider,
+  SettingToggle,
+} from "@/components/SettingField";
+import ReplyPollingSection from "./ReplyPollingSection";
 import {
   jobTypeOptions,
   salaryOptions,
@@ -83,6 +95,12 @@ import {
   StarOutlined,
   InboxOutlined,
   ThunderboltOutlined,
+  ForwardOutlined,
+  ProfileOutlined,
+  RiseOutlined,
+  SolutionOutlined,
+  ClockCircleOutlined,
+  FontSizeOutlined,
 } from "@ant-design/icons";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -249,6 +267,7 @@ export interface ConfigPageProps {
   addReplyResource: (templateIndex: number) => void;
   removeReplyResource: (templateIndex: number, resourceIndex: number) => void;
   updateAnalysis: (next: Partial<AnalysisConfig>) => void;
+  updatePolling: (next: Partial<ReplyPollingConfig>) => void;
   updateBrowser: (next: Partial<BrowserConfig>) => void;
   updateResume: (next: Partial<ResumeConfig>) => void;
   updateRule: (index: number, next: Partial<RegexRule>) => void;
@@ -1376,7 +1395,7 @@ export function ConfigPage(props: ConfigPageProps) {
             </div>
 
             {analysis.trigger !== "off" && (
-              <div className="rounded-2xl border border-slate-200/80 bg-white/85 p-6 space-y-5">
+              <div className="rounded-2xl border border-slate-200/80 bg-white/85 p-6 space-y-4">
                 <div>
                   <Text className="text-slate-900 font-bold block">额度护栏</Text>
                   <Text className="text-slate-500 text-xs">
@@ -1384,66 +1403,59 @@ export function ConfigPage(props: ConfigPageProps) {
                   </Text>
                 </div>
 
-                <div className="flex items-center justify-between gap-6 rounded-xl border border-slate-200/80 px-4 py-3">
-                  <div>
-                    <Text className="text-slate-900 font-bold block">
-                      跳过已分析过的岗位
-                    </Text>
-                    <Text className="text-slate-500 text-xs">
-                      关掉后同一个岗位会被反复分析并覆盖旧报告；解析失败的报告不受此项影响，始终会重跑
-                    </Text>
-                  </div>
-                  <Switch
-                    aria-label="跳过已分析过的岗位"
+                <SettingGroup>
+                  <SettingToggle
+                    icon={<ForwardOutlined />}
+                    title="跳过已分析过的岗位"
+                    description="关掉后同一个岗位会被反复分析并覆盖旧报告；解析失败的报告不受此项影响，始终会重跑"
                     checked={analysis.skip_analyzed}
-                    onChange={(value) => props.updateAnalysis({ skip_analyzed: value })}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between gap-6 rounded-xl border border-slate-200/80 px-4 py-3">
-                  <div>
-                    <Text className="text-slate-900 font-bold block">
-                      单次任务分析上限
-                    </Text>
-                    <Text className="text-slate-500 text-xs">
-                      每次求职任务最多自动分析多少个岗位，0 表示不限制
-                    </Text>
-                  </div>
-                  <InputNumber
-                    aria-label="单次任务分析上限"
-                    min={0}
-                    max={MAX_ANALYSIS_PER_TASK}
-                    value={analysis.max_per_task}
                     onChange={(value) =>
-                      props.updateAnalysis({ max_per_task: Number(value ?? 0) })
+                      props.updateAnalysis({ skip_analyzed: value })
                     }
                   />
-                </div>
+                  <SettingSlider
+                    icon={<ProfileOutlined />}
+                    title="单次任务分析上限"
+                    description="每次求职任务最多自动分析多少个岗位，拖到 0 表示不限制"
+                    min={0}
+                    max={MAX_ANALYSIS_PER_TASK}
+                    sliderMax={100}
+                    step={5}
+                    fallback={DEFAULT_MAX_ANALYSIS_PER_TASK}
+                    value={analysis.max_per_task}
+                    unit="个岗位"
+                    valueLabel={(value) => (value === 0 ? "不限制" : null)}
+                    onChange={(value) =>
+                      props.updateAnalysis({ max_per_task: value })
+                    }
+                  />
+                </SettingGroup>
               </div>
             )}
 
-            <div className="rounded-2xl border border-slate-200/80 bg-white/85 p-6 space-y-5">
-              <div className="flex items-center justify-between gap-6">
-                <div>
-                  <Text className="text-slate-900 font-bold block">
-                    高匹配分数线
-                  </Text>
-                  <Text className="text-slate-500 text-xs">
-                    分析得分达到该值的岗位计入求职数据概览的「高匹配岗位」
-                  </Text>
-                </div>
-                <InputNumber
-                  aria-label="高匹配分数线"
+            <div className="rounded-2xl border border-slate-200/80 bg-white/85 p-6 space-y-4">
+              <div>
+                <Text className="text-slate-900 font-bold block">统计口径</Text>
+                <Text className="text-slate-500 text-xs">
+                  分析得分达到分数线的岗位，计入求职数据概览的「高匹配岗位」
+                </Text>
+              </div>
+
+              <SettingGroup>
+                <SettingSlider
+                  icon={<RiseOutlined />}
+                  title="高匹配分数线"
+                  description="定得越高，概览里的高匹配岗位越少也越准"
                   min={MIN_HIGH_MATCH_SCORE}
                   max={100}
+                  fallback={DEFAULT_HIGH_MATCH_SCORE}
                   value={analysis.high_match_score}
+                  unit="分"
                   onChange={(value) =>
-                    props.updateAnalysis({
-                      high_match_score: Number(value ?? DEFAULT_HIGH_MATCH_SCORE),
-                    })
+                    props.updateAnalysis({ high_match_score: value })
                   }
                 />
-              </div>
+              </SettingGroup>
               <Alert
                 type="info"
                 showIcon
@@ -1579,7 +1591,7 @@ export function ConfigPage(props: ConfigPageProps) {
                     />
                   </Form.Item>
 
-                  <div className="rounded-2xl border border-slate-200/80 bg-slate-50/80 p-5 space-y-5">
+                  <div className="rounded-2xl border border-slate-200/80 bg-slate-50/80 p-5 space-y-4">
                     <div>
                       <Text className="text-slate-900 font-bold block">
                         自动回复边界
@@ -1589,74 +1601,69 @@ export function ConfigPage(props: ConfigPageProps) {
                       </Text>
                     </div>
 
-                    <div className="flex items-center justify-between gap-6">
-                      <div>
-                        <Text className="text-slate-900 font-bold block">
-                          允许自主投递简历
-                        </Text>
-                        <Text className="text-slate-500 text-xs">
-                          关闭后模型仍会判断投递时机，但只回消息，投递交回人工
-                        </Text>
-                      </div>
-                      <Form.Item
-                        name={["replay_config", "enable_auto_send_resume"]}
-                        valuePropName="checked"
-                        className="!m-0"
-                      >
-                        <Switch
-                          aria-label="允许自主投递简历"
-                          onChange={(v) =>
-                            props.updateReplay({ enable_auto_send_resume: v })
-                          }
-                        />
-                      </Form.Item>
-                    </div>
-
-                    <Row gutter={[24, 16]}>
-                      <Col xs={24} md={12}>
-                        <Form.Item
-                          label="单会话自动回复上限"
-                          name={["replay_config", "max_auto_replies"]}
-                          extra="累计回复达到该条数后转人工，避免和 HR 无限客套。"
-                          className="!mb-0"
-                        >
-                          <InputNumber
-                            min={1}
-                            precision={0}
-                            style={{ width: "100%" }}
-                            onChange={(value) =>
-                              props.updateReplay({
-                                max_auto_replies:
-                                  value ?? DEFAULT_MAX_AUTO_REPLIES,
-                              })
-                            }
-                          />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={24} md={12}>
-                        <Form.Item
-                          label="单条回复字数上限"
-                          name={["replay_config", "max_reply_chars"]}
-                          extra="超长的求职消息本身就不像真人写的。超出后会自动截断，并尽量断在句末。"
-                          className="!mb-0"
-                        >
-                          <InputNumber
-                            min={1}
-                            precision={0}
-                            style={{ width: "100%" }}
-                            onChange={(value) =>
-                              props.updateReplay({
-                                max_reply_chars:
-                                  value ?? DEFAULT_MAX_REPLY_CHARS,
-                              })
-                            }
-                          />
-                        </Form.Item>
-                      </Col>
-                    </Row>
+                    <SettingGroup>
+                      <SettingToggle
+                        icon={<SolutionOutlined />}
+                        title="允许自主投递简历"
+                        description="关闭后模型仍会判断投递时机，但只回消息，投递交回人工"
+                        checked={
+                          props.config.replay_config.enable_auto_send_resume
+                        }
+                        onChange={(v) =>
+                          props.updateReplay({ enable_auto_send_resume: v })
+                        }
+                      />
+                      <SettingSlider
+                        icon={<CommentOutlined />}
+                        title="单会话回复上限"
+                        description="同一会话在下方时段内最多自动回几条，用完交回给你"
+                        min={1}
+                        max={30}
+                        fallback={DEFAULT_MAX_AUTO_REPLIES}
+                        value={props.config.replay_config.max_auto_replies}
+                        unit="条"
+                        onChange={(value) =>
+                          props.updateReplay({ max_auto_replies: value })
+                        }
+                      />
+                      <SettingSlider
+                        icon={<ClockCircleOutlined />}
+                        title="额度计算时段"
+                        description="滚动计算，时间过去之后额度自动恢复，不必手工重置"
+                        min={1}
+                        max={48}
+                        fallback={DEFAULT_AUTO_REPLY_WINDOW_HOURS}
+                        value={
+                          props.config.replay_config.auto_reply_window_hours
+                        }
+                        unit="小时"
+                        onChange={(value) =>
+                          props.updateReplay({ auto_reply_window_hours: value })
+                        }
+                      />
+                      <SettingSlider
+                        icon={<FontSizeOutlined />}
+                        title="单条回复字数上限"
+                        description="超长的求职消息本身就不像真人写的，超出后自动截断"
+                        min={50}
+                        max={500}
+                        step={10}
+                        fallback={DEFAULT_MAX_REPLY_CHARS}
+                        value={props.config.replay_config.max_reply_chars}
+                        unit="字"
+                        onChange={(value) =>
+                          props.updateReplay({ max_reply_chars: value })
+                        }
+                      />
+                    </SettingGroup>
                   </div>
                 </div>
               )}
+
+              <ReplyPollingSection
+                config={getReplyPollingConfig(props.config)}
+                onChange={props.updatePolling}
+              />
             </div>
 
             {usesTemplateReply && (
@@ -1756,16 +1763,17 @@ export function ConfigPage(props: ConfigPageProps) {
                                 <Text className="text-[10px] text-slate-500 font-bold block mb-1">
                                   匹配最近聊天条数
                                 </Text>
-                                <InputNumber
+                                <NumberField
                                   size="small"
                                   min={1}
                                   precision={0}
+                                  fallback={DEFAULT_REGEX_RULE_LIMIT}
                                   value={template.regex_rule.limit}
                                   onChange={(value) =>
                                     props.updateReplyTemplate(index, {
                                       regex_rule: {
                                         ...template.regex_rule,
-                                        limit: value ?? 1,
+                                        limit: value,
                                       },
                                     })
                                   }
@@ -1981,13 +1989,14 @@ export function ConfigPage(props: ConfigPageProps) {
               name={["browser_config", "max_parallel_tasks"]}
               extra="默认为 2, BOSS 与猎聘可各运行一个任务、同一平台的后续任务会排队。"
             >
-              <InputNumber
+              <NumberField
                 min={1}
                 max={2}
                 precision={0}
+                fallback={DEFAULT_MAX_PARALLEL_TASKS}
                 style={{ width: "100%" }}
                 onChange={(value) =>
-                  props.updateBrowser({ max_parallel_tasks: value ?? 2 })
+                  props.updateBrowser({ max_parallel_tasks: value })
                 }
               />
             </Form.Item>

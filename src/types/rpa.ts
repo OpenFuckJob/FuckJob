@@ -15,7 +15,13 @@ export type FlowMode =
   | "job_hunting"
   | "reply_unread"
   | "sync_chat_history"
-  | "periodic_job_hunting";
+  | "periodic_job_hunting"
+  | "polling_reply";
+
+/** 永不自然结束、只能手工停止的模式。同一平台同时只允许存在一个 */
+export function isLongRunningMode(mode: FlowMode): boolean {
+  return mode === "periodic_job_hunting" || mode === "polling_reply";
+}
 
 export type JobTaskState =
   | "queued"

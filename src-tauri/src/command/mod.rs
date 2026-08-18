@@ -6,6 +6,7 @@ pub mod data_management;
 pub mod job;
 pub mod llm;
 pub mod llm_provider;
+pub mod manual_review;
 pub mod mock_interview;
 pub mod resume_templates;
 pub mod rpa;

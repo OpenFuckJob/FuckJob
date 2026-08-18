@@ -5814,6 +5814,7 @@ dependencies = [
  "keyring",
  "kreuzberg",
  "once_cell",
+ "rand 0.8.6",
  "regex",
  "rig",
  "rust_drission",
