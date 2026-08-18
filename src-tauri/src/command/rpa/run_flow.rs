@@ -222,7 +222,7 @@ pub fn start_job_task(
             };
             (resolved.config, Some(profile))
         }
-        FlowMode::ReplyUnread => {
+        FlowMode::ReplyUnread | FlowMode::PollingReply => {
             // 回复任务会逐会话恢复首次建联快照，不能在整批任务上固定一张方案。
             let config = match resolve_job_profile(&base_config, None) {
                 Ok(resolved) => resolved.config,

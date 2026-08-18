@@ -111,14 +111,32 @@ impl SchedulerState {
             ));
         }
 
-        if mode == FlowMode::PeriodicJobHunting
-            && self.tasks.values().any(|entry| {
+        // 长驻任务永不自然结束，而平台锁的容量是 1。同平台再排一个长驻任务，
+        // 它会永远停在队列里等一个不会结束的任务——那比当场说清楚难排查得多。
+        // 拦的是「任一长驻任务」而不是「同种任务」：周期投递的等待期本来就在跑
+        // 回复轮询，两个一起开在功能上也没有意义
+        if mode.is_long_running() {
+            if let Some(holder) = self.tasks.values().find(|entry| {
                 entry.info.platform == platform
-                    && entry.info.mode == FlowMode::PeriodicJobHunting
+                    && entry.info.mode.is_long_running()
                     && !entry.info.status.is_terminal()
-            })
-        {
-            return Err("该平台已有周期投递任务，请先停止后再重新启动".to_string());
+            }) {
+                return Err(match (holder.info.mode, mode) {
+                    (FlowMode::PeriodicJobHunting, FlowMode::PollingReply) => {
+                        "该平台已有周期投递任务，它的等待期已经在自动回复未读消息，无需另开轮询回复"
+                            .to_string()
+                    }
+                    (existing, _) if existing == mode => format!(
+                        "该平台已有{}任务，请先停止后再重新启动",
+                        mode.display_name()
+                    ),
+                    (existing, _) => format!(
+                        "该平台已有{}任务，请先停止后再启动{}",
+                        existing.display_name(),
+                        mode.display_name()
+                    ),
+                });
+            }
         }
 
         let now = timestamp();
@@ -545,6 +563,107 @@ mod tests {
             .unwrap_err();
 
         assert!(error.contains("已有周期投递任务"));
+    }
+
+    #[test]
+    fn duplicate_polling_reply_task_for_the_same_platform_is_rejected() {
+        let mut state = SchedulerState::new(2);
+        let enqueue_polling = |state: &mut SchedulerState| {
+            state.enqueue(
+                PlatformKind::Boss,
+                FlowMode::PollingReply,
+                None,
+                Arc::new(default_app_config()),
+                None,
+            )
+        };
+        enqueue_polling(&mut state).unwrap();
+
+        let error = enqueue_polling(&mut state).unwrap_err();
+
+        assert!(error.contains("已有轮询回复任务"));
+    }
+
+    /// 同平台的两个长驻任务不能并存。它们都永不结束，而平台锁只有一个名额，
+    /// 放行第二个等于让它永远排队——用户看到的是「任务已提交」却什么都没发生
+    #[test]
+    fn a_second_long_running_task_is_rejected_even_when_the_mode_differs() {
+        let mut state = SchedulerState::new(2);
+        state
+            .enqueue(
+                PlatformKind::Boss,
+                FlowMode::PollingReply,
+                None,
+                Arc::new(default_app_config()),
+                None,
+            )
+            .unwrap();
+
+        let error = state
+            .enqueue(
+                PlatformKind::Boss,
+                FlowMode::PeriodicJobHunting,
+                Some(30),
+                Arc::new(default_app_config()),
+                None,
+            )
+            .unwrap_err();
+
+        assert!(error.contains("已有轮询回复任务"));
+        assert!(error.contains("周期投递"));
+    }
+
+    /// 周期投递在跑时想开轮询回复，要说清楚它已经包含了这件事，
+    /// 而不是甩一句「请先停止」——用户停掉投递去开回复，反而两头都少了一半
+    #[test]
+    fn starting_polling_reply_under_a_periodic_task_explains_it_is_already_covered() {
+        let mut state = SchedulerState::new(2);
+        state
+            .enqueue(
+                PlatformKind::Boss,
+                FlowMode::PeriodicJobHunting,
+                Some(30),
+                Arc::new(default_app_config()),
+                None,
+            )
+            .unwrap();
+
+        let error = state
+            .enqueue(
+                PlatformKind::Boss,
+                FlowMode::PollingReply,
+                None,
+                Arc::new(default_app_config()),
+                None,
+            )
+            .unwrap_err();
+
+        assert!(error.contains("等待期已经在自动回复"));
+    }
+
+    /// 平台之间互不影响：BOSS 在轮询回复，猎聘照样能开自己的长驻任务
+    #[test]
+    fn long_running_tasks_on_different_platforms_do_not_block_each_other() {
+        let mut state = SchedulerState::new(2);
+        state
+            .enqueue(
+                PlatformKind::Boss,
+                FlowMode::PollingReply,
+                None,
+                Arc::new(default_app_config()),
+                None,
+            )
+            .unwrap();
+
+        assert!(state
+            .enqueue(
+                PlatformKind::Liepin,
+                FlowMode::PollingReply,
+                None,
+                Arc::new(default_app_config()),
+                None,
+            )
+            .is_ok());
     }
 
     #[test]

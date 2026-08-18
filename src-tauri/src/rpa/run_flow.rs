@@ -8,7 +8,7 @@ use std::{
 use rust_drission::{ChromiumPage, Page};
 use serde::{Deserialize, Serialize};
 
-use super::{boss, liepin};
+use super::{boss, liepin, polling};
 use crate::{config::AppRuntimeConfig, logger};
 
 static JOB_TASK_RUNNING: AtomicBool = AtomicBool::new(false);
@@ -97,6 +97,24 @@ pub enum FlowMode {
     ReplyUnread,
     SyncChatHistory,
     PeriodicJobHunting,
+    PollingReply,
+}
+
+impl FlowMode {
+    /// 是否是永不自然结束、只能由用户停止的长驻任务
+    pub fn is_long_running(self) -> bool {
+        matches!(self, Self::PeriodicJobHunting | Self::PollingReply)
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::JobHunting => "单轮自动求职",
+            Self::ReplyUnread => "回复未读",
+            Self::SyncChatHistory => "读取聊天消息",
+            Self::PeriodicJobHunting => "周期投递",
+            Self::PollingReply => "轮询回复",
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -218,7 +236,7 @@ pub fn inspect_readiness(
         config_group: Some("greet".to_string()),
     });
 
-    let needs_reply_config = matches!(mode, FlowMode::ReplyUnread);
+    let needs_reply_config = matches!(mode, FlowMode::ReplyUnread | FlowMode::PollingReply);
     let replay_configs = config
         .job_profiles
         .iter()
@@ -290,7 +308,9 @@ pub fn inspect_readiness(
     });
 
     let llm_needed = match mode {
-        FlowMode::ReplyUnread => auto_reply_configs.iter().any(|replay| replay.enable_llm),
+        FlowMode::ReplyUnread | FlowMode::PollingReply => {
+            auto_reply_configs.iter().any(|replay| replay.enable_llm)
+        }
         FlowMode::JobHunting | FlowMode::PeriodicJobHunting => {
             config.job_filter_config.enable_semantic_filter
                 || config.greet_config.llm_resource_ready()
@@ -326,15 +346,7 @@ pub fn inspect_readiness(
                 PlatformKind::Liepin => "猎聘",
             }
         ),
-        format!(
-            "模式：{}",
-            match mode {
-                FlowMode::JobHunting => "单轮自动求职",
-                FlowMode::ReplyUnread => "回复未读",
-                FlowMode::SyncChatHistory => "读取聊天消息",
-                FlowMode::PeriodicJobHunting => "周期投递",
-            }
-        ),
+        format!("模式：{}", mode.display_name()),
         if query.is_empty() {
             "岗位关键词：未设置".to_string()
         } else {
@@ -505,6 +517,7 @@ pub async fn execute_rpa_flow(
                 .map_err(|e| anyhow::anyhow!(e))?;
             periodic_position_say_hello(platform, config, interval).await
         }
+        FlowMode::PollingReply => polling_reply(&ReplyTarget::NewTab(platform), config).await,
     }
 }
 
@@ -534,6 +547,9 @@ pub async fn execute_rpa_flow_with_browser(
                 .map_err(|e| anyhow::anyhow!(e))?;
             periodic_position_say_hello_on_page(connection, main_tab, platform, config, interval)
                 .await
+        }
+        FlowMode::PollingReply => {
+            polling_reply(&ReplyTarget::OwnedTab(main_tab, platform), config).await
         }
     }
 }
@@ -604,6 +620,72 @@ async fn execute_reply_unread_on_page(
     Ok(())
 }
 
+/// 一轮回复要跑在哪个标签页上。
+///
+/// 队列任务持有自己的主标签页，兼容入口则每轮新开一个。两条路径的轮询节奏
+/// 完全一致，只有这一处不同，所以差异收在这里而不是复制两份循环
+enum ReplyTarget<'a> {
+    NewTab(PlatformKind),
+    OwnedTab(&'a Page, PlatformKind),
+}
+
+async fn run_reply_round(
+    target: &ReplyTarget<'_>,
+    config: &AppRuntimeConfig,
+) -> Result<(), anyhow::Error> {
+    match target {
+        ReplyTarget::NewTab(platform) => execute_reply_unread(*platform, config).await,
+        ReplyTarget::OwnedTab(main_tab, platform) => {
+            execute_reply_unread_on_page(main_tab, *platform, config).await
+        }
+    }
+}
+
+/// 只轮询回复、不投递的长驻任务。
+///
+/// 单轮失败不终止整个轮询：会话页加载超时、平台偶发风控这类错误下一轮多半就好了，
+/// 为此让用户重新点一次开始任务并不合理
+async fn polling_reply(
+    target: &ReplyTarget<'_>,
+    config: &AppRuntimeConfig,
+) -> Result<(), anyhow::Error> {
+    // 不在活跃时段时每分钟醒一次重新判断。每次都打日志的话，挂一夜就是几百条噪声，
+    // 真正有用的回复记录会被冲得找不到，所以只在活跃状态翻转的那一次打。
+    //
+    // 初值取 true 而不是 None：任务刚启动就打一句「恢复轮询」读着像是从中断里
+    // 爬起来，而这时它才刚开始。真正该说话的是第一次停下来
+    let mut was_active = true;
+
+    loop {
+        if is_job_task_stop_requested() {
+            logger::info("轮询回复任务已结束")?;
+            return Ok(());
+        }
+
+        if polling::is_active_now(&config.reply_polling_config) {
+            if let Err(error) = run_reply_round(target, config).await {
+                logger::warning(format!("本轮自动回复失败，等待下一轮重试: {error}"))?;
+            }
+        }
+
+        let wake = polling::next_wake_now(&config.reply_polling_config);
+        let active = matches!(wake, polling::NextWake::Sleep(_));
+        if was_active != active {
+            logger::info(if active {
+                "已进入自动回复时段，恢复轮询"
+            } else {
+                "当前不在自动回复时段，暂停轮询"
+            })?;
+            was_active = active;
+        }
+
+        if !sleep_interruptible(wake.seconds()).await {
+            logger::info("轮询回复任务已结束")?;
+            return Ok(());
+        }
+    }
+}
+
 fn resolve_periodic_interval_minutes(interval_minutes: Option<u64>) -> Result<u64, String> {
     match interval_minutes {
         Some(value) if value > 0 => Ok(value),
@@ -639,7 +721,7 @@ async fn periodic_position_say_hello(
                 ))?;
             }
         }
-        wait_periodic_interval(interval_minutes).await?;
+        wait_periodic_interval(&ReplyTarget::NewTab(platform), config, interval_minutes).await?;
     }
 }
 
@@ -672,11 +754,25 @@ async fn periodic_position_say_hello_on_page(
                 ))?;
             }
         }
-        wait_periodic_interval(interval_minutes).await?;
+        wait_periodic_interval(
+            &ReplyTarget::OwnedTab(main_tab, platform),
+            config,
+            interval_minutes,
+        )
+        .await?;
     }
 }
 
-async fn wait_periodic_interval(interval_minutes: u64) -> Result<(), anyhow::Error> {
+/// 周期投递两轮之间的等待期。
+///
+/// 这段时间本来是纯空闲——投递间隔通常半小时起步，而调度器对每个平台只放行一个任务，
+/// 另起一个轮询任务只会跟投递互抢浏览器。所以把等待期切成若干个轮询间隔，
+/// 间隙里顺手把未读回掉，一个任务就同时具备投递和回复两条能力
+async fn wait_periodic_interval(
+    target: &ReplyTarget<'_>,
+    config: &AppRuntimeConfig,
+    interval_minutes: u64,
+) -> Result<(), anyhow::Error> {
     let mut remaining_seconds = interval_minutes.saturating_mul(60);
 
     while remaining_seconds > 0 {
@@ -685,12 +781,38 @@ async fn wait_periodic_interval(interval_minutes: u64) -> Result<(), anyhow::Err
             return Ok(());
         }
 
-        let sleep_seconds = remaining_seconds.min(1);
-        tokio::time::sleep(Duration::from_secs(sleep_seconds)).await;
+        let wake = polling::next_wake_now(&config.reply_polling_config);
+        let sleep_seconds = wake.seconds().min(remaining_seconds);
+        if !sleep_interruptible(sleep_seconds).await {
+            logger::info("周期性投递任务已结束")?;
+            return Ok(());
+        }
         remaining_seconds -= sleep_seconds;
+
+        // 等待期已经走完就别再插一轮回复，否则下一轮投递被平白推迟。
+        // 不在活跃时段时这次醒来只是重新判断时段，此时开口等于半夜秒回 HR
+        if remaining_seconds > 0 && matches!(wake, polling::NextWake::Sleep(_)) {
+            if let Err(error) = run_reply_round(target, config).await {
+                logger::warning(format!("周期间歇自动回复失败，本轮继续等待: {error}"))?;
+            }
+        }
     }
 
     Ok(())
+}
+
+/// 可被停止请求打断的睡眠。返回 true 表示睡满了，false 表示中途收到停止请求。
+///
+/// 每秒醒一次而不是一觉睡到底：用户点了停止之后，任务得在一秒内响应，
+/// 而不是等完整个轮询间隔
+async fn sleep_interruptible(seconds: u64) -> bool {
+    for _ in 0..seconds {
+        if is_job_task_stop_requested() {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    true
 }
 
 #[cfg(test)]
@@ -874,6 +996,41 @@ mod tests {
         let mode: FlowMode = serde_json::from_str("\"periodic_job_hunting\"").unwrap();
 
         assert_eq!(mode, FlowMode::PeriodicJobHunting);
+    }
+
+    #[test]
+    fn flow_mode_deserializes_polling_reply() {
+        let mode: FlowMode = serde_json::from_str("\"polling_reply\"").unwrap();
+
+        assert_eq!(mode, FlowMode::PollingReply);
+    }
+
+    /// 长驻判定直接决定「同平台不许开第二个」这条约束覆盖到谁，
+    /// 漏掉一个模式的后果是两个无限循环任务互抢浏览器
+    #[test]
+    fn only_endless_modes_are_treated_as_long_running() {
+        assert!(FlowMode::PeriodicJobHunting.is_long_running());
+        assert!(FlowMode::PollingReply.is_long_running());
+        assert!(!FlowMode::JobHunting.is_long_running());
+        assert!(!FlowMode::ReplyUnread.is_long_running());
+        assert!(!FlowMode::SyncChatHistory.is_long_running());
+    }
+
+    /// 轮询回复只是把「回复未读」放进循环，两者的就绪判定一旦漂移，
+    /// 用户会遇到手动跑得动、开轮询却被拦下来的怪事
+    #[test]
+    fn polling_reply_readiness_matches_reply_unread_item_by_item() {
+        let mut config = default_app_config();
+        let replay = &mut config.job_profiles[0].replay_config;
+        replay.enable_llm = true;
+        replay.reply_prompt = Some("请根据对话生成回复".to_string());
+
+        let once = inspect_readiness(PlatformKind::Boss, FlowMode::ReplyUnread, &config);
+        let polling = inspect_readiness(PlatformKind::Boss, FlowMode::PollingReply, &config);
+
+        assert_eq!(polling.items, once.items);
+        assert_eq!(polling.ready, once.ready);
+        assert!(polling.summary.contains(&"模式：轮询回复".to_string()));
     }
 
     #[test]
