@@ -218,36 +218,20 @@ const OverviewTab = ({ a }: { a: InterviewJobAnalysis }) => (
       </Row>
     </Card>
 
-    {/* 优势与风险是对照关系，宽屏下并排看更有信息量 */}
-    {(a.strengths.length > 0 || a.risks.length > 0) && (
-      <Row gutter={[16, 16]}>
-        {a.strengths.length > 0 && (
-          <Col xs={24} lg={a.risks.length > 0 ? 12 : 24}>
-            <Card
-              size="small"
-              style={{ height: "100%" }}
-              title={<Typography.Text strong style={{ color: "#52c41a" }}>优势项</Typography.Text>}
-            >
-              <ul style={bulletListStyle}>
-                {a.strengths.map((s, i) => <li key={i}>{s}</li>)}
-              </ul>
-            </Card>
-          </Col>
-        )}
-        {a.risks.length > 0 && (
-          <Col xs={24} lg={a.strengths.length > 0 ? 12 : 24}>
-            <Card
-              size="small"
-              style={{ height: "100%" }}
-              title={<Typography.Text strong style={{ color: "#ff4d4f" }}>风险项</Typography.Text>}
-            >
-              <ul style={bulletListStyle}>
-                {a.risks.map((r, i) => <li key={i}>{r}</li>)}
-              </ul>
-            </Card>
-          </Col>
-        )}
-      </Row>
+    {a.strengths.length > 0 && (
+      <Card size="small" title={<Typography.Text strong style={{ color: "#52c41a" }}>优势项</Typography.Text>}>
+        <ul style={bulletListStyle}>
+          {a.strengths.map((s, i) => <li key={i}>{s}</li>)}
+        </ul>
+      </Card>
+    )}
+
+    {a.risks.length > 0 && (
+      <Card size="small" title={<Typography.Text strong style={{ color: "#ff4d4f" }}>风险项</Typography.Text>}>
+        <ul style={bulletListStyle}>
+          {a.risks.map((r, i) => <li key={i}>{r}</li>)}
+        </ul>
+      </Card>
     )}
 
     {a.questions_to_ask_interviewer.length > 0 && (
