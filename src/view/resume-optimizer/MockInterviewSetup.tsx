@@ -5,7 +5,6 @@ import {
   Card,
   Collapse,
   Input,
-  Segmented,
   Select,
   Space,
   Tag,
@@ -14,6 +13,9 @@ import {
 import {
   ApartmentOutlined,
   BulbOutlined,
+  ClockCircleOutlined,
+  CodeOutlined,
+  ExperimentOutlined,
   FileTextOutlined,
   ReloadOutlined,
   SearchOutlined,
@@ -40,6 +42,20 @@ const FOCUS_OPTIONS = [
   "工程稳定性",
   "性能与成本",
   "协作沟通",
+];
+
+/** 每种面试各配专属图标，一眼能区分，不靠读文字 */
+const INTERVIEW_TYPES = [
+  { value: "综合面", icon: <ApartmentOutlined />, description: "岗位、项目、专业和行为能力" },
+  { value: "技术面", icon: <CodeOutlined />, description: "技术深度、设计和问题排查" },
+  { value: "项目深挖", icon: <ExperimentOutlined />, description: "真实性、个人贡献和项目结果" },
+];
+
+/** 难度直接说明追问强度，避免只给一个不知深浅的档位名 */
+const DIFFICULTY_OPTIONS = [
+  { value: "初级", description: "偏基础概念与流程，节奏较缓" },
+  { value: "中级", description: "结合项目追问细节与技术取舍" },
+  { value: "高级", description: "深挖系统设计与边界，追问更紧" },
 ];
 
 export function isSelectableInterviewJob(job: JobDetail): boolean {
@@ -215,20 +231,16 @@ export function MockInterviewSetup({ value, onChange, disabled }: MockInterviewS
         </div>
         <Typography.Text className="mi-field-label">面试类型</Typography.Text>
         <div className="mi-choice-grid mi-choice-grid-three">
-          {[
-            ["综合面", "岗位、项目、专业和行为能力"],
-            ["技术面", "技术深度、设计和问题排查"],
-            ["项目深挖", "真实性、个人贡献和项目结果"],
-          ].map(([title, description]) => (
+          {INTERVIEW_TYPES.map((option) => (
             <button
               type="button"
-              key={title}
-              className={`mi-choice-card ${value.interviewType === title ? "is-selected" : ""}`}
-              onClick={() => patch({ interviewType: title })}
+              key={option.value}
+              className={`mi-choice-card ${value.interviewType === option.value ? "is-selected" : ""}`}
+              onClick={() => patch({ interviewType: option.value })}
             >
-              <ApartmentOutlined />
-              <strong>{title}</strong>
-              <span>{description}</span>
+              <span className="mi-choice-icon">{option.icon}</span>
+              <strong>{option.value}</strong>
+              <span>{option.description}</span>
             </button>
           ))}
         </div>
@@ -242,20 +254,33 @@ export function MockInterviewSetup({ value, onChange, disabled }: MockInterviewS
               className={`mi-duration-card ${value.duration === key ? "is-selected" : ""}`}
               onClick={() => patch({ duration: key })}
             >
-              <strong>{meta.label}</strong>
-              <span>{meta.minutes}</span>
-              <small>约{meta.targetQuestions}个核心问题</small>
+              <div className="mi-duration-head">
+                <strong>{meta.label}</strong>
+                <em>约 {meta.targetQuestions} 题</em>
+              </div>
+              <span>
+                <ClockCircleOutlined /> {meta.minutes}
+              </span>
             </button>
           ))}
         </div>
 
         <Typography.Text className="mi-field-label">难度</Typography.Text>
-        <Segmented
-          block
-          value={value.difficulty}
-          options={["初级", "中级", "高级"]}
-          onChange={(difficulty) => patch({ difficulty: String(difficulty) })}
-        />
+        <div className="mi-choice-grid mi-choice-grid-three">
+          {DIFFICULTY_OPTIONS.map((option) => (
+            <button
+              type="button"
+              key={option.value}
+              className={`mi-duration-card ${value.difficulty === option.value ? "is-selected" : ""}`}
+              onClick={() => patch({ difficulty: option.value })}
+            >
+              <div className="mi-duration-head">
+                <strong>{option.value}</strong>
+              </div>
+              <span>{option.description}</span>
+            </button>
+          ))}
+        </div>
       </section>
 
       <section className="mi-form-section">

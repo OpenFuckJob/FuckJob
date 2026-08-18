@@ -1,4 +1,4 @@
-import { Alert, Button, Card, Progress, Space, Typography } from "antd";
+import { Alert, Button, Card, Space, Typography } from "antd";
 import { ArrowLeftOutlined, CheckCircleFilled, RocketOutlined } from "@ant-design/icons";
 import { MockInterviewSetup } from "./MockInterviewSetup";
 import {
@@ -11,6 +11,8 @@ interface MockInterviewSetupPageProps {
   value: MockInterviewSettings;
   resumeReady: boolean;
   aiReady: boolean;
+  /** 是否由岗位管理带着岗位跳转过来 */
+  fromJob?: boolean;
   onChange: (settings: MockInterviewSettings) => void;
   onBack: () => void;
   onStart: () => void;
@@ -27,7 +29,11 @@ export function MockInterviewSetupPage(props: MockInterviewSetupPageProps) {
         <Button type="text" icon={<ArrowLeftOutlined />} onClick={props.onBack}>返回</Button>
         <div>
           <Typography.Title level={3}>创建模拟面试</Typography.Title>
-          <Typography.Text type="secondary">选择目标岗位并设置本次面试重点</Typography.Text>
+          <Typography.Text type="secondary">
+            {props.fromJob && props.value.jobTitle
+              ? `已带入「${props.value.jobTitle}」的岗位信息，选好参数即可开始`
+              : "选择目标岗位并设置本次面试重点"}
+          </Typography.Text>
         </div>
       </div>
 
@@ -48,55 +54,62 @@ export function MockInterviewSetupPage(props: MockInterviewSetupPageProps) {
         <MockInterviewSetup value={props.value} onChange={props.onChange} />
         <aside className="mi-plan-aside">
           <Card className="mi-plan-card">
-            <Typography.Title level={5}>本次面试计划</Typography.Title>
-            <div className="mi-plan-job">
-              <Typography.Text strong>{props.value.jobTitle || "请先选择目标岗位"}</Typography.Text>
-              <Typography.Text type="secondary">{props.value.companyName || "未指定公司"}</Typography.Text>
-            </div>
-            <Space wrap size={[6, 6]}>
-              <span className="mi-plan-pill">{props.value.interviewType}</span>
-              <span className="mi-plan-pill">{props.value.difficulty}</span>
-              <span className="mi-plan-pill">{duration.label}</span>
-            </Space>
-
-            <div className="mi-plan-stat-grid">
-              <div><strong>{duration.targetQuestions}</strong><span>预计核心问题</span></div>
-              <div><strong>{duration.minutes}</strong><span>预计时长</span></div>
-            </div>
-
-            <Typography.Text className="mi-field-label">考察范围</Typography.Text>
-            <div className="mi-plan-modules">
-              {modules.map((module) => (
-                <div key={module.id} className="mi-plan-module">
-                  <div><span>{module.name}</span><small>{module.weight}%</small></div>
-                  <Progress percent={module.weight} showInfo={false} strokeColor="#1677ff" trailColor="#edf2f7" />
-                </div>
-              ))}
-            </div>
-
-            {!!props.value.focusAreas.length && (
-              <div className="mi-plan-focus">
-                <Typography.Text type="secondary">重点考察</Typography.Text>
-                <Typography.Text>{props.value.focusAreas.join("、")}</Typography.Text>
+            <div className="mi-plan-scroll">
+              <Typography.Title level={5}>本次面试计划</Typography.Title>
+              <div className="mi-plan-job">
+                <Typography.Text strong>{props.value.jobTitle || "请先选择目标岗位"}</Typography.Text>
+                <Typography.Text type="secondary">{props.value.companyName || "未指定公司"}</Typography.Text>
               </div>
-            )}
+              <Space wrap size={[6, 6]}>
+                <span className="mi-plan-pill">{props.value.interviewType}</span>
+                <span className="mi-plan-pill">{props.value.difficulty}</span>
+                <span className="mi-plan-pill">{duration.label}</span>
+              </Space>
 
-            <div className="mi-readiness-list">
-              <span className={props.aiReady ? "is-ready" : ""}><CheckCircleFilled /> AI模型</span>
-              <span className={props.resumeReady ? "is-ready" : ""}><CheckCircleFilled /> 简历快照</span>
-              <span className={props.value.jobContext.trim() ? "is-ready" : ""}><CheckCircleFilled /> 岗位信息</span>
+              <div className="mi-plan-stat-grid">
+                <div><strong>{duration.targetQuestions}</strong><span>预计核心问题</span></div>
+                <div><strong>{duration.minutes}</strong><span>预计时长</span></div>
+              </div>
+
+              {/* 用题数而不是权重百分比：开始面试前真正想知道的是每块会问几题 */}
+              <Typography.Text className="mi-field-label">考察范围</Typography.Text>
+              <div className="mi-plan-modules">
+                {modules.map((module) => (
+                  <span key={module.id} className="mi-plan-module-chip" title={module.description}>
+                    {module.name}
+                    <em>{module.targetQuestions} 题</em>
+                  </span>
+                ))}
+              </div>
+
+              {!!props.value.focusAreas.length && (
+                <div className="mi-plan-focus">
+                  <Typography.Text type="secondary">重点考察</Typography.Text>
+                  <Typography.Text>{props.value.focusAreas.join("、")}</Typography.Text>
+                </div>
+              )}
+
+              <div className="mi-readiness-list">
+                <span className={props.aiReady ? "is-ready" : ""}><CheckCircleFilled /> AI模型</span>
+                <span className={props.resumeReady ? "is-ready" : ""}><CheckCircleFilled /> 简历快照</span>
+                <span className={props.value.jobContext.trim() ? "is-ready" : ""}><CheckCircleFilled /> 岗位信息</span>
+              </div>
             </div>
-            <Button
-              block
-              type="primary"
-              size="large"
-              icon={<RocketOutlined />}
-              disabled={!canStart}
-              onClick={props.onStart}
-            >
-              开始模拟面试
-            </Button>
-            {!props.value.jobContext.trim() && <Typography.Text type="secondary" className="mi-plan-hint">请选择岗位或填写完整的自定义岗位信息</Typography.Text>}
+
+            {/* 表单再长，开始按钮也始终停在卡片底部 */}
+            <div className="mi-plan-actions">
+              <Button
+                block
+                type="primary"
+                size="large"
+                icon={<RocketOutlined />}
+                disabled={!canStart}
+                onClick={props.onStart}
+              >
+                开始模拟面试
+              </Button>
+              {!props.value.jobContext.trim() && <Typography.Text type="secondary" className="mi-plan-hint">请选择岗位或填写完整的自定义岗位信息</Typography.Text>}
+            </div>
           </Card>
         </aside>
       </div>

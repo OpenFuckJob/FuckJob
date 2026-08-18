@@ -17,6 +17,7 @@ import {
   EyeOutlined,
   InboxOutlined,
   MessageOutlined,
+  RobotOutlined,
   SearchOutlined,
   ThunderboltOutlined,
 } from "@ant-design/icons";
@@ -256,12 +257,14 @@ function JobKanbanCard({
   onView,
   onChat,
   onDelete,
+  onStartInterview,
 }: {
   job: JobListItem;
   analysis?: InterviewJobAnalysis;
   onView: (job: JobDetail) => void;
   onChat: (job: JobDetail) => void;
   onDelete: (id: string) => void;
+  onStartInterview?: (job: JobDetail) => void;
 }) {
   const platform = getJobPlatform(job);
   const time = new Date(job.created_at).toLocaleString("zh-CN", {
@@ -320,6 +323,15 @@ function JobKanbanCard({
             title="沟通记录"
             onClick={() => onChat(job)}
           />
+          {onStartInterview && (
+            <Button
+              size="small"
+              type="text"
+              icon={<RobotOutlined />}
+              title="用这个岗位做模拟面试"
+              onClick={() => onStartInterview(job)}
+            />
+          )}
           <Popconfirm
             title="确认删除"
             description={`确定要删除「${job.title}」吗？`}
@@ -344,12 +356,14 @@ function KanbanView({
   onView,
   onChat,
   onDelete,
+  onStartInterview,
 }: {
   jobs: JobListItem[];
   analyses: Record<string, InterviewJobAnalysis>;
   onView: (job: JobDetail) => void;
   onChat: (job: JobDetail) => void;
   onDelete: (id: string) => void;
+  onStartInterview?: (job: JobDetail) => void;
 }) {
   const lanes = useMemo(() => groupByLane(jobs), [jobs]);
 
@@ -377,6 +391,7 @@ function KanbanView({
                   onView={onView}
                   onChat={onChat}
                   onDelete={onDelete}
+                  onStartInterview={onStartInterview}
                 />
               ))
             )}
@@ -389,7 +404,7 @@ function KanbanView({
 
 /* ────────── Page ────────── */
 
-const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled, highMatchScore = DEFAULT_HIGH_MATCH_SCORE }: {
+const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled, highMatchScore = DEFAULT_HIGH_MATCH_SCORE, onStartInterview }: {
   aiConfigured: boolean;
   onConfigureAi: () => void;
   /** 从其他页面跳转过来时需要直接打开沟通记录的岗位 */
@@ -397,6 +412,8 @@ const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled, 
   onFocusHandled?: () => void;
   /** 高匹配的判定分数线，与求职方案的岗位分析配置一致 */
   highMatchScore?: number;
+  /** 带着岗位信息跳到模拟面试 */
+  onStartInterview?: (job: JobDetail) => void;
 }) => {
   const [jobs, setJobs] = useState<JobListItem[]>([]);
   // 初始即为加载中，避免首次挂载时把待跳转的岗位当成「不存在」
@@ -632,7 +649,7 @@ const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled, 
     {
       title: "操作",
       key: "action",
-      width: 270,
+      width: 350,
       fixed: "right",
       render: (_: unknown, record: JobListItem) => (
         <Space size={4}>
@@ -652,6 +669,16 @@ const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled, 
           >
             沟通记录
           </Button>
+          {onStartInterview && (
+            <Button
+              type="link"
+              size="small"
+              icon={<RobotOutlined />}
+              onClick={() => onStartInterview(record)}
+            >
+              模拟面试
+            </Button>
+          )}
           <Popconfirm
             title="确认删除"
             description={`确定要删除「${record.title}」吗？此操作不可恢复。`}
@@ -749,6 +776,7 @@ const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled, 
           onView={setCurrentJob}
           onChat={setChatJob}
           onDelete={(id) => void handleDelete(id)}
+          onStartInterview={onStartInterview}
         />
       ) : (
         <div

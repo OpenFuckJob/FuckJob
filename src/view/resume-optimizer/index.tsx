@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import { message } from "antd";
 import type { AppRuntimeConfig } from "@/types/app-config";
 import type { MockInterviewQuestionReview } from "@/types/analysis";
+import type { JobDetail } from "@/types/job-detail";
 import { MockInterviewHome } from "./MockInterviewHome";
+import { buildInterviewJobContext } from "./MockInterviewSetup";
 import { MockInterviewPanel } from "./MockInterviewPanel";
 import { MockInterviewReportPage } from "./MockInterviewReportPage";
 import { MockInterviewSetupPage } from "./MockInterviewSetupPage";
@@ -59,6 +61,9 @@ export interface ResumeOptimizerPageProps {
   config: AppRuntimeConfig;
   onOpenLlmConfig: () => void;
   onUpdateResume: (content: string) => void;
+  /** 从岗位管理跳过来时要直接预填的岗位 */
+  pendingInterviewJob?: JobDetail;
+  onPendingInterviewHandled?: () => void;
 }
 
 type PageState =
@@ -67,15 +72,30 @@ type PageState =
   | { name: "session"; sessionId: string }
   | { name: "report"; sessionId: string; initialTab?: "summary" | "abilities" | "questions" | "transcript" };
 
-function ResumeOptimizerPage({ config, onOpenLlmConfig }: ResumeOptimizerPageProps) {
+function ResumeOptimizerPage({ config, onOpenLlmConfig, pendingInterviewJob, onPendingInterviewHandled }: ResumeOptimizerPageProps) {
   const [page, setPage] = useState<PageState>({ name: "home" });
   const [sessions, setSessions] = useState<InterviewSession[]>(listInterviewSessions);
   const [settings, setSettings] = useState<MockInterviewSettings>({ ...DEFAULT_INTERVIEW_SETTINGS });
+  const [setupFromJob, setSetupFromJob] = useState(false);
   const [messageApi, contextHolder] = message.useMessage();
   const resumeContent = (config.resume_config.resume_content ?? "").trim();
   const canStart = !!config.llm_config && !!resumeContent;
 
   useEffect(() => subscribeInterviewSessions(() => setSessions(listInterviewSessions())), []);
+  // 从岗位管理带岗位过来时直接进配置页，岗位信息已经填好，用户只需要挑面试参数
+  useEffect(() => {
+    if (!pendingInterviewJob) return;
+    setSettings({
+      ...DEFAULT_INTERVIEW_SETTINGS,
+      selectedJobId: pendingInterviewJob.id,
+      jobTitle: pendingInterviewJob.title.trim(),
+      companyName: pendingInterviewJob.company_name.trim(),
+      jobContext: buildInterviewJobContext(pendingInterviewJob),
+    });
+    setSetupFromJob(true);
+    setPage({ name: "setup" });
+    onPendingInterviewHandled?.();
+  }, [onPendingInterviewHandled, pendingInterviewJob]);
   useEffect(() => {
     sessions
       .filter((session) => session.status === "report_queued" || session.status === "report_generating")
@@ -117,6 +137,7 @@ function ResumeOptimizerPage({ config, onOpenLlmConfig }: ResumeOptimizerPagePro
               return;
             }
             setSettings({ ...DEFAULT_INTERVIEW_SETTINGS });
+            setSetupFromJob(false);
             setPage({ name: "setup" });
           }}
           onContinue={(sessionId) => setPage({ name: "session", sessionId })}
@@ -136,6 +157,7 @@ function ResumeOptimizerPage({ config, onOpenLlmConfig }: ResumeOptimizerPagePro
           value={settings}
           resumeReady={!!resumeContent}
           aiReady={!!config.llm_config}
+          fromJob={setupFromJob}
           onChange={setSettings}
           onBack={() => setPage({ name: "home" })}
           onConfigureAi={onOpenLlmConfig}
