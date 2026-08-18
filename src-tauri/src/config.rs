@@ -64,6 +64,7 @@ pub fn default_app_config() -> AppRuntimeConfig {
         background_context: None,
         enable_auto_send_resume: default_enable_auto_send_resume(),
         max_auto_replies: default_max_auto_replies(),
+        auto_reply_window_hours: default_auto_reply_window_hours(),
         max_reply_chars: default_max_reply_chars(),
         dry_run: false,
     };
@@ -99,6 +100,7 @@ pub fn default_app_config() -> AppRuntimeConfig {
         greet_config,
         replay_config,
         analysis_config: AnalysisConfig::default(),
+        reply_polling_config: ReplyPollingConfig::default(),
         browser_config: BrowserConfig {
             user_data_dir: "".to_string(),
             chrome_exe_path: None,
@@ -602,6 +604,10 @@ pub struct AppRuntimeConfig {
     /// 岗位自动分析配置
     #[serde(default)]
     pub analysis_config: AnalysisConfig,
+
+    /// 自动回复轮询节奏。全局唯一，不随求职方案变化
+    #[serde(default)]
+    pub reply_polling_config: ReplyPollingConfig,
 
     /// 浏览器运行配置
     pub browser_config: BrowserConfig,
@@ -1129,10 +1135,17 @@ pub struct ReplayConfig {
     #[serde(default = "default_enable_auto_send_resume")]
     pub enable_auto_send_resume: bool,
 
-    /// 单个会话累计自动回复条数上限，达到后转人工。
+    /// 滚动时间窗内单个会话的自动回复条数上限，达到后挂起转人工。
     /// 没有上限时模型会和 HR 无限客套下去
     #[serde(default = "default_max_auto_replies")]
     pub max_auto_replies: usize,
+
+    /// 上限所依据的滚动时间窗长度（小时）。
+    ///
+    /// 轮询模式下这个窗口是必需的：按「会话终身累计」计数的话，几轮下来
+    /// 所有会话都会撞顶挂起，轮询随即退化成空转。窗口滑走后额度自动恢复
+    #[serde(default = "default_auto_reply_window_hours")]
+    pub auto_reply_window_hours: u64,
 
     /// 单条自动回复的字数上限。超长的求职消息本身就不像真人写的
     #[serde(default = "default_max_reply_chars")]
@@ -1178,8 +1191,108 @@ fn default_max_auto_replies() -> usize {
     5
 }
 
+fn default_auto_reply_window_hours() -> u64 {
+    24
+}
+
 fn default_max_reply_chars() -> usize {
     200
+}
+
+// ================================
+// 自动回复轮询配置
+//
+// 这块是运行节奏，不是求职策略，所以放在顶层而不是方案卡里：一轮轮询会跨越
+// 多个岗位、命中多张方案卡，节奏却只能有一套。
+//
+// 默认值整体偏保守，取舍点是「不被认成机器人」而不是「回得最快」：固定节律、
+// 秒回、凌晨活跃，这三样单拎出来都是明显的自动化特征。
+// ================================
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct ReplyPollingConfig {
+    /// 两轮回复之间的基础间隔（分钟）
+    #[serde(default = "default_polling_interval_minutes")]
+    pub interval_minutes: u64,
+
+    /// 在基础间隔上叠加的随机抖动上限（秒）。
+    /// 精确到秒的固定节律本身就是机器特征，哪怕间隔本身很长
+    #[serde(default = "default_polling_jitter_seconds")]
+    pub jitter_seconds: u64,
+
+    /// 是否只在指定时段内轮询回复。关掉后全天轮询
+    #[serde(default = "default_active_hours_enabled")]
+    pub active_hours_enabled: bool,
+
+    /// 活跃时段起止小时（0-23，左闭右开）。
+    /// 只约束回复，不约束投递——半夜投简历没问题，半夜秒回 HR 有问题
+    #[serde(default = "default_active_start_hour")]
+    pub active_start_hour: u32,
+
+    #[serde(default = "default_active_end_hour")]
+    pub active_end_hour: u32,
+
+    /// 单轮最多处理多少个会话，剩下的留给下一轮。
+    /// 没有这个上限时，未读堆积会让一轮的耗时超过轮询间隔本身
+    #[serde(default = "default_max_conversations_per_round")]
+    pub max_conversations_per_round: usize,
+
+    /// 拟人化延迟区间（秒）。
+    ///
+    /// 这是「对方发出消息到我方回复」的目标间隔，不是「打开会话后再等多久」。
+    /// 轮询间隔本身通常已经填满了这段目标，此时实际等待为零
+    #[serde(default = "default_humanize_delay_min_seconds")]
+    pub humanize_delay_min_seconds: u64,
+
+    #[serde(default = "default_humanize_delay_max_seconds")]
+    pub humanize_delay_max_seconds: u64,
+}
+
+impl Default for ReplyPollingConfig {
+    fn default() -> Self {
+        Self {
+            interval_minutes: default_polling_interval_minutes(),
+            jitter_seconds: default_polling_jitter_seconds(),
+            active_hours_enabled: default_active_hours_enabled(),
+            active_start_hour: default_active_start_hour(),
+            active_end_hour: default_active_end_hour(),
+            max_conversations_per_round: default_max_conversations_per_round(),
+            humanize_delay_min_seconds: default_humanize_delay_min_seconds(),
+            humanize_delay_max_seconds: default_humanize_delay_max_seconds(),
+        }
+    }
+}
+
+fn default_polling_interval_minutes() -> u64 {
+    5
+}
+
+fn default_polling_jitter_seconds() -> u64 {
+    120
+}
+
+fn default_active_hours_enabled() -> bool {
+    true
+}
+
+fn default_active_start_hour() -> u32 {
+    9
+}
+
+fn default_active_end_hour() -> u32 {
+    22
+}
+
+fn default_max_conversations_per_round() -> usize {
+    10
+}
+
+fn default_humanize_delay_min_seconds() -> u64 {
+    30
+}
+
+fn default_humanize_delay_max_seconds() -> u64 {
+    120
 }
 
 // ================================

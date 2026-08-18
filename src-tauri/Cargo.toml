@@ -42,6 +42,7 @@ keyring = { version = "3.6.3", features = [
     "sync-secret-service",
 ] }
 uuid = { version = "1", features = ["v4"] }
+rand = "0.8"
 tempfile = "3.27.0"
 zip = "2.2.0"
 rig = { version = "0.40.0", default-features = false, features = ["reqwest", "native-tls"] }
