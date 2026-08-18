@@ -192,6 +192,18 @@ export default function App() {
             Tabs: {
               cardBg: "#f8fafc",
             },
+            Slider: {
+              railSize: 6,
+              handleSize: 12,
+              handleSizeHover: 14,
+              handleLineWidth: 3,
+              handleLineWidthHover: 4,
+              railBg: "#e2e8f0",
+              railHoverBg: "#cbd5e1",
+              // 默认的已选轨道是浅蓝，混在灰轨道里几乎看不出滑到了哪
+              trackBg: "#1677ff",
+              trackHoverBg: "#0958d9",
+            },
           },
         }}
       >
