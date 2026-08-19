@@ -142,10 +142,10 @@ const AnalysisReport = ({ job, onBack, aiConfigured, onConfigureAi, onAnalyzed }
         </div>
       )}
 
-      {/* Job Info Card */}
-      <Card size="small" style={{ flexShrink: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <Descriptions size="small" column={onBack ? 4 : 3} style={{ flex: 1 }}>
+      {/* 岗位基本信息由「岗位详情」页签负责，这里只留触发分析的入口 */}
+      {onBack ? (
+        <Card size="small" style={{ flexShrink: 0 }}>
+          <Descriptions size="small" column={4}>
             <Descriptions.Item label="公司">{job.company_name}</Descriptions.Item>
             <Descriptions.Item label="薪资">{job.salary || "-"}</Descriptions.Item>
             <Descriptions.Item label="地点">{job.location || "-"}</Descriptions.Item>
@@ -153,9 +153,12 @@ const AnalysisReport = ({ job, onBack, aiConfigured, onConfigureAi, onAnalyzed }
               {job.is_send_resume ? <Tag color="blue">已投递</Tag> : <Tag>未投递</Tag>}
             </Descriptions.Item>
           </Descriptions>
-          {!onBack && analyzeButton}
+        </Card>
+      ) : (
+        <div style={{ display: "flex", justifyContent: "flex-end", flexShrink: 0 }}>
+          {analyzeButton}
         </div>
-      </Card>
+      )}
 
       {/* Analysis Content */}
       {analysisChecking ? (

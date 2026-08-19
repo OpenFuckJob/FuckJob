@@ -5,6 +5,7 @@ import type { MockInterviewQuestionReview } from "@/types/analysis";
 import type { JobDetail } from "@/types/job-detail";
 import { MockInterviewHome } from "./MockInterviewHome";
 import { buildInterviewJobContext } from "./MockInterviewSetup";
+import { fetchJobDescriptionText } from "@/lib/job-description";
 import { MockInterviewPanel } from "./MockInterviewPanel";
 import { MockInterviewReportPage } from "./MockInterviewReportPage";
 import { MockInterviewSetupPage } from "./MockInterviewSetupPage";
@@ -85,13 +86,18 @@ function ResumeOptimizerPage({ config, onOpenLlmConfig, pendingInterviewJob, onP
   // 从岗位管理带岗位过来时直接进配置页，岗位信息已经填好，用户只需要挑面试参数
   useEffect(() => {
     if (!pendingInterviewJob) return;
-    setSettings({
-      ...DEFAULT_INTERVIEW_SETTINGS,
-      selectedJobId: pendingInterviewJob.id,
-      jobTitle: pendingInterviewJob.title.trim(),
-      companyName: pendingInterviewJob.company_name.trim(),
-      jobContext: buildInterviewJobContext(pendingInterviewJob),
-    });
+    // JD 要先经后端清洗，取数是异步的；页面切换不等它，
+    // 岗位标题公司这些本地就有，用户可以立刻开始挑面试参数
+    const job = pendingInterviewJob;
+    void fetchJobDescriptionText(job.id).then((detail) =>
+      setSettings({
+        ...DEFAULT_INTERVIEW_SETTINGS,
+        selectedJobId: job.id,
+        jobTitle: job.title.trim(),
+        companyName: job.company_name.trim(),
+        jobContext: buildInterviewJobContext(job, detail),
+      }),
+    );
     setSetupFromJob(true);
     setPage({ name: "setup" });
     onPendingInterviewHandled?.();

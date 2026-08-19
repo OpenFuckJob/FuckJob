@@ -11,6 +11,7 @@ use crate::agent::prompts;
 use crate::agent::run::AgentTask;
 use crate::config::{AppRuntimeConfig, RegexRule};
 use crate::error::AppError;
+use crate::job_description;
 use crate::llm::template;
 use crate::llm::JobSemanticMatch;
 use crate::rpa::common::RpaJob;
@@ -106,7 +107,7 @@ impl AgentTask for ReplyDecisionTask<'_> {
                 .map(|message| message.text.clone())
                 .unwrap_or_default(),
             "job_description": job
-                .map(|job| clip(&job.detail, LONG_TEXT_LIMIT))
+                .map(|job| clip(&job_description::clean_text(&job.detail, &job.platform), LONG_TEXT_LIMIT))
                 .unwrap_or_default(),
             "job_content": job
                 .map(|job| format!("{}｜{}｜{}", job.title, job.company_name, job.salary))
@@ -182,6 +183,10 @@ impl<'a> GreetTask<'a> {
     pub fn new(config: &'a AppRuntimeConfig, job: &'a RpaJob) -> Self {
         Self { config, job }
     }
+
+    fn job_description(&self) -> String {
+        job_description::clean_text(&self.job.detail, self.job.platform.as_str())
+    }
 }
 
 impl AgentTask for GreetTask<'_> {
@@ -205,7 +210,7 @@ impl AgentTask for GreetTask<'_> {
     fn params(&self) -> Result<Value, AppError> {
         let mut params = json!({
             "job_content": serde_json::to_string(self.job).unwrap_or_default(),
-            "job_description": clip(&self.job.detail, LONG_TEXT_LIMIT),
+            "job_description": clip(&self.job_description(), LONG_TEXT_LIMIT),
             "resume": resume_text(self.config),
             "resume_context": resume_text(self.config),
         });
@@ -275,6 +280,10 @@ impl<'a> JobMatchTask<'a> {
     pub fn new(config: &'a AppRuntimeConfig, job: &'a RpaJob) -> Self {
         Self { config, job }
     }
+
+    fn job_description(&self) -> String {
+        job_description::clean_text(&self.job.detail, self.job.platform.as_str())
+    }
 }
 
 impl AgentTask for JobMatchTask<'_> {
@@ -307,7 +316,7 @@ impl AgentTask for JobMatchTask<'_> {
             "job": {
                 "title": self.job.title,
                 "company": self.job.company_name,
-                "description": clip(&self.job.detail, LONG_TEXT_LIMIT),
+                "description": clip(&self.job_description(), LONG_TEXT_LIMIT),
             },
             "resume": resume_text(self.config),
         });

@@ -34,8 +34,15 @@ describe("mock interview job selection", () => {
   });
 
   it("builds interview context from the selected job", () => {
-    expect(buildInterviewJobContext(job())).toContain(
+    // JD 由调用方从后端取清洗后的正文传进来，不再直接读 job.detail
+    expect(buildInterviewJobContext(job(), "负责 Agent 平台研发")).toContain(
       "岗位：Agent 开发工程师\n公司：示例科技\n薪资：20-30K\n地点：南京\nJD：\n负责 Agent 平台研发",
     );
+  });
+
+  it("没取到岗位描述时只拼元信息，不留空的 JD 段", () => {
+    const context = buildInterviewJobContext(job(), "   ");
+    expect(context).toContain("岗位：Agent 开发工程师");
+    expect(context).not.toContain("JD：");
   });
 });

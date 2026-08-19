@@ -204,3 +204,362 @@
     opacity: 1;
   }
 }
+
+/* ── 岗位详情 ── */
+.job-brief {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  --jd-border: #e8ecf2;
+  --jd-muted: #64748b;
+  --jd-ink: #0f172a;
+}
+
+.brief-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--jd-border);
+}
+
+.brief-head-main {
+  min-width: 0;
+}
+
+.job-brief .brief-title {
+  margin: 0 0 6px;
+  color: var(--jd-ink);
+  line-height: 1.35;
+}
+
+.brief-subtitle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  color: var(--jd-muted);
+  font-size: 13px;
+}
+
+.brief-company {
+  color: #334155;
+  font-weight: 600;
+}
+
+.brief-dot {
+  color: #cbd5e1;
+}
+
+.brief-head-side {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.brief-salary {
+  color: #f97316;
+  font-size: 19px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.brief-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.brief-badges .ant-tag {
+  margin: 0;
+}
+
+/* 时间线这类字段横排铺开，比 Descriptions 的两列更省纵向空间 */
+.brief-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 28px;
+}
+
+.brief-meta-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.brief-meta-label {
+  color: #94a3b8;
+}
+
+.brief-meta-value {
+  color: #475569;
+  font-variant-numeric: tabular-nums;
+}
+
+.brief-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.brief-chip {
+  padding: 1px 8px;
+  border-radius: 6px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 11.5px;
+}
+
+.brief-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* 左侧色条按小节语义变色，长 JD 里能快速定位到「要求」那一段 */
+.brief-section {
+  padding: 12px 14px 12px 16px;
+  border-left: 3px solid #cbd5e1;
+  border-radius: 0 12px 12px 0;
+  background: #f8fafc;
+}
+
+.brief-section.is-duty {
+  border-left-color: #1677ff;
+}
+
+.brief-section.is-require {
+  border-left-color: #f97316;
+}
+
+.brief-section.is-bonus {
+  border-left-color: #10b981;
+}
+
+.brief-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  color: var(--jd-ink);
+  font-size: 13.5px;
+  font-weight: 650;
+}
+
+.brief-section.is-duty .brief-section-title .anticon {
+  color: #1677ff;
+}
+
+.brief-section.is-require .brief-section-title .anticon {
+  color: #f97316;
+}
+
+.brief-section.is-bonus .brief-section-title .anticon {
+  color: #10b981;
+}
+
+.brief-section-list {
+  margin: 0;
+  padding-left: 20px;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.9;
+}
+
+.brief-section-list li::marker {
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
+}
+
+.brief-empty {
+  padding: 32px 0;
+}
+
+.brief-extra {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--jd-border);
+}
+
+.brief-extra-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--jd-muted);
+  font-size: 12.5px;
+}
+
+.brief-extra-item .anticon {
+  color: #94a3b8;
+}
+
+.brief-status {
+  margin: 0;
+  font-size: 11px;
+}
+
+.brief-raw-text {
+  max-height: 320px;
+  margin: 4px 0 0;
+  padding: 12px;
+  border-radius: 10px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.8;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+/* ── 沟通记录 ── */
+.chat-placeholder {
+  display: grid;
+  place-items: center;
+  padding: 60px 0;
+}
+
+.chat-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.chat-legend .ant-tag {
+  margin: 0;
+  font-size: 11px;
+}
+
+.chat-legend-company {
+  margin-left: auto;
+  overflow: hidden;
+  color: #94a3b8;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 56vh;
+  padding-right: 4px;
+  overflow-y: auto;
+}
+
+.chat-day {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+/* 日期两侧各拉一条细线，把长会话按天切开 */
+.chat-day::before,
+.chat-day::after {
+  flex: 1;
+  height: 1px;
+  background: #eef2f7;
+  content: "";
+}
+
+.chat-system {
+  align-self: center;
+  max-width: 80%;
+  padding: 3px 12px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #94a3b8;
+  font-size: 11.5px;
+  text-align: center;
+}
+
+/* 对方在左、我方在右：只靠 row-reverse 翻转，两侧共用同一套结构 */
+.chat-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.chat-row.is-mine {
+  flex-direction: row-reverse;
+}
+
+.chat-avatar {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  place-items: center;
+}
+
+.chat-row.is-peer .chat-avatar {
+  background: #94a3b8;
+}
+
+.chat-row.is-mine .chat-avatar {
+  background: #1677ff;
+}
+
+.chat-bubble-wrap {
+  display: flex;
+  max-width: 74%;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.chat-row.is-mine .chat-bubble-wrap {
+  align-items: flex-end;
+}
+
+.chat-sender {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+.chat-row.is-mine .chat-sender {
+  flex-direction: row-reverse;
+}
+
+.chat-time {
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-bubble {
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.chat-row.is-peer .chat-bubble {
+  border-bottom-left-radius: 4px;
+  background: #f1f5f9;
+  color: #334155;
+}
+
+.chat-row.is-mine .chat-bubble {
+  border-bottom-right-radius: 4px;
+  background: #1677ff;
+  color: #ffffff;
+}

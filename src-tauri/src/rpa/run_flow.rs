@@ -82,6 +82,14 @@ pub enum PlatformKind {
 }
 
 impl PlatformKind {
+    /// 落库与解析规则里用的平台标识，与 `JobDetail.platform` 保持一致
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PlatformKind::Boss => "boss",
+            PlatformKind::Liepin => "liepin",
+        }
+    }
+
     pub fn login_message(self) -> &'static str {
         match self {
             PlatformKind::Boss => "请使用 BOSS 直聘 App 扫码登录",

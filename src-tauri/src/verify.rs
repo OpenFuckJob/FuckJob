@@ -42,12 +42,26 @@ fn first_keyword_match(text: &str, keywords: &[String]) -> Option<String> {
         .find(|keyword| text.contains(keyword))
 }
 
+/// 参与匹配的岗位描述。
+///
+/// 用清洗后的正文而不是抓取原文：反爬注入的随机类名（`.HsDyPBbi{...}`）和
+/// 开头粘成一坨的技能标签都会参与 `contains`，让「排除 Java」这类规则
+/// 命中一堆不相干的岗位。规则匹配的应该是人看到的那份文本
+fn description_text(job: &RpaJob) -> String {
+    crate::job_description::clean_text(&job.detail, job.platform.as_str())
+}
+
 fn regex_target_text(job: &RpaJob, target: &MatchTarget) -> String {
     match target {
         MatchTarget::Title => job.title.clone(),
         MatchTarget::Company => job.company_name.clone(),
-        MatchTarget::Description => job.detail.clone(),
-        MatchTarget::All => format!("{}\n{}\n{}", job.title, job.company_name, job.detail),
+        MatchTarget::Description => description_text(job),
+        MatchTarget::All => format!(
+            "{}\n{}\n{}",
+            job.title,
+            job.company_name,
+            description_text(job)
+        ),
     }
 }
 

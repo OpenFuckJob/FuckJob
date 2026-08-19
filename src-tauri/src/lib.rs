@@ -6,6 +6,7 @@ pub mod config;
 pub mod credential;
 pub mod dao;
 pub mod error;
+pub mod job_description;
 pub mod llm;
 pub mod logger;
 pub mod rpa;
@@ -64,6 +65,7 @@ pub fn run() {
             command::job::job_query,
             command::job::job_analyze,
             command::job::job_analyze_batch,
+            command::job::job_description_view,
             command::job::chat_messages_by_job,
             command::communicated_jobs::job_collect_communicated,
             command::manual_review::manual_review_list,
