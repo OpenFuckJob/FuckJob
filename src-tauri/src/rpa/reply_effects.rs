@@ -92,7 +92,10 @@ pub async fn wait_before_reply(
     let elapsed_ms = context
         .last_received()
         .map(|message| chrono::Local::now().timestamp_millis() - message.time);
-    let seconds = polling::humanize_delay_seconds_now(polling_config, elapsed_ms);
+    let seconds = stretch_by_persona(polling::humanize_delay_seconds_now(
+        polling_config,
+        elapsed_ms,
+    ));
     if seconds == 0 {
         return true;
     }
@@ -106,4 +109,15 @@ pub async fn wait_before_reply(
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
     true
+}
+
+/// 按当日人格的节奏系数拉长等待。
+///
+/// 这里刻意只放大、不缩短：用户在轮询配置里设的等待区间是他要求的下限，
+/// 拟人化可以让今天的自己回得更慢一些，但没有资格替他回得更快
+fn stretch_by_persona(seconds: u64) -> u64 {
+    match crate::rpa::humanize::current_persona() {
+        Some(persona) => ((seconds as f64) * persona.pace.max(1.0)).round() as u64,
+        None => seconds,
+    }
 }

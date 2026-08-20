@@ -102,6 +102,7 @@ pub fn default_app_config() -> AppRuntimeConfig {
         analysis_config: AnalysisConfig::default(),
         reply_polling_config: ReplyPollingConfig::default(),
         periodic_delivery_config: PeriodicDeliveryConfig::default(),
+        humanize_config: HumanizeConfig::default(),
         browser_config: BrowserConfig {
             user_data_dir: "".to_string(),
             chrome_exe_path: None,
@@ -193,25 +194,33 @@ pub fn load_app_config_inner(app_handle: tauri::AppHandle) -> Result<AppRuntimeC
     Ok(config)
 }
 
+/// 保存并返回落盘后的配置，细节见 [`save_app_config_unlocked`]
 pub fn save_app_config_inner(
     app_handle: tauri::AppHandle,
     config: AppRuntimeConfig,
-) -> Result<(), AppError> {
+) -> Result<AppRuntimeConfig, AppError> {
     let _permit = read_lock();
     save_app_config_unlocked(app_handle, config)
 }
 
+/// 保存并返回**落盘后的**配置。
+///
+/// 返回规整结果而不是 `()`：`validate_and_normalize` 会做迁移、夹取上下界、
+/// 补生成人格种子，落盘的内容和调用方提交的那份并不相同。不把它交回去，
+/// 前端手里就一直是提交前的旧值，下次保存又原样提交一遍——对夹取类字段只是
+/// 显示不同步，对人格种子则是每保存一次就换一套人格，「稳定随机」直接失效
 pub(crate) fn save_app_config_unlocked(
     app_handle: tauri::AppHandle,
     mut config: AppRuntimeConfig,
-) -> Result<(), AppError> {
+) -> Result<AppRuntimeConfig, AppError> {
     let path = config_path(&app_handle)?;
     validate_and_normalize(&mut config).map_err(AppError::validation)?;
     config.schema_version = CURRENT_SCHEMA_VERSION;
     let content = serde_yaml::to_string(&config).map_err(|error| {
         AppError::configuration("无法序列化应用配置").with_detail(error.to_string())
     })?;
-    atomic_write(&path, content.as_bytes())
+    atomic_write(&path, content.as_bytes())?;
+    Ok(config)
 }
 
 fn read_config_file(path: &Path) -> Result<AppRuntimeConfig, AppError> {
@@ -398,6 +407,7 @@ pub fn validate_and_normalize(config: &mut AppRuntimeConfig) -> Result<(), Strin
     normalize_llm_fallbacks(&mut config.llm_fallbacks)?;
     normalize_analysis_config(&mut config.analysis_config);
     config.periodic_delivery_config.migrate_legacy_window();
+    config.humanize_config.ensure_seed();
     normalize_job_profiles(config)?;
     config.browser_config.max_parallel_tasks = config
         .browser_config
@@ -465,6 +475,10 @@ fn normalize_llm_retry_config(retry: &mut LlmRetryConfig) {
     retry.retry_base_delay_ms = retry
         .retry_base_delay_ms
         .clamp(MIN_RETRY_BASE_DELAY_MS, MAX_RETRY_BASE_DELAY_MS);
+    retry.request_timeout_seconds = retry.request_timeout_seconds.clamp(
+        MIN_LLM_REQUEST_TIMEOUT_SECONDS,
+        MAX_LLM_REQUEST_TIMEOUT_SECONDS,
+    );
 }
 
 /// 标识只允许字母、数字、下划线和连字符：它会被拼进 keyring 条目名，
@@ -614,6 +628,10 @@ pub struct AppRuntimeConfig {
     /// 周期投递的默认参数。启动任务时把它当初值带进弹窗，改动只对那次任务生效
     #[serde(default)]
     pub periodic_delivery_config: PeriodicDeliveryConfig,
+
+    /// 拟人化。和轮询节奏一样是全局运行行为，不随求职方案变化
+    #[serde(default)]
+    pub humanize_config: HumanizeConfig,
 
     /// 浏览器运行配置
     pub browser_config: BrowserConfig,
@@ -809,6 +827,10 @@ pub struct LlmRetryConfig {
     /// 首次重试前的等待毫秒数，之后按指数退避
     #[serde(default = "default_retry_base_delay_ms")]
     pub retry_base_delay_ms: u64,
+
+    /// 单次大模型请求的超时时间（秒）
+    #[serde(default = "default_request_timeout_seconds")]
+    pub request_timeout_seconds: u64,
 }
 
 fn default_network_retry_attempts() -> u32 {
@@ -819,11 +841,16 @@ fn default_retry_base_delay_ms() -> u64 {
     500
 }
 
+fn default_request_timeout_seconds() -> u64 {
+    120
+}
+
 impl Default for LlmRetryConfig {
     fn default() -> Self {
         Self {
             network_retry_attempts: default_network_retry_attempts(),
             retry_base_delay_ms: default_retry_base_delay_ms(),
+            request_timeout_seconds: default_request_timeout_seconds(),
         }
     }
 }
@@ -833,6 +860,9 @@ pub const MAX_NETWORK_RETRY_ATTEMPTS: u32 = 5;
 /// 重试等待时长的允许区间（毫秒）
 pub const MIN_RETRY_BASE_DELAY_MS: u64 = 100;
 pub const MAX_RETRY_BASE_DELAY_MS: u64 = 10_000;
+/// 单次大模型请求超时的允许区间（秒）
+pub const MIN_LLM_REQUEST_TIMEOUT_SECONDS: u64 = 1;
+pub const MAX_LLM_REQUEST_TIMEOUT_SECONDS: u64 = 600;
 
 /// 降级链中的一环，屏蔽「主用配置」与「备用条目」之间的结构差异。
 /// 调用方只需按顺序遍历，不必关心某一环来自哪张表。
@@ -1425,6 +1455,79 @@ fn default_max_round_minutes() -> u64 {
 }
 
 // ================================
+// 拟人化
+//
+// 平台风控看的不是单次动作像不像人，而是长期模式：每条投递都隔 4 秒、每轮都正好
+// 30 条、每天投满同样的量——单看每一步都合法，连起来是一条没有呼吸的直线。
+//
+// 所以这里刻意不新开一套节奏参数，而是给既有的「单轮上限 / 投递间隔 / 轮询抖动」
+// 蒙上一层扰动：用户设的 30 条仍是那个量级，但今天可能 26 条、明天 33 条，中途
+// 还会停下来歇几分钟。用户调的是意图，拟人化调的是把意图落成动作的方式
+// ================================
+
+/// 拟人化强度。只决定扰动幅度，不引入新的数值参数——
+/// 具体的休息阈值、停顿长度、打字速度全部由当日人格从既有配置派生
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HumanizeIntensity {
+    /// 轻度：只在既有节奏上小幅抖动，几乎不牺牲产出
+    Light,
+    /// 标准：投几十条歇一会儿、偶尔跳过一个岗位，产出降一到两成
+    #[default]
+    Standard,
+    /// 谨慎：休息更频繁更久、跳过更多、动作更慢，产出明显下降
+    Cautious,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HumanizeConfig {
+    /// 总开关。关掉后所有节奏与输入行为与改造前完全一致
+    #[serde(default)]
+    pub enabled: bool,
+
+    #[serde(default)]
+    pub intensity: HumanizeIntensity,
+
+    /// 人格种子，0 表示还没生成过。
+    ///
+    /// 首次启用时随机生成一次就固定下来，之后每天再由它派生出当天的具体策略。
+    /// 每次启动都重新掷一次的话，「这台机器有自己的操作习惯」这件事就不成立了——
+    /// 而真人的手速、休息习惯是长期稳定、日间微调的
+    #[serde(default)]
+    pub persona_seed: u64,
+}
+
+impl HumanizeConfig {
+    /// 启用却还没有种子时补一个。
+    ///
+    /// 关闭状态下不生成：种子一旦落盘就代表一个确定的人格，用户只是没开功能，
+    /// 不该在配置文件里先留下一个将来会被沿用的身份
+    fn ensure_seed(&mut self) {
+        if !self.enabled {
+            return;
+        }
+        // 超界的种子只能来自手改配置或旧数据。留着它等于让 JSON 往返去改写它，
+        // 那时人格会在某次保存后毫无征兆地整个换掉
+        if self.persona_seed == 0 || self.persona_seed >= PERSONA_SEED_LIMIT {
+            self.persona_seed = new_persona_seed();
+        }
+    }
+}
+
+/// 人格种子的取值上界（不含）。
+///
+/// 卡在 2^53 是因为配置要经 JSON 往返到前端再存回来，而 JS 的 Number 装不下
+/// 超过 2^53 的整数——超出部分会被静默改写。种子一旦被改写，人格每次保存配置
+/// 就换一套，「稳定随机」这件事直接失效，而且没有任何报错
+const PERSONA_SEED_LIMIT: u64 = 1 << 53;
+
+/// 掷一个非零的人格种子。0 是「未生成」的哨兵值，必须避开
+fn new_persona_seed() -> u64 {
+    use rand::Rng;
+    rand::thread_rng().gen_range(1..PERSONA_SEED_LIMIT)
+}
+
+// ================================
 // 岗位分析配置
 //
 // 一次分析就是一次完整的大模型调用，成本比筛选高一个量级，所以触发时机做成单选：
@@ -1751,6 +1854,81 @@ mod tests {
         );
         assert_eq!(config.periodic_delivery_config.interval_minutes, 30);
         assert_eq!(config.periodic_delivery_config.max_greets_per_round, 30);
+    }
+
+    /// 拟人化默认关着，且关着的时候不该在配置文件里留下一个人格身份
+    #[test]
+    fn humanize_is_off_by_default_and_stays_seedless() {
+        let mut config = default_app_config();
+
+        validate_and_normalize(&mut config).unwrap();
+
+        assert!(!config.humanize_config.enabled);
+        assert_eq!(config.humanize_config.persona_seed, 0);
+        assert_eq!(config.humanize_config.intensity, HumanizeIntensity::Standard);
+    }
+
+    /// 开启时补一个种子，之后每次保存都必须原样保留——种子变了，人格就换了
+    #[test]
+    fn enabling_humanize_mints_a_seed_once_and_then_keeps_it() {
+        let mut config = default_app_config();
+        config.humanize_config.enabled = true;
+
+        validate_and_normalize(&mut config).unwrap();
+        let minted = config.humanize_config.persona_seed;
+
+        assert_ne!(minted, 0);
+        validate_and_normalize(&mut config).unwrap();
+        assert_eq!(config.humanize_config.persona_seed, minted);
+    }
+
+    /// 种子要经 JSON 往返到前端再存回来，超过 2^53 会被 JS 的 Number 静默改写。
+    /// 那意味着人格在某次保存配置后毫无征兆地整个换掉
+    #[test]
+    fn a_minted_seed_survives_a_json_round_trip_intact() {
+        for _ in 0..64 {
+            let mut config = default_app_config();
+            config.humanize_config.enabled = true;
+            validate_and_normalize(&mut config).unwrap();
+            let minted = config.humanize_config.persona_seed;
+
+            let encoded = serde_json::to_string(&config.humanize_config).unwrap();
+            let decoded: HumanizeConfig = serde_json::from_str(&encoded).unwrap();
+            // JS 侧的 Number 往返：超界的值会在这一步被改写
+            let through_js = encoded.parse::<f64>().ok();
+
+            assert_eq!(decoded.persona_seed, minted);
+            assert!(minted < (1u64 << 53), "种子超界：{minted}");
+            assert!(through_js.is_none() || minted as f64 as u64 == minted);
+        }
+    }
+
+    /// 手改配置或旧数据可能留下超界的种子，必须当场换掉而不是带着它跑
+    #[test]
+    fn an_out_of_range_seed_is_replaced_instead_of_kept() {
+        let mut config = default_app_config();
+        config.humanize_config.enabled = true;
+        config.humanize_config.persona_seed = u64::MAX;
+
+        validate_and_normalize(&mut config).unwrap();
+
+        assert!(config.humanize_config.persona_seed < (1u64 << 53));
+        assert_ne!(config.humanize_config.persona_seed, 0);
+    }
+
+    /// 旧配置整块没有 humanize_config，读出来必须是「关闭」而不是解析失败
+    #[test]
+    fn a_config_without_the_humanize_block_falls_back_to_disabled() {
+        let mut value = serde_yaml::to_value(default_app_config()).unwrap();
+        value
+            .as_mapping_mut()
+            .unwrap()
+            .remove(serde_yaml::Value::String("humanize_config".into()));
+
+        let config = parse_config_content(&serde_yaml::to_string(&value).unwrap()).unwrap();
+
+        assert_eq!(config.humanize_config, HumanizeConfig::default());
+        assert!(!config.humanize_config.enabled);
     }
 
     /// 老配置里投递时段是 `window_start_minute`/`window_end_minute` 两个标量。
@@ -2570,6 +2748,7 @@ job_profiles: []
         config.llm_retry_config = LlmRetryConfig {
             network_retry_attempts: 99,
             retry_base_delay_ms: 1,
+            request_timeout_seconds: 9_999,
         };
 
         validate_and_normalize(&mut config).unwrap();
@@ -2581,6 +2760,10 @@ job_profiles: []
         assert_eq!(
             config.llm_retry_config.retry_base_delay_ms,
             MIN_RETRY_BASE_DELAY_MS
+        );
+        assert_eq!(
+            config.llm_retry_config.request_timeout_seconds,
+            MAX_LLM_REQUEST_TIMEOUT_SECONDS
         );
 
         config.llm_retry_config.retry_base_delay_ms = 999_999;

@@ -28,9 +28,9 @@ export function commandErrorMessage(
   return error?.message || fallback;
 }
 
-export function unwrap<T>(result: CommandResult<T>): T {
+export function unwrap<T>(result: CommandResult<T>, fallback?: string): T {
   if (!result.success || result.data === null) {
-    throw new Error(commandErrorMessage(result.error));
+    throw new Error(commandErrorMessage(result.error, fallback));
   }
   return result.data;
 }

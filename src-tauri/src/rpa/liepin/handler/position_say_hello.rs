@@ -12,6 +12,7 @@ use crate::{
         common::{upload_image_to_file_input, RpaJob},
         conversation::SendVerdict,
         greet::build_greet_resources,
+        human_pace::GreetPacer,
         liepin::LIEPIN_SITE_URL,
         run_flow::is_job_task_stop_requested,
         schedule::{BudgetVerdict, RoundBudget},
@@ -61,6 +62,9 @@ pub async fn position_say_hello_on_page(
     ))?;
 
     let mut seen_job_ids: HashSet<String> = HashSet::new();
+    // 休息节奏从用户设的单轮上限派生。拟人化关着时它是个空壳，
+    // 停顿仍是改造前那段固定间隔
+    let mut pacer = GreetPacer::new(&config.humanize_config, budget.max_greets);
 
     logger::info(format!("正在打开猎聘职位搜索页: {}", search_url))?;
     page.get(&search_url)?;
@@ -124,6 +128,13 @@ pub async fn position_say_hello_on_page(
                 stats.skipped_rule += 1;
                 continue;
             }
+            // 「每个符合条件的岗位都投」是人做不到的事。放在语义复核之前，
+            // 跳过的岗位不烧模型额度
+            if pacer.should_skim() {
+                stats.skipped_humanize += 1;
+                logger::info(format!("拟人化跳过本岗位：{}", job.title))?;
+                continue;
+            }
 
             logger::info(format!(
                 "猎聘处理岗位：{} - {}",
@@ -160,10 +171,11 @@ pub async fn position_say_hello_on_page(
                 AnalysisTrigger::FilterPassed,
                 &config,
             );
-            match greet_job(connection, job.clone(), config.clone()).await {
+            let greeted = match greet_job(connection, job.clone(), config.clone()).await {
                 Ok(false) => {
                     stats.skipped_hold += 1;
                     consecutive_greet_failures = 0;
+                    false
                 }
                 Ok(true) => {
                     stats.greeted += 1;
@@ -171,6 +183,7 @@ pub async fn position_say_hello_on_page(
                     consecutive_greet_failures = 0;
                     processed_job_ids.insert(format!("liepin:{}", job.platform_job_id));
                     processed_job_ids.insert(job.platform_job_id.clone());
+                    true
                 }
                 Err(error) => {
                     stats.greet_failed += 1;
@@ -178,11 +191,20 @@ pub async fn position_say_hello_on_page(
                     logger::warning(greet_failure_message(&job.title, &job.company_name, &error))?;
                     continue;
                 }
+            };
+            // 停顿、以及连投若干条之后的休息都在这里面。收到停止请求时立即收尾，
+            // 不能让用户等完一段十几分钟的休息
+            if !pacer.after_greet(greeted).await {
+                logger::info(stats.summary())?;
+                logger::info("猎聘求职任务已结束")?;
+                return Ok(());
             }
-            sleep_random_ms(2500, 4500);
         }
 
         logger::info(stats.summary())?;
+        if let Some(summary) = pacer.summary() {
+            logger::info(summary)?;
+        }
 
         if !scroll_next(page)? {
             logger::info("猎聘岗位列表已触底")?;
@@ -228,6 +250,8 @@ struct RoundStats {
     skipped_rule: u32,
     /// AI 语义复核未通过或失败
     skipped_ai: u32,
+    /// 被拟人化随机跳过（「只看不投」）
+    skipped_humanize: u32,
     /// 内容通过了复核，但发送前被闸门整轮拦下（例如模型判断不该投）
     skipped_hold: u32,
     greeted: u32,
@@ -237,13 +261,14 @@ struct RoundStats {
 impl RoundStats {
     fn summary(&self) -> String {
         format!(
-            "猎聘本页 {} 条岗位：打招呼成功 {} 条，失败 {} 条；已沟通跳过 {} 条，规则过滤跳过 {} 条，AI 复核跳过 {} 条，发送闸门拦下 {} 条",
+            "猎聘本页 {} 条岗位：打招呼成功 {} 条，失败 {} 条；已沟通跳过 {} 条，规则过滤跳过 {} 条，AI 复核跳过 {} 条，拟人化跳过 {} 条，发送闸门拦下 {} 条",
             self.scanned,
             self.greeted,
             self.greet_failed,
             self.skipped_processed,
             self.skipped_rule,
             self.skipped_ai,
+            self.skipped_humanize,
             self.skipped_hold
         )
     }
@@ -1570,6 +1595,7 @@ mod tests {
             skipped_processed: 28,
             skipped_rule: 8,
             skipped_ai: 3,
+            skipped_humanize: 2,
             skipped_hold: 4,
             greeted: 2,
             greet_failed: 1,
@@ -1583,6 +1609,8 @@ mod tests {
         assert!(summary.contains("已沟通跳过 28 条"));
         assert!(summary.contains("规则过滤跳过 8 条"));
         assert!(summary.contains("AI 复核跳过 3 条"));
+        // 拟人化跳过必须和「规则不匹配」分开记，否则用户会以为自己筛选条件写错了
+        assert!(summary.contains("拟人化跳过 2 条"));
         assert!(summary.contains("发送闸门拦下 4 条"));
     }
 

@@ -266,8 +266,20 @@ pub fn plan_state(plan: &PeriodicPlan, now: DateTime<Local>) -> PeriodicState {
 /// 取「间隔到期」「窗口关闭」「任务结束」三者中最早的一个：窗口一关就该停下，
 /// 哪怕间隔还没走完；结束时刻同理
 pub fn next_delivery_at(plan: &PeriodicPlan, now: DateTime<Local>) -> DateTime<Local> {
-    let mut target =
-        now + ChronoDuration::minutes(plan.interval_minutes.min(i64::MAX as u64) as i64);
+    next_delivery_at_after(plan, now, plan.interval_minutes)
+}
+
+/// 同 [`next_delivery_at`]，但间隔由调用方给。
+///
+/// 拟人化会把用户设的间隔往上抖一点，抖出来的值只对这一轮有效，不能写回计划——
+/// 计划是任务入队时固定下来的快照，改了它下一轮就会在抖过的值上再抖一次，
+/// 几轮之后间隔会滚成一个离谱的数
+pub fn next_delivery_at_after(
+    plan: &PeriodicPlan,
+    now: DateTime<Local>,
+    interval_minutes: u64,
+) -> DateTime<Local> {
+    let mut target = now + ChronoDuration::minutes(interval_minutes.min(i64::MAX as u64) as i64);
     if let Some(close_at) = current_windows_close(&plan.windows, now) {
         target = target.min(close_at);
     }
@@ -674,6 +686,25 @@ mod tests {
         let now = local(2026, 8, 19, 17, 0);
 
         assert_eq!(next_delivery_at(&plan, now), local(2026, 8, 19, 18, 0));
+    }
+
+    /// 拟人化抖过的间隔只作用于这一轮，窗口与结束时刻照样把它压回来
+    #[test]
+    fn an_overridden_interval_is_still_capped_by_the_window_and_deadline() {
+        let plan = PeriodicPlan {
+            windows: vec![window(9 * 60, 18 * 60)],
+            ..PeriodicPlan::every(30)
+        };
+        let now = local(2026, 8, 19, 10, 0);
+
+        assert_eq!(
+            next_delivery_at_after(&plan, now, 37),
+            local(2026, 8, 19, 10, 37)
+        );
+        assert_eq!(
+            next_delivery_at_after(&plan, local(2026, 8, 19, 17, 50), 37),
+            local(2026, 8, 19, 18, 0)
+        );
     }
 
     #[test]

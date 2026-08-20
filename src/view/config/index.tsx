@@ -42,11 +42,13 @@ import {
   AnalysisTrigger,
   ReplyPollingConfig,
   PeriodicDeliveryConfig,
+  HumanizeConfig,
   DEFAULT_PERIODIC_DELIVERY_CONFIG,
   getAnalysisConfig,
   getJobProfiles,
   getReplyPollingConfig,
   getPeriodicDeliveryConfig,
+  getHumanizeConfig,
   DEFAULT_AUTO_REPLY_WINDOW_HOURS,
   DEFAULT_MAX_AUTO_REPLIES,
   DEFAULT_MAX_REPLY_CHARS,
@@ -65,6 +67,7 @@ import {
 } from "@/components/SettingField";
 import ReplyPollingSection from "./ReplyPollingSection";
 import PeriodicDeliverySection from "./PeriodicDeliverySection";
+import HumanizeSection from "./HumanizeSection";
 import {
   jobTypeOptions,
   salaryOptions,
@@ -280,6 +283,7 @@ export interface ConfigPageProps {
   updateAnalysis: (next: Partial<AnalysisConfig>) => void;
   updatePolling: (next: Partial<ReplyPollingConfig>) => void;
   updatePeriodicDelivery: (next: Partial<PeriodicDeliveryConfig>) => void;
+  updateHumanize: (next: Partial<HumanizeConfig>) => void;
   updateBrowser: (next: Partial<BrowserConfig>) => void;
   updateResume: (next: Partial<ResumeConfig>) => void;
   updateRule: (index: number, next: Partial<RegexRule>) => void;
@@ -1159,6 +1163,12 @@ export function ConfigPage(props: ConfigPageProps) {
               onChange={props.updatePeriodicDelivery}
               resetTo={DEFAULT_PERIODIC_DELIVERY_CONFIG}
               resetLabel="恢复出厂默认"
+            />
+
+            {/* 紧跟周期投递：两者都在回答「怎么跑」，而不是「投什么」 */}
+            <HumanizeSection
+              config={getHumanizeConfig(props.config)}
+              onChange={props.updateHumanize}
             />
           </Space>
         );

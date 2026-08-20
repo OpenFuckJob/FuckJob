@@ -10,7 +10,7 @@ use rust_drission::{ChromiumPage, Page};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    boss, liepin, polling,
+    boss, humanize, liepin, polling,
     schedule::{self, PeriodicPlan, PeriodicState, RoundBudget},
 };
 use crate::{config::AppRuntimeConfig, logger};
@@ -653,6 +653,10 @@ async fn run_reply_round(
     target: &ReplyTarget<'_>,
     config: &AppRuntimeConfig,
 ) -> Result<(), anyhow::Error> {
+    // 回复同样要拟人：给 HR 打字这件事比投递更该像人，对面是个真人在看。
+    // 这里自己装而不是沿用投递那份——空闲期的回复跑在投递的节奏器之外，
+    // 独立轮询任务更是压根没有投递循环
+    let _persona = humanize::scoped_persona(humanize::Persona::today(&config.humanize_config, 0));
     match target {
         ReplyTarget::NewTab(platform) => execute_reply_unread(*platform, config).await,
         ReplyTarget::OwnedTab(main_tab, platform) => {
@@ -766,7 +770,7 @@ async fn periodic_job_hunting(
     config: &AppRuntimeConfig,
     plan: &PeriodicPlan,
 ) -> Result<(), anyhow::Error> {
-    let budget = RoundBudget::from_plan(plan);
+    let base_budget = RoundBudget::from_plan(plan);
     let mut consecutive_failures = 0u32;
     // 时段外每轮都播报一次「暂停中」会把日志刷满，只在刚进入暂停时说一次
     let mut pause_announced = false;
@@ -798,6 +802,14 @@ async fn periodic_job_hunting(
             }
             PeriodicState::Deliver => {
                 pause_announced = false;
+                // 每轮重新掷一次：用户设的 30 条是量级不是配额，每轮都精确停在
+                // 第 30 条、每次都隔整 30 分钟，这个「精确」本身就是机器特征。
+                // 抖动只作用于本轮，计划快照始终保持用户提交时的样子
+                let persona = humanize::Persona::today(&config.humanize_config, base_budget.max_greets);
+                let budget = match persona.as_ref() {
+                    Some(persona) => persona.shape_budget(base_budget, humanize::roll()),
+                    None => base_budget,
+                };
                 logger::info("开始执行本轮周期性投递")?;
                 let started = Instant::now();
                 match target.deliver(config, budget).await {
@@ -820,7 +832,14 @@ async fn periodic_job_hunting(
                     return Ok(());
                 }
 
-                let next_at = schedule::next_delivery_at(plan, Local::now());
+                // 间隔同样只向上抖：抖短了等于替用户提高投递密度，拟人化没这个资格
+                let interval = match persona.as_ref() {
+                    Some(persona) => {
+                        persona.shape_interval_minutes(plan.interval_minutes, humanize::roll())
+                    }
+                    None => plan.interval_minutes,
+                };
+                let next_at = schedule::next_delivery_at_after(plan, Local::now(), interval);
                 logger::info(format!(
                     "本轮投递用时 {} 分钟，下一轮 {} 开始，其间按轮询节奏检查未读",
                     started.elapsed().as_secs() / 60,

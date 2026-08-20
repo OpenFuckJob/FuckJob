@@ -17,7 +17,7 @@ const config: AppRuntimeConfig = {
   onboarding_completed: false,
   llm_config: null,
   llm_fallbacks: [],
-  llm_retry_config: { network_retry_attempts: 2, retry_base_delay_ms: 500 },
+  llm_retry_config: { network_retry_attempts: 2, retry_base_delay_ms: 500, request_timeout_seconds: 120 },
   job_filter_config: { query: null, city: null, job_type: 0, salary: 0, experience: [], dgree: [], industry: [], scale: [], stage: [], keywords: [], exclude_keywords: [], company_keywords: [], company_exclude_keywords: [], enable_semantic_filter: false, semantic_filter_intent: null, regex_rules: [] },
   platform_filter_config: { liepin: { dq: null, salary_code: null, pub_time: null, work_year_code: null, comp_tag: [] } },
   greet_config: { enable_llm: false, reply_prompt: null, default_template: [] },
@@ -58,8 +58,8 @@ describe("useAppConfig", () => {
   it("preserves newer edits made while an earlier version is being saved", async () => {
     vi.mocked(api.loadAppConfig).mockResolvedValue(config);
     let finishSave: (() => void) | undefined;
-    vi.mocked(api.saveAppConfig).mockImplementation(() => new Promise<void>((resolve) => {
-      finishSave = resolve;
+    vi.mocked(api.saveAppConfig).mockImplementation((submitted) => new Promise<AppRuntimeConfig>((resolve) => {
+      finishSave = () => resolve(submitted);
     }));
     const { result } = renderHook(() => useAppConfig());
     await waitFor(() => expect(result.current.config).not.toBeNull());
@@ -88,7 +88,7 @@ describe("useAppConfig", () => {
 
   it("applies an explicitly saved onboarding config to the live state", async () => {
     vi.mocked(api.loadAppConfig).mockResolvedValue(config);
-    vi.mocked(api.saveAppConfig).mockResolvedValue();
+    vi.mocked(api.saveAppConfig).mockImplementation(async (submitted) => submitted);
     const { result } = renderHook(() => useAppConfig());
     await waitFor(() => expect(result.current.config).not.toBeNull());
 
@@ -101,7 +101,7 @@ describe("useAppConfig", () => {
 
   it("reports save success and failure", async () => {
     vi.mocked(api.loadAppConfig).mockResolvedValue(config);
-    vi.mocked(api.saveAppConfig).mockResolvedValue();
+    vi.mocked(api.saveAppConfig).mockImplementation(async (submitted) => submitted);
     const { result } = renderHook(() => useAppConfig());
     await waitFor(() => expect(result.current.config).not.toBeNull());
     await act(() => result.current.save());
@@ -110,5 +110,30 @@ describe("useAppConfig", () => {
     await act(() => result.current.save());
     expect(result.current.status).toBe("error");
     expect(result.current.message).toBe("无法保存");
+  });
+
+  /**
+   * 后端在保存路径上会做迁移、夹取上下界、补生成拟人化的人格种子，落盘内容
+   * 和提交内容并不相同。拿提交的那份当已保存快照的话，下次保存又原样提交一遍——
+   * 对夹取类字段只是显示不同步，对人格种子则是每存一次换一套人格
+   */
+  it("adopts the normalized config the backend actually wrote", async () => {
+    vi.mocked(api.loadAppConfig).mockResolvedValue(config);
+    const normalized: AppRuntimeConfig = {
+      ...config,
+      humanize_config: { enabled: true, intensity: "standard", persona_seed: 8_123_456_789 },
+    };
+    vi.mocked(api.saveAppConfig).mockResolvedValue(normalized);
+    const { result } = renderHook(() => useAppConfig());
+    await waitFor(() => expect(result.current.config).not.toBeNull());
+
+    await act(() => result.current.save({
+      ...config,
+      humanize_config: { enabled: true, intensity: "standard", persona_seed: 0 },
+    }));
+
+    expect(result.current.config?.humanize_config?.persona_seed).toBe(8_123_456_789);
+    // 已保存快照也必须换成落盘的那份，否则界面立刻显示为「未保存」
+    expect(result.current.dirty).toBe(false);
   });
 });

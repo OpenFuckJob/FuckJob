@@ -96,12 +96,17 @@ export interface LlmRetryConfig {
   network_retry_attempts: number;
   /** 首次重试前的等待毫秒数，之后按指数退避 */
   retry_base_delay_ms: number;
+  /** 单次模型请求的超时时间（秒） */
+  request_timeout_seconds: number;
 }
 
 /** 与 Rust 侧 validate_and_normalize 保持一致的取值区间 */
 export const MAX_NETWORK_RETRY_ATTEMPTS = 5;
 export const MIN_RETRY_BASE_DELAY_MS = 100;
 export const MAX_RETRY_BASE_DELAY_MS = 10_000;
+export const DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS = 120;
+export const MIN_LLM_REQUEST_TIMEOUT_SECONDS = 1;
+export const MAX_LLM_REQUEST_TIMEOUT_SECONDS = 600;
 
 export type ReplayResourceType = "Text" | "Image" | "LLM";
 
@@ -317,6 +322,42 @@ export function hoursToWindows(hours: boolean[]): DailyWindow[] {
   return windows;
 }
 
+/**
+ * 拟人化强度。只决定扰动幅度，不引入新的数值参数——
+ * 休息阈值、停顿长度、打字速度全部由后端从既有配置派生。
+ */
+export type HumanizeIntensity = "light" | "standard" | "cautious";
+
+/**
+ * 拟人化。
+ *
+ * 平台风控看的不是单次动作像不像人，而是长期模式：每条投递都隔 4 秒、每轮都
+ * 正好 30 条——单看每一步都合法，连起来是一条没有呼吸的直线。开启后后端会给
+ * 既有的「单轮上限 / 投递间隔 / 停顿」蒙上一层扰动，用户设的量级不变。
+ */
+export interface HumanizeConfig {
+  enabled: boolean;
+  intensity: HumanizeIntensity;
+  /**
+   * 人格种子，由后端首次启用时生成。界面只读不改：改了等于换一个人，
+   * 当天已经形成的节奏会整个变掉。
+   *
+   * 后端刻意把它限制在 2^53 以内，这个字段才能安全地经 JSON 往返
+   */
+  persona_seed: number;
+}
+
+export const DEFAULT_HUMANIZE_CONFIG: HumanizeConfig = {
+  enabled: false,
+  intensity: "standard",
+  persona_seed: 0,
+};
+
+/** 读取拟人化配置，旧配置缺这块时回落到「关闭」。 */
+export function getHumanizeConfig(config: Pick<AppRuntimeConfig, "humanize_config">): HumanizeConfig {
+  return { ...DEFAULT_HUMANIZE_CONFIG, ...(config.humanize_config ?? {}) };
+}
+
 export interface BrowserConfig {
   user_data_dir: string;
   chrome_exe_path: string | null;
@@ -362,6 +403,8 @@ export interface AppRuntimeConfig {
   reply_polling_config?: ReplyPollingConfig;
   /** 旧配置没有这块，读取时请使用 getPeriodicDeliveryConfig 兜底 */
   periodic_delivery_config?: PeriodicDeliveryConfig;
+  /** 旧配置没有这块，读取时请使用 getHumanizeConfig 兜底 */
+  humanize_config?: HumanizeConfig;
   browser_config: BrowserConfig;
   resume_config: ResumeConfig;
   /** 旧配置/测试 mock 可能暂时不包含这两个字段，读取时请使用 getJobProfiles。 */
