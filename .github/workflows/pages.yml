@@ -7,6 +7,7 @@ on:
     paths:
       - "site/**"
       - "docs/images/**"
+      - "docs/user/**"
       - ".github/workflows/pages.yml"
 
   workflow_dispatch:
@@ -46,12 +47,19 @@ jobs:
           rm -rf dist
 
           mkdir -p dist/docs/images
+          mkdir -p dist/docs/user/images
 
           # 首页
           cp site/index.html dist/index.html
 
+          # 使用教程
+          cp site/guide.html dist/guide.html
+
           # 图片资源
           cp -r docs/images/* dist/docs/images/
+
+          # 教程截图
+          cp -r docs/user/images/* dist/docs/user/images/
 
 
       # 配置 GitHub Pages
