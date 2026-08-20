@@ -34,7 +34,6 @@ import {
   isValidLlmConfig,
   moveFallback,
   promoteFallbackToPrimary,
-  shouldFetchLlmModels,
 } from "./LlmConfigPanel";
 
 describe("LLM presets", () => {
@@ -69,30 +68,6 @@ describe("LLM config validation", () => {
     expect(isValidLlmConfig({ ...openAiConfig, base_url: "  " })).toBe(false);
     expect(isValidLlmConfig({ ...openAiConfig, model: "  " })).toBe(false);
     expect(isValidLlmConfig(null)).toBe(false);
-  });
-});
-
-describe("LLM model list loading", () => {
-  it("requires an explicit user action and saved key for key-based providers", () => {
-    const config = {
-      provider: "deepseek" as const,
-      base_url: "https://api.deepseek.com",
-      model: "",
-    };
-
-    expect(shouldFetchLlmModels(config, false, false)).toBe(false);
-    expect(shouldFetchLlmModels(config, true, false)).toBe(false);
-    expect(shouldFetchLlmModels(config, true, true)).toBe(true);
-  });
-
-  it("allows local Ollama model loading without a saved key", () => {
-    const config = {
-      provider: "ollama" as const,
-      base_url: "http://127.0.0.1:11434",
-      model: "",
-    };
-
-    expect(shouldFetchLlmModels(config, false, true)).toBe(true);
   });
 });
 
@@ -214,11 +189,13 @@ function Harness({
   initialFallbacks = [],
   onFallbacks,
   onRetry,
+  dirty,
 }: {
   initialConfig?: LlmConfig;
   initialFallbacks?: LlmProviderEntry[];
   onFallbacks?: (next: LlmProviderEntry[]) => void;
   onRetry?: (next: LlmRetryConfig) => void;
+  dirty?: boolean;
 }) {
   const [config, setConfig] = useState<LlmConfig | null>(initialConfig);
   const [enabled, setEnabled] = useState(true);
@@ -244,6 +221,7 @@ function Harness({
         onRetry?.(next);
         setRetry(next);
       }}
+      dirty={dirty}
     />
   );
 }
@@ -300,6 +278,57 @@ describe("LlmConfigPanel 降级链界面", () => {
     expect(vi.mocked(invoke)).toHaveBeenCalledWith("list_llm_models", {
       provider: "openai",
       baseUrl: "https://api.openai.com/v1",
+    });
+  });
+
+  it("编辑模型名不触发任何模型列表请求", async () => {
+    render(<Harness initialConfig={{ ...primaryConfig, model: "" }} />);
+
+    const model = await screen.findByLabelText("primary 模型");
+    // 展开下拉、逐字输入，都不该打网络：模型名以手动输入为准，列表只由按钮拉取
+    fireEvent.mouseDown(model);
+    fireEvent.focus(model);
+    for (const value of ["m", "my", "my-own-model"]) {
+      fireEvent.change(model, { target: { value } });
+    }
+
+    expect(model).toHaveValue("my-own-model");
+    expect(vi.mocked(invoke).mock.calls.map(([command]) => command)).not.toContain("list_llm_models");
+    expect(screen.queryByText(/请先填写 API Key/)).not.toBeInTheDocument();
+  });
+
+  it("尚未保存的备用服务按界面草稿取模型列表，不再要求先保存配置", async () => {
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "list_llm_credential_status") {
+        return Promise.resolve({
+          success: true,
+          data: [
+            { entry_id: PRIMARY_LLM_ENTRY_ID, configured: true, source: "keychain" },
+            { entry_id: "backup-a", configured: true, source: "keychain" },
+          ],
+          error: null,
+        });
+      }
+      if (command === "list_llm_models_for") {
+        return Promise.resolve({ success: true, data: ["deepseek-chat"], error: null });
+      }
+      return Promise.resolve({ success: true, data: { configured: true, source: "keychain" }, error: null });
+    });
+
+    // dirty 表示整份配置还没落盘：备用服务模型名为空时它根本保存不了，
+    // 这正是「取模型要先保存、保存要先有模型」死锁发生的场景
+    render(<Harness dirty initialFallbacks={[fallbackEntry("backup-a", "")]} />);
+
+    // 「备用 1」同时出现在折叠面板标题和无障碍标注里，点标题所在的 header 展开
+    const [title] = await screen.findAllByText("备用 1");
+    fireEvent.click(title.closest(".ant-collapse-header") as HTMLElement);
+    fireEvent.click(await screen.findByRole("button", { name: "刷新backup-a模型列表" }));
+
+    await waitFor(() => expect(screen.getByLabelText("backup-a 模型")).toHaveValue("deepseek-chat"));
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("list_llm_models_for", {
+      entryId: "backup-a",
+      provider: "deepseek",
+      baseUrl: "https://api.deepseek.com",
     });
   });
 

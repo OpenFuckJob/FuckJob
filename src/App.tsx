@@ -58,18 +58,14 @@ function MainShell({ config, update, save, status, message, dirty, importConfig,
     analysis_config: getAnalysisConfig(activeProfile),
   }), [activeProfile, config, profiles]);
 
-  // 大模型和备用服务允许先创建草稿，再通过「获取模型」补齐模型名。
-  // 草稿不完整时暂不触发自动保存，避免后端的完整配置校验把配置页置为错误状态；
-  // 等地址和模型都齐全后，下一次编辑会正常落盘。
-  const hasIncompleteLlmDraft = Boolean(
-    (config.llm_config && (!config.llm_config.base_url.trim() || !config.llm_config.model.trim()))
-      || config.llm_fallbacks.some((entry) => !entry.base_url.trim() || !entry.model.trim()),
-  );
+  // 填了一半的大模型服务也照常落盘：它只是草稿，后端不会拿它去发起调用。
+  // 曾经这里要拦下不完整的草稿，是因为后端拒绝保存——那反过来卡死了配置页，
+  // 模型名要拉列表才知道，拉列表又得先把这份配置连同密钥存好。
   useEffect(() => {
-    if (!dirty || status === "loading" || status === "error" || hasIncompleteLlmDraft) return;
+    if (!dirty || status === "loading" || status === "error") return;
     const timer = window.setTimeout(() => { void save(); }, 700);
     return () => window.clearTimeout(timer);
-  }, [dirty, hasIncompleteLlmDraft, save, status]);
+  }, [dirty, save, status]);
 
   const navigate = (next: AppTabKey) => setActiveTab(next);
   const openConversation = (jobId: string) => { setFocusJobId(jobId); setActiveTab("job-data"); };

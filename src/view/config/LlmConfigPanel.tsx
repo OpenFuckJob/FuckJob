@@ -20,6 +20,7 @@ import {
   MIN_RETRY_BASE_DELAY_MS,
   MIN_LLM_REQUEST_TIMEOUT_SECONDS,
   PRIMARY_LLM_ENTRY_ID,
+  isLlmServiceUsable,
   type LlmConfig,
   type LlmProviderEntry,
   type LlmProviderPreset,
@@ -59,16 +60,7 @@ export const LLM_PRESETS: Record<LlmProviderPreset, { label: string; baseUrl: st
 type LlmServiceFields = Pick<LlmConfig, "provider" | "base_url" | "model">;
 
 const resultError = (error: CommandError | null, fallback: string) => error ? `[${error.code}] ${error.message}` : fallback;
-export const isValidLlmConfig = (value: LlmServiceFields | null) => Boolean(value?.base_url.trim() && value.model.trim());
-export const shouldFetchLlmModels = (
-  config: LlmServiceFields | null,
-  credentialConfigured: boolean,
-  userRequested: boolean,
-) => Boolean(
-  userRequested &&
-    config?.base_url.trim() &&
-    (!LLM_PRESETS[config.provider].requiresKey || credentialConfigured),
-);
+export const isValidLlmConfig = (value: LlmServiceFields | null) => isLlmServiceUsable(value);
 
 /**
  * 条目标识会被拼进系统凭据库的条目名，Rust 侧只接受字母、数字、下划线和连字符，
@@ -285,7 +277,7 @@ export function LlmConfigPanel({
       if (result.success && status) {
         setCredentials((current) => ({ ...current, [entryId]: status }));
         changeApiKey(entryId, "");
-        if (showSuccess) showFeedback("success", "凭据已保存", "凭据已安全保存，可展开模型列表获取模型");
+        if (showSuccess) showFeedback("success", "凭据已保存", "凭据已安全保存，可以点「获取模型」拉取模型列表了");
         return true;
       }
       showFeedback("error", "保存凭据失败", resultError(result.error, "保存凭据失败"));
@@ -305,46 +297,43 @@ export function LlmConfigPanel({
     } else showFeedback("error", "清除凭据失败", resultError(result.error, "清除凭据失败"));
   };
 
-  const fetchModels = async (entryId: string, showSuccess = false) => {
+  /**
+   * 拉取模型列表填充下拉备选项。
+   *
+   * 只由「获取模型」按钮触发。模型名以手动输入为准，列表只是省去打字的辅助，
+   * 所以编辑输入框、展开下拉都不该发请求——那会在用户逐字输入模型名时反复打网络。
+   */
+  const loadModels = async (entryId: string) => {
     const service = serviceOf(entryId);
     if (!service) return;
-    if (!service.base_url.trim()) { showFeedback("error", "获取模型列表失败", "请先填写服务地址"); return; }
+    const baseUrl = service.base_url.trim();
+    if (!baseUrl) { showFeedback("error", "获取模型列表失败", "请先填写服务地址"); return; }
 
-    // 首次配置时模型尚未落盘，但用户可能已经在当前表单输入了 API Key。
-    // 先把这份草稿密钥保存到系统凭据库，再请求模型列表，避免「保存配置要模型、
-    // 获取模型要密钥」互相等待。这里使用返回值而不是依赖异步更新后的 state。
-    let credentialConfigured = Boolean(credentials[entryId]?.configured);
+    // 用户可能刚在输入框里填了 Key 还没点保存。先把这份草稿密钥落盘再取列表，
+    // 否则要么取不到，要么悄悄用了上一把旧密钥。这里用返回值判断，不等 state 更新。
     if (LLM_PRESETS[service.provider].requiresKey) {
       const pendingKey = (apiKeys[entryId] ?? "").trim();
       if (pendingKey) {
-        // 即使已有环境变量或旧凭据，用户刚输入的替换 Key 也必须先落盘，
-        // 否则刷新模型列表仍会悄悄使用旧密钥。
         if (!await storeKey(entryId, false)) return;
-        credentialConfigured = true;
-      } else if (!credentialConfigured) {
-        showFeedback("info", "获取模型列表", "请先填写 API Key。填写后点击获取模型会自动保存并继续获取。");
+      } else if (!credentials[entryId]?.configured) {
+        showFeedback("info", "获取模型列表", "请先填写 API Key，或直接在输入框里手动填写模型名称。");
         return;
       }
     }
-    if (!shouldFetchLlmModels(service, credentialConfigured, true)) {
-      showFeedback("info", "获取模型列表", "请先填写服务地址后再获取模型");
-      return;
-    }
-    // 备用服务的模型列表读的是已落盘的配置，草稿状态下拉取到的会是旧内容
-    if (entryId !== PRIMARY_LLM_ENTRY_ID && dirty) {
-      showFeedback("info", "获取模型列表", "备用服务的模型列表读取的是已保存的配置，请等待自动保存完成后再获取");
-      return;
-    }
+
     setModelsLoadingId(entryId);
     try {
+      // 一律按界面上的当前值取列表，不读已落盘的配置：
+      // 用户刚改完地址就想看新服务有哪些模型，这时磁盘上还是旧的那份。
+      const draft = { provider: service.provider, base_url: baseUrl };
       const result = entryId === PRIMARY_LLM_ENTRY_ID
-        ? await listLlmModels({ provider: service.provider, base_url: service.base_url.trim() })
-        : await listLlmModelsFor(entryId);
+        ? await listLlmModels(draft)
+        : await listLlmModelsFor(entryId, draft);
       if (result.success && result.data) {
         const list = result.data;
         setModels((current) => ({ ...current, [entryId]: list }));
         if (!service.model.trim() && list[0]) patchEntry(entryId, { model: list[0] });
-        if (showSuccess) showFeedback("success", "模型列表已更新", `已获取 ${list.length} 个模型`);
+        showFeedback("success", "模型列表已更新", `已获取 ${list.length} 个模型`);
       } else {
         clearModels(entryId);
         showFeedback("error", "获取模型列表失败", resultError(result.error, "获取模型列表失败"));
@@ -497,20 +486,20 @@ export function LlmConfigPanel({
           aria-label={`${entryId} 模型`}
           value={service.model}
           options={entryModels.map((model) => ({ value: model, label: model }))}
-          placeholder="自动获取或手动输入模型名称"
+          placeholder="直接输入模型名称，或点右侧按钮获取"
           onChange={(model) => patchEntry(entryId, { model })}
-          onOpenChange={(open) => {
-            if (open && !loadingModels && entryModels.length === 0) void fetchModels(entryId);
-          }}
           filterOption={(input, option) => String(option?.value ?? "").toLowerCase().includes(input.toLowerCase())}
         />
         <Button
+          className="shrink-0"
           aria-label={`刷新${entryId}模型列表`}
-          title="刷新模型列表"
+          title="从服务获取可用模型列表"
           loading={loadingModels}
           icon={<ReloadOutlined />}
-          onClick={() => void fetchModels(entryId, true)}
-        />
+          onClick={() => void loadModels(entryId)}
+        >
+          获取模型
+        </Button>
       </div>
     );
   };
@@ -646,6 +635,15 @@ export function LlmConfigPanel({
                 />
               </Form.Item>
               {renderCredentialFields(PRIMARY_LLM_ENTRY_ID)}
+              {!isLlmServiceUsable(config) && (
+                <Alert
+                  className="mt-3"
+                  type="info"
+                  showIcon
+                  message="补齐服务地址和模型后，大模型才会启用"
+                  description="当前填写的内容会照常保存，随时可以回来接着配。模型名可以直接输入，也可以点「获取模型」从服务拉取。"
+                />
+              )}
             </section>
 
             {chainEnabled && (
@@ -680,8 +678,11 @@ export function LlmConfigPanel({
                             <Typography.Text strong className="min-w-0 flex-1 truncate">
                               {fallbackTitle(entry, index)}
                             </Typography.Text>
-                            <Tag color={entry.enabled ? undefined : "red"} className="!mr-0">
-                              {entry.enabled ? "备用" : "已停用"}
+                            <Tag
+                              color={!entry.enabled ? "red" : isLlmServiceUsable(entry) ? undefined : "orange"}
+                              className="!mr-0"
+                            >
+                              {!entry.enabled ? "已停用" : isLlmServiceUsable(entry) ? "备用" : "未填完"}
                             </Tag>
                             <span className="sr-only">备用 {index + 1}</span>
                           </div>
@@ -726,13 +727,13 @@ export function LlmConfigPanel({
 
                 <div className="px-4 pb-4 md:px-5">
                   <Button block type="dashed" icon={<PlusOutlined />} onClick={addFallback}>添加备用服务</Button>
-                  {chain.some((entry) => !entry.base_url.trim() || !entry.model.trim()) && (
+                  {chain.some((entry) => !isLlmServiceUsable(entry)) && (
                     <Alert
                       className="mt-3"
                       type="warning"
                       showIcon
                       message="有备用服务尚未填写完整"
-                      description="服务地址和模型名称都填写后配置才能保存。"
+                      description="缺服务地址或模型名的备用服务会照常保存，但不会参与降级，补齐后自动生效。"
                     />
                   )}
                 </div>

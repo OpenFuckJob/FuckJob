@@ -428,14 +428,11 @@ pub fn validate_and_normalize(config: &mut AppRuntimeConfig) -> Result<(), Strin
         return Ok(());
     };
 
+    // 只做规整，不因为「还没填完」拒绝落盘：
+    // 配置页要靠已保存的密钥去拉模型列表，拒绝保存会让用户永远填不完这份配置。
+    // 未填完的服务由 `llm_active` / `llm_chain` 挡在调用之外。
     llm_config.base_url = llm_config.base_url.trim().trim_end_matches('/').to_string();
     llm_config.model = llm_config.model.trim().to_string();
-    if llm_config.base_url.is_empty() {
-        return Err("大模型地址不能为空".to_string());
-    }
-    if llm_config.model.is_empty() {
-        return Err("模型名称不能为空".to_string());
-    }
     Ok(())
 }
 
@@ -513,10 +510,12 @@ fn normalize_llm_fallbacks(fallbacks: &mut Vec<LlmProviderEntry>) -> Result<(), 
             .map(str::to_string);
     }
 
-    // 界面上新增一行后还没来得及填写就保存，属于常见操作，静默丢弃即可；
-    // 填了一半才是真的配置错误，必须挡下来提醒用户。
+    // 界面上新增一行后还没来得及填写就保存，属于常见操作，静默丢弃即可
     fallbacks.retain(|entry| !(entry.base_url.is_empty() && entry.model.is_empty()));
 
+    // 只校验标识——它决定密钥存放在哪个 keyring 条目，错了会读写到别人的密钥。
+    // 地址和模型名填了一半不算错误：那只是还没编辑完的草稿，
+    // 由 `LlmProviderEntry::is_usable` 决定它进不进降级链。
     let mut seen_ids: HashSet<&str> = HashSet::new();
     for entry in fallbacks.iter() {
         if !is_valid_entry_id(&entry.id) {
@@ -529,12 +528,6 @@ fn normalize_llm_fallbacks(fallbacks: &mut Vec<LlmProviderEntry>) -> Result<(), 
         }
         if !seen_ids.insert(entry.id.as_str()) {
             return Err(format!("备用大模型服务标识重复：{}", entry.id));
-        }
-        if entry.base_url.is_empty() {
-            return Err("备用大模型服务的地址不能为空".to_string());
-        }
-        if entry.model.is_empty() {
-            return Err("备用大模型服务的模型名称不能为空".to_string());
         }
     }
 
@@ -801,6 +794,21 @@ pub struct LlmConfig {
     pub model: String,
 }
 
+/// 一个大模型服务是否填写完整、可以真正发起调用。
+///
+/// 配置页允许存在填了一半的服务：模型名要从服务端拉列表才知道，而拉列表得先存密钥，
+/// 密钥又跟着这份配置一起落盘——若要求「填完才准保存」，这三者就会互相等待。
+/// 因此校验放宽为「可以存」，能不能用改由这里判断，未填完的服务不会进入降级链。
+fn service_is_usable(base_url: &str, model: &str) -> bool {
+    !base_url.trim().is_empty() && !model.trim().is_empty()
+}
+
+impl LlmConfig {
+    pub fn is_usable(&self) -> bool {
+        service_is_usable(&self.base_url, &self.model)
+    }
+}
+
 /// 主用服务在降级链中的保留标识。它的 API Key 仍存放在旧的 keyring 条目里，
 /// 这样老用户升级后无需重新填写密钥。
 pub const PRIMARY_LLM_ENTRY_ID: &str = "primary";
@@ -825,6 +833,12 @@ pub struct LlmProviderEntry {
     /// 是否参与降级链。关闭后保留配置但不再被调用
     #[serde(default = "default_true")]
     pub enabled: bool,
+}
+
+impl LlmProviderEntry {
+    pub fn is_usable(&self) -> bool {
+        service_is_usable(&self.base_url, &self.model)
+    }
 }
 
 fn default_true() -> bool {
@@ -912,9 +926,14 @@ impl AppRuntimeConfig {
 
     /// 主用大模型是否当前可用。
     ///
-    /// 旧配置没有 `llm_enabled` 时默认视为启用；如果根本没配置主用服务，则始终不可用。
+    /// 旧配置没有 `llm_enabled` 时默认视为启用；没配置主用服务、
+    /// 或者服务还没填完（缺地址或模型名）时都不可用。
     pub fn llm_active(&self) -> bool {
-        self.llm_config.is_some() && self.llm_enabled.unwrap_or(true)
+        self.llm_enabled.unwrap_or(true)
+            && self
+                .llm_config
+                .as_ref()
+                .is_some_and(|primary| primary.is_usable())
     }
 
     /// 按稳定标识查找方案；未传标识时使用默认方案。
@@ -954,7 +973,8 @@ impl AppRuntimeConfig {
         chain.extend(
             self.llm_fallbacks
                 .iter()
-                .filter(|entry| entry.enabled)
+                // 填了一半的备用服务只是草稿，允许保存但不参与调用
+                .filter(|entry| entry.enabled && entry.is_usable())
                 .map(|entry| LlmChainLink {
                     id: entry.id.clone(),
                     label: entry.label.clone(),
@@ -1838,8 +1858,12 @@ mod tests {
         assert_eq!(llm.model, "qwen3");
     }
 
+    /// 没填完的主用服务能存下来，但不会被拿去调用。
+    ///
+    /// 反过来做——拒绝保存——会把配置页锁死：模型名要拉列表才知道，
+    /// 拉列表得先存好密钥，密钥又跟这份配置一起落盘。
     #[test]
-    fn invalid_non_null_llm_config_is_rejected() {
+    fn incomplete_primary_llm_config_is_saved_but_stays_inactive() {
         for (base_url, model) in [
             ("", "qwen3"),
             ("   ", "qwen3"),
@@ -1853,8 +1877,11 @@ mod tests {
                 model: model.to_string(),
             });
 
-            assert!(validate_and_normalize(&mut config).is_err());
+            validate_and_normalize(&mut config).unwrap();
+
             assert!(config.llm_config.is_some());
+            assert!(!config.llm_active());
+            assert!(config.llm_chain().is_empty());
         }
     }
 
@@ -2837,20 +2864,35 @@ job_profiles: []
         assert_eq!(config.browser_config.max_parallel_tasks, MIN_PARALLEL_TASKS);
     }
 
+    /// 全空的行是「加了一行还没填」，直接丢弃；填了一半的是编辑到一半的草稿，
+    /// 要留住，但不能进降级链——否则运行时会拿着空模型名去发请求。
     #[test]
-    fn blank_fallback_rows_are_dropped_but_half_filled_rows_are_rejected() {
+    fn blank_fallback_rows_are_dropped_and_half_filled_rows_are_kept_out_of_the_chain() {
         let mut config = default_app_config();
+        config.llm_config = Some(LlmConfig {
+            provider: LlmProviderPreset::OpenAi,
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4o".to_string(),
+        });
         let mut blank = fallback_entry("backup-blank", "");
         blank.base_url = "   ".to_string();
-        config.llm_fallbacks = vec![blank, fallback_entry("backup-a", "qwen-max")];
+        config.llm_fallbacks = vec![
+            blank,
+            fallback_entry("backup-half", ""),
+            fallback_entry("backup-a", "qwen-max"),
+        ];
 
         validate_and_normalize(&mut config).unwrap();
-        assert_eq!(config.llm_fallbacks.len(), 1);
-        assert_eq!(config.llm_fallbacks[0].id, "backup-a");
 
-        config.llm_fallbacks = vec![fallback_entry("backup-a", "")];
-        let error = validate_and_normalize(&mut config).unwrap_err();
-        assert!(error.contains("模型名称不能为空"));
+        let ids: Vec<&str> = config
+            .llm_fallbacks
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["backup-half", "backup-a"]);
+
+        let chain_ids: Vec<String> = config.llm_chain().into_iter().map(|link| link.id).collect();
+        assert_eq!(chain_ids, vec![PRIMARY_LLM_ENTRY_ID, "backup-a"]);
     }
 
     #[test]

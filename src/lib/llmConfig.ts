@@ -9,7 +9,7 @@ export const listLlmModels = (config: Pick<LlmConfig, 'provider' | 'base_url'>) 
 export const testLlmConnection = () => invoke<LlmCommandResult<LlmConnectionReport>>('test_llm_connection')
 
 // 以下命令按降级链条目标识读写：密钥独立存储，互不覆盖。
-// 注意 test_llm_entry_connection / list_llm_models_for 读的是已落盘的配置，
+// 注意 test_llm_entry_connection 读的是已落盘的配置，
 // 界面上必须先保存再调用，否则会拿到与当前编辑内容不一致的结果。
 export const getLlmCredentialStatusFor = (entryId: string) => invoke<LlmCommandResult<LlmCredentialStatus>>('get_llm_credential_status_for', { entryId })
 export const setLlmApiKeyFor = (entryId: string, apiKey: string) => invoke<LlmCommandResult<LlmCredentialStatus>>('set_llm_api_key_for', { entryId, apiKey })
@@ -18,4 +18,11 @@ export const listLlmCredentialStatus = (entryIds: string[]) => invoke<LlmCommand
 // 密钥明文不允许离开 Rust，调整主用/备用顺序时的密钥对调只能整体交给后端完成
 export const swapLlmCredentials = (entryA: string, entryB: string) => invoke<LlmCommandResult<LlmEntryCredentialStatus[]>>('swap_llm_credentials', { entryA, entryB })
 export const testLlmEntryConnection = (entryId: string) => invoke<LlmCommandResult<LlmConnectionReport>>('test_llm_entry_connection', { entryId })
-export const listLlmModelsFor = (entryId: string) => invoke<LlmCommandResult<string[]>>('list_llm_models_for', { entryId })
+// 传入界面上正在编辑的 provider / base_url，未保存的备用服务也能取模型列表；
+// 省略时后端退回读已落盘的配置。密钥始终由后端按 entryId 解析。
+export const listLlmModelsFor = (entryId: string, draft?: Pick<LlmConfig, 'provider' | 'base_url'>) =>
+  invoke<LlmCommandResult<string[]>>('list_llm_models_for', {
+    entryId,
+    provider: draft?.provider ?? null,
+    baseUrl: draft?.base_url ?? null,
+  })

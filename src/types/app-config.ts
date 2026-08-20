@@ -423,7 +423,19 @@ export function getAnalysisConfig(
   return { ...DEFAULT_ANALYSIS_CONFIG, ...(source.analysis_config ?? {}) };
 }
 
-/** 是否已经保存过主用大模型配置。 */
+/**
+ * 一个大模型服务是否填写完整、可以真正发起调用。
+ *
+ * 配置页允许保存填了一半的服务（模型名要拉列表才知道，拉列表又得先存好密钥），
+ * 所以「存下来了」不等于「能用」。与 Rust 侧的 `service_is_usable` 保持一致。
+ */
+export function isLlmServiceUsable(
+  service: Pick<LlmConfig, "base_url" | "model"> | null | undefined,
+): boolean {
+  return Boolean(service?.base_url.trim() && service.model.trim());
+}
+
+/** 是否已经保存过主用大模型配置。填了一半也算，界面据此显示「继续配置」而不是「去配置」。 */
 export function isLlmConfigured(config: Pick<AppRuntimeConfig, "llm_config">): boolean {
   return config.llm_config !== null;
 }
@@ -431,12 +443,13 @@ export function isLlmConfigured(config: Pick<AppRuntimeConfig, "llm_config">): b
 /**
  * 主用大模型是否处于可用状态。
  *
- * 旧配置没有 `llm_enabled` 时默认按启用处理；如果根本没配置主用服务，则始终视为未启用。
+ * 旧配置没有 `llm_enabled` 时默认按启用处理；没配置主用服务、
+ * 或者服务还没填完时都视为不可用。
  */
 export function isLlmActive(
   config: Pick<AppRuntimeConfig, "llm_config" | "llm_enabled">,
 ): boolean {
-  return config.llm_config !== null && config.llm_enabled !== false;
+  return config.llm_enabled !== false && isLlmServiceUsable(config.llm_config);
 }
 
 /** 读取轮询节奏，旧配置缺这块时回落到默认节奏。 */
