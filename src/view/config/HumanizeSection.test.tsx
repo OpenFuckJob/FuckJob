@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import HumanizeSection, { describePersona } from "./HumanizeSection";
+import HumanizeSection from "./HumanizeSection";
 import {
   DEFAULT_HUMANIZE_CONFIG,
   type HumanizeConfig,
@@ -58,24 +58,19 @@ describe("HumanizeSection", () => {
     expect(screen.queryByRole("radio", { name: "轻度" })).toBeNull();
     expect(screen.queryByRole("radio", { name: "标准" })).toBeNull();
     expect(screen.queryByRole("radio", { name: "谨慎" })).toBeNull();
-    expect(screen.queryByText("拟人化已关闭，任务会按原有节奏执行。")).toBeNull();
-  });
-});
-
-describe("describePersona", () => {
-  it("describes disabled and not-yet-generated states", () => {
-    expect(describePersona(config())).toBe("拟人化已关闭，任务会按原有节奏执行。");
-    expect(describePersona(config({ enabled: true }))).toBe(
-      "启用后系统会生成一套专属的操作习惯，保存配置即生效。",
-    );
   });
 
-  it("describes a generated persona without exposing its seed", () => {
-    const description = describePersona(
-      config({ enabled: true, persona_seed: 123456 }),
+  it("每档只说清投递节奏和产出代价，不暴露人格种子", () => {
+    render(
+      <HumanizeSection
+        config={config({ enabled: true, persona_seed: 123456 })}
+        onChange={vi.fn()}
+      />,
     );
 
-    expect(description).toContain("系统已按你的专属编号生成一套操作习惯");
-    expect(description).not.toContain("123456");
+    expect(screen.getByText("节奏基本不变，产出几乎无损失")).toBeTruthy();
+    expect(screen.getByText("投一批歇几分钟，产出降一到两成")).toBeTruthy();
+    expect(screen.getByText("休息更久、动作更慢，产出明显下降")).toBeTruthy();
+    expect(screen.queryByText(/123456/)).toBeNull();
   });
 });
