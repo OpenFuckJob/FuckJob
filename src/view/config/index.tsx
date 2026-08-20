@@ -20,7 +20,6 @@ import {
   Modal,
   Tabs,
   Tag,
-  message as antdMessage,
 } from "antd";
 import {
   AppRuntimeConfig,
@@ -49,6 +48,8 @@ import {
   getReplyPollingConfig,
   getPeriodicDeliveryConfig,
   getHumanizeConfig,
+  isLlmActive,
+  isLlmConfigured,
   DEFAULT_AUTO_REPLY_WINDOW_HOURS,
   DEFAULT_MAX_AUTO_REPLIES,
   DEFAULT_MAX_REPLY_CHARS,
@@ -177,7 +178,8 @@ const REPLY_STRATEGY_OPTIONS: {
 ];
 
 function replyStrategyOf(config: ReplayConfig): ReplyStrategy {
-  if (config.enable_llm && config.enable_template_reply) return "template_first";
+  if (config.enable_llm && config.enable_template_reply)
+    return "template_first";
   if (config.enable_llm) return "llm";
   if (config.enable_template_reply) return "template";
   return "off";
@@ -255,6 +257,7 @@ export interface ConfigPageProps {
   onOpenLlmConfig: () => void;
   updateLlm: (next: AppRuntimeConfig["llm_config"]) => void;
   persistLlm: (next: AppRuntimeConfig["llm_config"]) => Promise<boolean>;
+  updateLlmEnabled: (next: AppRuntimeConfig["llm_enabled"]) => void;
   updateLlmFallbacks: (next: AppRuntimeConfig["llm_fallbacks"]) => void;
   updateLlmRetryConfig: (next: AppRuntimeConfig["llm_retry_config"]) => void;
   persistConfig: () => Promise<boolean>;
@@ -296,7 +299,9 @@ export interface ConfigPageProps {
   onSelectProfile: (id: string) => void;
   onCreateProfile: (meta: Pick<JobProfile, "name" | "description">) => void;
   onDuplicateProfile: () => void;
-  onUpdateProfileMeta: (next: Partial<Pick<JobProfile, "name" | "description">>) => void;
+  onUpdateProfileMeta: (
+    next: Partial<Pick<JobProfile, "name" | "description">>,
+  ) => void;
   onSetDefaultProfile: () => void;
   onArchiveProfile: () => void;
   onDeleteProfile: () => void;
@@ -351,23 +356,41 @@ type VisibleConfigGroup = (typeof configGroupKeys)[number];
 const toVisibleConfigGroup = (group?: ConfigGroup): VisibleConfigGroup =>
   configGroupKeys.includes(group as VisibleConfigGroup)
     ? (group as VisibleConfigGroup)
-    : "resume";
+    : "job";
 
 const menuItems = [
-  { type: "group" as const, label: "求职设置", children: [
-    { key: "profile", icon: <ProductOutlined />, label: "求职方案" },
-  ] },
-  { type: "group" as const, label: "系统能力", children: [
-    { key: "llm", icon: <RobotOutlined />, label: "大模型" },
-    { key: "browser", icon: <GlobalOutlined />, label: "浏览器环境" },
-  ] },
-  { type: "group" as const, label: "数据与应用", children: [
-    { key: "data", icon: <DatabaseOutlined />, label: "备份与设备共享" },
-    { key: "about", icon: <InfoCircleOutlined />, label: "软件与更新" },
-  ] },
+  {
+    type: "group" as const,
+    label: "求职设置",
+    children: [
+      { key: "profile", icon: <ProductOutlined />, label: "求职方案" },
+    ],
+  },
+  {
+    type: "group" as const,
+    label: "系统能力",
+    children: [
+      { key: "llm", icon: <RobotOutlined />, label: "大模型" },
+      { key: "browser", icon: <GlobalOutlined />, label: "浏览器环境" },
+    ],
+  },
+  {
+    type: "group" as const,
+    label: "数据与应用",
+    children: [
+      { key: "data", icon: <DatabaseOutlined />, label: "备份与设备共享" },
+      { key: "about", icon: <InfoCircleOutlined />, label: "软件与更新" },
+    ],
+  },
 ];
 
-const profileGroupKeys = ["job", "resume", "greet", "reply", "analysis"] as const;
+const profileGroupKeys = [
+  "job",
+  "resume",
+  "greet",
+  "reply",
+  "analysis",
+] as const;
 type ProfileGroup = (typeof profileGroupKeys)[number];
 const isProfileGroup = (group: VisibleConfigGroup): group is ProfileGroup =>
   profileGroupKeys.includes(group as ProfileGroup);
@@ -385,30 +408,62 @@ export function ConfigPage(props: ConfigPageProps) {
     toVisibleConfigGroup(props.initialGroup),
   );
   const [form] = Form.useForm();
+  const [noticeModal, noticeModalContextHolder] = Modal.useModal();
   const [browserEnvStatus, setBrowserEnvStatus] =
     useState<BrowserEnvStatus | null>(null);
   const [ruleRequirement, setRuleRequirement] = useState("");
   const [generatingRules, setGeneratingRules] = useState(false);
-  const [profileModalMode, setProfileModalMode] = useState<"create" | "edit" | null>(null);
-  const [profileDraft, setProfileDraft] = useState({ name: "", description: "" });
+  const [profileModalMode, setProfileModalMode] = useState<
+    "create" | "edit" | null
+  >(null);
+  const [profileDraft, setProfileDraft] = useState({
+    name: "",
+    description: "",
+  });
   const profiles = getJobProfiles(props.config);
-  const activeProfile = profiles.find((profile) => profile.id === props.activeProfileId)
-    ?? profiles[0];
-  const defaultProfileId = props.config.default_job_profile_id || profiles[0]?.id;
-  const canArchive = activeProfile.id !== defaultProfileId && !activeProfile.archived;
-  const canDelete = profiles.length > 1 && activeProfile.id !== defaultProfileId;
+  const activeProfile =
+    profiles.find((profile) => profile.id === props.activeProfileId) ??
+    profiles[0];
+  const defaultProfileId =
+    props.config.default_job_profile_id || profiles[0]?.id;
+  const canArchive =
+    activeProfile.id !== defaultProfileId && !activeProfile.archived;
+  const canDelete =
+    profiles.length > 1 && activeProfile.id !== defaultProfileId;
+  const llmConfigured = isLlmConfigured(props.config);
+  const llmActive = isLlmActive(props.config);
+
+  const showNotice = (
+    type: "success" | "error" | "info" | "warning",
+    title: string,
+    content: string,
+    width = 520,
+  ) => {
+    noticeModal[type]({
+      title,
+      content,
+      centered: true,
+      width,
+      okText: "知道了",
+    });
+  };
 
   const openProfileModal = (mode: "create" | "edit") => {
     setProfileModalMode(mode);
-    setProfileDraft(mode === "edit"
-      ? { name: activeProfile.name, description: activeProfile.description ?? "" }
-      : { name: "", description: "" });
+    setProfileDraft(
+      mode === "edit"
+        ? {
+            name: activeProfile.name,
+            description: activeProfile.description ?? "",
+          }
+        : { name: "", description: "" },
+    );
   };
 
   const saveProfileMeta = () => {
     const name = profileDraft.name.trim();
     if (!name) {
-      antdMessage.warning("请输入方案名称");
+      showNotice("warning", "方案名称不能为空", "请输入方案名称后再继续。");
       return;
     }
     const meta = { name, description: profileDraft.description.trim() || null };
@@ -424,7 +479,8 @@ export function ConfigPage(props: ConfigPageProps) {
     if (key === "archive") {
       Modal.confirm({
         title: "归档这张求职方案？",
-        content: "归档后不会出现在新任务的方案列表中，历史任务和会话仍可继续使用。",
+        content:
+          "归档后不会出现在新任务的方案列表中，历史任务和会话仍可继续使用。",
         okText: "确认归档",
         cancelText: "取消",
         onOk: props.onArchiveProfile,
@@ -459,10 +515,14 @@ export function ConfigPage(props: ConfigPageProps) {
   const generateJobFilterRules = async () => {
     const requirement = ruleRequirement.trim();
     if (!requirement) {
-      antdMessage.warning("请先描述岗位筛选需求");
+      showNotice(
+        "warning",
+        "请先描述岗位筛选需求",
+        "先输入岗位筛选需求，再生成高级规则。",
+      );
       return;
     }
-    if (!props.config.llm_config) {
+    if (!llmActive) {
       props.onOpenLlmConfig();
       return;
     }
@@ -478,9 +538,15 @@ export function ConfigPage(props: ConfigPageProps) {
       }
       props.addRules(result.data);
       setRuleRequirement("");
-      antdMessage.success(`已生成 ${result.data.length} 条规则，请检查后保存`);
+      showNotice(
+        "success",
+        "规则已生成",
+        `已生成 ${result.data.length} 条规则，请检查后保存。`,
+      );
     } catch (error) {
-      antdMessage.error(
+      showNotice(
+        "error",
+        "生成高级规则失败",
         error instanceof Error ? error.message : "生成高级规则失败",
       );
     } finally {
@@ -560,10 +626,9 @@ export function ConfigPage(props: ConfigPageProps) {
     { value: "LLM", label: "LLM" },
   ];
 
-  const greetTemplateHasLlm =
-    props.config.greet_config.default_template.some(
-      (resource) => resource.resource_type === "LLM",
-    );
+  const greetTemplateHasLlm = props.config.greet_config.default_template.some(
+    (resource) => resource.resource_type === "LLM",
+  );
 
   const addGreetLlmResource = () => props.addGreetDefaultResource("LLM");
 
@@ -621,7 +686,20 @@ export function ConfigPage(props: ConfigPageProps) {
       return;
     }
 
-    const loading = antdMessage.loading("正在解析 PDF 简历...", 0);
+    const loading = noticeModal.info({
+      title: "正在解析 PDF 简历...",
+      content: (
+        <Space align="start" size={8}>
+          <LoadingOutlined className="mt-1 text-sky-500" spin />
+          <span>请稍候，解析完成后会自动写回配置。</span>
+        </Space>
+      ),
+      centered: true,
+      okButtonProps: { style: { display: "none" } },
+      closable: false,
+      maskClosable: false,
+      keyboard: false,
+    });
     try {
       const result = await invoke<CommandResult<string>>("parse_resume_pdf", {
         path: selected,
@@ -640,13 +718,15 @@ export function ConfigPage(props: ConfigPageProps) {
         resume_path: selected,
         resume_content: result.data,
       });
-      antdMessage.success("简历解析完成");
+      showNotice("success", "简历解析完成", "简历已解析完成，内容已写回配置。");
     } catch (error: unknown) {
-      antdMessage.error(
+      showNotice(
+        "error",
+        "简历解析失败",
         error instanceof Error ? error.message : "简历解析失败",
       );
     } finally {
-      loading();
+      loading.destroy();
     }
   };
 
@@ -697,7 +777,11 @@ export function ConfigPage(props: ConfigPageProps) {
         return (
           <LlmConfigPanel
             config={props.config.llm_config}
+            enabled={llmActive}
             onChange={props.updateLlm}
+            onEnabledChange={(enabled) =>
+              props.updateLlmEnabled(enabled ? undefined : false)
+            }
             onPersist={props.persistLlm}
             onPersistAll={props.persistConfig}
             fallbacks={props.config.llm_fallbacks}
@@ -936,7 +1020,10 @@ export function ConfigPage(props: ConfigPageProps) {
               </Col>
             </Row>
 
-            <Card size="small" className="mt-4 border-violet-200! bg-violet-50/50!">
+            <Card
+              size="small"
+              className="mt-4 border-violet-200! bg-violet-50/50!"
+            >
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <Text strong>AI 岗位意图复核</Text>
@@ -945,7 +1032,9 @@ export function ConfigPage(props: ConfigPageProps) {
                   </div>
                 </div>
                 <Switch
-                  checked={props.config.job_filter_config.enable_semantic_filter}
+                  checked={
+                    props.config.job_filter_config.enable_semantic_filter
+                  }
                   onChange={(checked) =>
                     props.updateJobFilter({ enable_semantic_filter: checked })
                   }
@@ -957,9 +1046,11 @@ export function ConfigPage(props: ConfigPageProps) {
                   label="目标岗位要求"
                   name={["job_filter_config", "semantic_filter_intent"]}
                   extra={
-                    props.config.llm_config
+                    llmActive
                       ? "建议同时写清希望投递和明确排除的岗位方向。"
-                      : "尚未配置大模型，启动任务前会提示配置。"
+                      : llmConfigured
+                        ? "大模型当前已停用，启动任务前会提示先启用。"
+                        : "尚未配置大模型，启动任务前会提示配置。"
                   }
                 >
                   <Input.TextArea
@@ -1009,7 +1100,9 @@ export function ConfigPage(props: ConfigPageProps) {
                           <div className="mb-3">
                             <Input.TextArea
                               value={ruleRequirement}
-                              onChange={(event) => setRuleRequirement(event.target.value)}
+                              onChange={(event) =>
+                                setRuleRequirement(event.target.value)
+                              }
                               placeholder="例如：只看 Java 或 Golang 后端岗位，排除外包、驻场和保险公司"
                               autoSize={{ minRows: 2, maxRows: 5 }}
                               maxLength={1000}
@@ -1023,7 +1116,11 @@ export function ConfigPage(props: ConfigPageProps) {
                               loading={generatingRules}
                               onClick={() => void generateJobFilterRules()}
                             >
-                              {props.config.llm_config ? "生成规则" : "先配置大模型"}
+                              {llmActive
+                                ? "生成规则"
+                                : llmConfigured
+                                  ? "先启用大模型"
+                                  : "先配置大模型"}
                             </Button>
                           </div>
                         </div>
@@ -1187,8 +1284,14 @@ export function ConfigPage(props: ConfigPageProps) {
                 配置主动沟通的 LLM 与兜底话术
               </Text>
             </div>
-            <Divider className="!my-0 opacity-10" />
-            <AiFeatureGate configured={!!props.config.llm_config} onConfigure={props.onOpenLlmConfig}><></></AiFeatureGate>
+            
+            <AiFeatureGate
+              active={llmActive}
+              configured={llmConfigured}
+              onConfigure={props.onOpenLlmConfig}
+            >
+              <></>
+            </AiFeatureGate>
             <div className="space-y-6">
               <div className="rounded-2xl border border-slate-200/80 bg-white/85 p-6 space-y-5">
                 <div className="flex items-center justify-between gap-6">
@@ -1206,7 +1309,7 @@ export function ConfigPage(props: ConfigPageProps) {
                     className="!m-0"
                   >
                     <Switch
-                      disabled={!props.config.llm_config}
+                      disabled={!llmActive}
                       onChange={(v) => props.updateGreet({ enable_llm: v })}
                     />
                   </Form.Item>
@@ -1229,7 +1332,11 @@ export function ConfigPage(props: ConfigPageProps) {
                         className="font-mono text-sm"
                       />
                     </Form.Item>
-                    <PromptVariableGuide items={buildCommonPromptVariables(props.config.resume_config.inject_llm_context)} />
+                    <PromptVariableGuide
+                      items={buildCommonPromptVariables(
+                        props.config.resume_config.inject_llm_context,
+                      )}
+                    />
                   </div>
                 )}
               </div>
@@ -1331,7 +1438,9 @@ export function ConfigPage(props: ConfigPageProps) {
                               icon={<ArrowDownOutlined />}
                               disabled={
                                 index ===
-                                props.config.greet_config.default_template.length - 1
+                                props.config.greet_config.default_template
+                                  .length -
+                                  1
                               }
                               onClick={() =>
                                 props.moveGreetDefaultResource(index, 1)
@@ -1404,7 +1513,6 @@ export function ConfigPage(props: ConfigPageProps) {
         );
       case "analysis": {
         const analysis = getAnalysisConfig(props.config);
-        const llmConfigured = !!props.config.llm_config;
         return (
           <Space direction="vertical" size="large" className="w-full">
             <div>
@@ -1416,11 +1524,17 @@ export function ConfigPage(props: ConfigPageProps) {
                 岗位分析
               </Title>
               <Text className="text-slate-500 text-xs uppercase font-bold tracking-widest">
-                让 AI 自动评估岗位匹配度，不必逐个手动分析
+              配置 AI 自动评估岗位匹配度
               </Text>
             </div>
-            <Divider className="!my-0 opacity-10" />
-            <AiFeatureGate configured={llmConfigured} onConfigure={props.onOpenLlmConfig}><></></AiFeatureGate>
+            
+            <AiFeatureGate
+              active={llmActive}
+              configured={llmConfigured}
+              onConfigure={props.onOpenLlmConfig}
+            >
+              <></>
+            </AiFeatureGate>
 
             <div className="rounded-2xl border border-slate-200/80 bg-white/85 p-6 space-y-5">
               <div>
@@ -1433,7 +1547,9 @@ export function ConfigPage(props: ConfigPageProps) {
               <Radio.Group
                 value={analysis.trigger}
                 onChange={(e) =>
-                  props.updateAnalysis({ trigger: e.target.value as AnalysisTrigger })
+                  props.updateAnalysis({
+                    trigger: e.target.value as AnalysisTrigger,
+                  })
                 }
                 className="w-full"
               >
@@ -1442,7 +1558,7 @@ export function ConfigPage(props: ConfigPageProps) {
                     <Radio
                       key={option.value}
                       value={option.value}
-                      disabled={option.needsLlm && !llmConfigured}
+                      disabled={option.needsLlm && !llmActive}
                       className="items-start! rounded-xl border border-slate-200/80 px-4 py-3 m-0! hover:border-sky-300"
                     >
                       <Text className="text-slate-900 font-bold block">
@@ -1456,9 +1572,9 @@ export function ConfigPage(props: ConfigPageProps) {
                 </div>
               </Radio.Group>
 
-              {!llmConfigured && (
+              {!llmActive && (
                 <Text className="text-slate-400 text-xs block">
-                  自动分析需要先配置模型服务后才能选择。
+                  自动分析需要先启用模型服务后才能选择。
                 </Text>
               )}
             </div>
@@ -1466,7 +1582,9 @@ export function ConfigPage(props: ConfigPageProps) {
             {analysis.trigger !== "off" && (
               <div className="rounded-2xl border border-slate-200/80 bg-white/85 p-6 space-y-4">
                 <div>
-                  <Text className="text-slate-900 font-bold block">额度护栏</Text>
+                  <Text className="text-slate-900 font-bold block">
+                    额度护栏
+                  </Text>
                   <Text className="text-slate-500 text-xs">
                     一次分析就是一次完整的大模型调用，这两项决定它最多能花多少
                   </Text>
@@ -1536,7 +1654,6 @@ export function ConfigPage(props: ConfigPageProps) {
       }
       case "reply": {
         const replayStrategy = replyStrategyOf(props.config.replay_config);
-        const llmConfigured = !!props.config.llm_config;
         const usesLlmReply =
           replayStrategy === "llm" || replayStrategy === "template_first";
         const usesTemplateReply =
@@ -1555,49 +1672,65 @@ export function ConfigPage(props: ConfigPageProps) {
                 配置 HR 对话中的自动回复策略
               </Text>
             </div>
-            <Divider className="!my-0 opacity-10" />
-            <AiFeatureGate configured={!!props.config.llm_config} onConfigure={props.onOpenLlmConfig}><></></AiFeatureGate>
+            
+            <AiFeatureGate
+              active={llmActive}
+              configured={llmConfigured}
+              onConfigure={props.onOpenLlmConfig}
+            >
+              <></>
+            </AiFeatureGate>
             <div className="rounded-2xl border border-slate-200/80 bg-white/85 p-6 space-y-5">
               <div>
-                <Text className="text-slate-900 font-bold block">
-                  回复策略
-                </Text>
+                <Text className="text-slate-900 font-bold block">回复策略</Text>
                 <Text className="text-slate-500 text-xs">
                   未读会话按这里选定的方式处理，每条消息只会走其中一条路径
                 </Text>
               </div>
 
               <Radio.Group
+                aria-label="回复策略"
                 value={replayStrategy}
                 onChange={(e) =>
                   props.updateReplay(
                     REPLY_STRATEGY_FLAGS[e.target.value as ReplyStrategy],
                   )
                 }
-                className="w-full"
+                className="!block w-full"
               >
-                <div className="flex flex-col gap-2 w-full">
-                  {REPLY_STRATEGY_OPTIONS.map((option) => (
-                    <Radio
-                      key={option.value}
-                      value={option.value}
-                      disabled={option.needsLlm && !llmConfigured}
-                      className="items-start! rounded-xl border border-slate-200/80 px-4 py-3 m-0! hover:border-sky-300"
-                    >
-                      <Text className="text-slate-900 font-bold block">
-                        {option.label}
-                      </Text>
-                      <Text className="text-slate-500 text-xs">
-                        {option.description}
-                      </Text>
-                    </Radio>
-                  ))}
+                <div className="flex w-full flex-col gap-1.5">
+                  {REPLY_STRATEGY_OPTIONS.map((option) => {
+                    const selected = replayStrategy === option.value;
+                    const disabled = option.needsLlm && !llmActive;
+                    return (
+                      <Radio
+                        key={option.value}
+                        value={option.value}
+                        aria-label={option.label}
+                        disabled={disabled}
+                        className={`!m-0 !flex !w-full !items-center !gap-2 !rounded-lg !border !px-2.5 !py-2 transition-colors ${
+                          selected
+                            ? "!border-sky-400 !bg-sky-50/60"
+                            : "!border-slate-200 !bg-white hover:!border-sky-200 hover:!bg-slate-50/60"
+                        } ${disabled ? "!cursor-not-allowed !bg-slate-50/70" : ""}`}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <Text className="block text-sm font-semibold leading-5 text-slate-900">
+                            {option.label}
+                          </Text>
+                          <Text className="block text-xs leading-5 text-slate-500">
+                            {option.description}
+                          </Text>
+                        </div>
+                      </Radio>
+                    );
+                  })}
                 </div>
               </Radio.Group>
 
-              {!llmConfigured && (
+              {!llmActive && (
                 <Text className="text-slate-400 text-xs block">
-                  含 AI 的策略需要先配置模型服务后才能选择。
+                  含 AI 的策略需要先启用模型服务后才能选择。
                 </Text>
               )}
 
@@ -1641,7 +1774,11 @@ export function ConfigPage(props: ConfigPageProps) {
                       className="font-mono text-sm"
                     />
                   </Form.Item>
-                  <PromptVariableGuide items={buildReplyPromptVariables(props.config.resume_config.inject_llm_context)} />
+                  <PromptVariableGuide
+                    items={buildReplyPromptVariables(
+                      props.config.resume_config.inject_llm_context,
+                    )}
+                  />
 
                   <Form.Item
                     label="背景上下文"
@@ -1959,7 +2096,7 @@ export function ConfigPage(props: ConfigPageProps) {
                 配置自动化运行时所需的本地路径
               </Text>
             </div>
-            <Divider className="!my-0 opacity-10" />
+            
 
             {browserEnvStatus && (
               <>
@@ -1971,7 +2108,8 @@ export function ConfigPage(props: ConfigPageProps) {
                     message="浏览器已就绪"
                     description={
                       <span>
-                        已检测到 <strong>{browserEnvStatus.browser_name}</strong>，路径：
+                        已检测到{" "}
+                        <strong>{browserEnvStatus.browser_name}</strong>，路径：
                         <code className="text-xs bg-slate-100 px-1.5 py-0.5 rounded">
                           {browserEnvStatus.browser_path}
                         </code>
@@ -1987,7 +2125,8 @@ export function ConfigPage(props: ConfigPageProps) {
                     description={
                       <div className="space-y-2">
                         <p className="m-0">
-                          系统中未找到 Google Chrome 或 Microsoft Edge，请手动配置浏览器可执行文件路径。
+                          系统中未找到 Google Chrome 或 Microsoft
+                          Edge，请手动配置浏览器可执行文件路径。
                         </p>
                         <div className="rounded-lg bg-amber-50 p-3 border border-amber-200">
                           <Text className="text-xs font-bold block mb-1.5 text-amber-800">
@@ -1995,8 +2134,15 @@ export function ConfigPage(props: ConfigPageProps) {
                             如何获取浏览器路径：
                           </Text>
                           <Text className="text-xs block text-amber-700">
-                            在浏览器地址栏输入 <code className="bg-amber-100 px-1 rounded">chrome://version</code> 或{" "}
-                            <code className="bg-amber-100 px-1 rounded">edge://version</code>，找到「个人资料路径」或「可执行文件路径」，复制后粘贴到下方「浏览器可执行文件路径」中。
+                            在浏览器地址栏输入{" "}
+                            <code className="bg-amber-100 px-1 rounded">
+                              chrome://version
+                            </code>{" "}
+                            或{" "}
+                            <code className="bg-amber-100 px-1 rounded">
+                              edge://version
+                            </code>
+                            ，找到「个人资料路径」或「可执行文件路径」，复制后粘贴到下方「浏览器可执行文件路径」中。
                           </Text>
                         </div>
                       </div>
@@ -2098,8 +2244,14 @@ export function ConfigPage(props: ConfigPageProps) {
                 </Text>
               </div>
             </div>
-            <AiFeatureGate configured={!!props.config.llm_config} onConfigure={props.onOpenLlmConfig}><></></AiFeatureGate>
-            <Divider className="!my-0 opacity-10" />
+            <AiFeatureGate
+              active={llmActive}
+              configured={llmConfigured}
+              onConfigure={props.onOpenLlmConfig}
+            >
+              <></>
+            </AiFeatureGate>
+            
             <div className="rounded-2xl border border-slate-200/80 bg-white/85 p-6">
               <div className="flex items-center justify-between gap-6">
                 <div>
@@ -2157,149 +2309,245 @@ export function ConfigPage(props: ConfigPageProps) {
   };
 
   return (
-    <div className="flex h-full w-full flex-col gap-5 md:flex-row animate-in">
-      <aside className="flex w-full flex-shrink-0 flex-col gap-3 md:w-[220px]">
-        <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
-          {props.status === "loading" ? (
-            <><LoadingOutlined className="mr-2 text-sky-500" />正在自动保存…</>
-          ) : props.status === "error" ? (
-            <><WarningOutlined className="mr-2 text-red-500" />{props.message || "自动保存失败，修改后将重试"}</>
-          ) : props.dirty ? (
-            <><LoadingOutlined className="mr-2 text-sky-500" />等待自动保存…</>
-          ) : (
-            <><CheckCircleOutlined className="mr-2 text-emerald-500" />配置已自动保存</>
-          )}
-        </div>
-        <Menu
-          mode="vertical"
-          selectedKeys={[isProfileGroup(activeGroup) ? "profile" : activeGroup]}
-          onSelect={({ key }) => setActiveGroup(key === "profile"
-            ? (isProfileGroup(activeGroup) ? activeGroup : "job")
-            : key as VisibleConfigGroup)}
-          items={menuItems}
-          className="rounded-2xl border border-slate-200/80 bg-white/90! p-2 shadow-[0_12px_32px_rgba(15,23,42,0.05)]"
-        />
-        <Dropdown menu={{ items: [
-          { key: "import", icon: <UploadOutlined />, label: "导入配置模板", onClick: selectConfigFile },
-          { key: "export", icon: <DownloadOutlined />, label: "导出配置模板", onClick: selectExportConfigFile },
-        ] }} trigger={["click"]}>
-          <Button disabled={props.status === "loading"} className="h-10! w-full justify-start! text-slate-600!">
-            配置文件 <MoreOutlined className="ml-auto" />
-          </Button>
-        </Dropdown>
-      </aside>
+    <>
+      {noticeModalContextHolder}
+      <div className="flex h-full w-full flex-col gap-5 md:flex-row animate-in">
+        <aside className="flex w-full flex-shrink-0 flex-col gap-3 md:w-[220px]">
+          <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
+            {props.status === "loading" ? (
+              <>
+                <LoadingOutlined className="mr-2 text-sky-500" />
+                正在自动保存…
+              </>
+            ) : props.status === "error" ? (
+              <>
+                <WarningOutlined className="mr-2 text-red-500" />
+                {props.message || "自动保存失败，修改后将重试"}
+              </>
+            ) : props.dirty ? (
+              <>
+                <LoadingOutlined className="mr-2 text-sky-500" />
+                等待自动保存…
+              </>
+            ) : (
+              <>
+                <CheckCircleOutlined className="mr-2 text-emerald-500" />
+                配置已自动保存
+              </>
+            )}
+          </div>
+          <Menu
+            mode="vertical"
+            selectedKeys={[
+              isProfileGroup(activeGroup) ? "profile" : activeGroup,
+            ]}
+            onSelect={({ key }) =>
+              setActiveGroup(
+                key === "profile"
+                  ? isProfileGroup(activeGroup)
+                    ? activeGroup
+                    : "job"
+                  : (key as VisibleConfigGroup),
+              )
+            }
+            items={menuItems}
+            className="rounded-2xl border border-slate-200/80 bg-white/90! p-2 shadow-[0_12px_32px_rgba(15,23,42,0.05)]"
+          />
+          <Dropdown
+            menu={{
+              items: [
+                {
+                  key: "import",
+                  icon: <UploadOutlined />,
+                  label: "导入配置模板",
+                  onClick: selectConfigFile,
+                },
+                {
+                  key: "export",
+                  icon: <DownloadOutlined />,
+                  label: "导出配置模板",
+                  onClick: selectExportConfigFile,
+                },
+              ],
+            }}
+            trigger={["click"]}
+          >
+            <Button
+              disabled={props.status === "loading"}
+              className="h-10! w-full justify-start! text-slate-600!"
+            >
+              配置文件 <MoreOutlined className="ml-auto" />
+            </Button>
+          </Dropdown>
+        </aside>
 
-      <Form
-        form={form}
-        layout="vertical"
-        requiredMark={false}
-        className="flex h-full min-w-0 flex-1 flex-col overflow-hidden"
-        onSubmitCapture={(e) => {
-          e.preventDefault();
-        }}
-      >
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-3xl border border-slate-200/80 bg-white/90 shadow-[0_24px_60px_rgba(15,23,42,0.06)] backdrop-blur-3xl">
-          {isProfileGroup(activeGroup) && (
-            <div className="flex-shrink-0 border-b border-slate-200 bg-white px-5 pt-5 md:px-8 md:pt-6">
-              <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                <div className="min-w-0">
-                  <Text className="mb-1 block text-[11px] font-bold uppercase tracking-[0.18em] text-sky-600">
-                    当前求职方案
-                  </Text>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Select
-                      aria-label="当前求职方案"
-                      size="large"
-                      popupMatchSelectWidth={false}
-                      className="min-w-[240px] max-w-full md:min-w-[320px]"
-                      value={activeProfile.id}
-                      onChange={props.onSelectProfile}
-                      options={profiles.map((profile) => ({
-                        value: profile.id,
-                        label: `${profile.name}${profile.id === defaultProfileId ? " · 默认" : ""}${profile.archived ? " · 已归档" : ""}`,
-                      }))}
-                    />
-                    {activeProfile.id === defaultProfileId && <Tag color="blue">默认使用</Tag>}
-                    {activeProfile.archived && <Tag>已归档</Tag>}
+        <Form
+          form={form}
+          layout="vertical"
+          requiredMark={false}
+          className="flex h-full min-w-0 flex-1 flex-col overflow-hidden"
+          onSubmitCapture={(e) => {
+            e.preventDefault();
+          }}
+        >
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-3xl border border-slate-200/80 bg-white/90 shadow-[0_24px_60px_rgba(15,23,42,0.06)] backdrop-blur-3xl">
+            {isProfileGroup(activeGroup) && (
+              <div className="flex-shrink-0 border-b border-slate-200 bg-white px-5 pt-5 md:px-8 md:pt-6">
+                <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                  <div className="min-w-0">
+                    <Text className="mb-1 block text-[11px] font-bold uppercase tracking-[0.18em] text-sky-600">
+                      当前求职方案
+                    </Text>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Select
+                        aria-label="当前求职方案"
+                        size="large"
+                        popupMatchSelectWidth={false}
+                        className="min-w-[240px] max-w-full md:min-w-[320px]"
+                        value={activeProfile.id}
+                        onChange={props.onSelectProfile}
+                        options={profiles.map((profile) => ({
+                          value: profile.id,
+                          label: `${profile.name}${profile.id === defaultProfileId ? " · 默认" : ""}${profile.archived ? " · 已归档" : ""}`,
+                        }))}
+                      />
+                      {activeProfile.id === defaultProfileId && (
+                        <Tag color="blue">默认使用</Tag>
+                      )}
+                      {activeProfile.archived && <Tag>已归档</Tag>}
+                    </div>
+                    <Text
+                      type="secondary"
+                      className="mt-2 block max-w-2xl text-xs!"
+                    >
+                      {activeProfile.description ||
+                        "这张方案统一管理岗位筛选、简历、打招呼和自动回复。"}
+                    </Text>
                   </div>
-                  <Text type="secondary" className="mt-2 block max-w-2xl text-xs!">
-                    {activeProfile.description || "这张方案统一管理岗位筛选、简历、打招呼和自动回复。"}
-                  </Text>
+                  <Space wrap size={8}>
+                    <Button
+                      type="primary"
+                      icon={<PlusOutlined />}
+                      onClick={() => openProfileModal("create")}
+                    >
+                      新建方案
+                    </Button>
+                    <Dropdown
+                      trigger={["click"]}
+                      menu={{
+                        onClick: handleProfileAction,
+                        items: [
+                          {
+                            key: "edit",
+                            icon: <EditOutlined />,
+                            label: "编辑名称与说明",
+                          },
+                          {
+                            key: "duplicate",
+                            icon: <CopyOutlined />,
+                            label: "复制当前方案",
+                          },
+                          { type: "divider" },
+                          {
+                            key: "default",
+                            icon: <StarOutlined />,
+                            label:
+                              activeProfile.id === defaultProfileId
+                                ? "当前已是默认方案"
+                                : "设为默认方案",
+                            disabled:
+                              activeProfile.id === defaultProfileId ||
+                              activeProfile.archived,
+                          },
+                          {
+                            key: "archive",
+                            icon: <InboxOutlined />,
+                            label: "归档当前方案",
+                            disabled: !canArchive,
+                          },
+                          {
+                            key: "delete",
+                            icon: <DeleteOutlined />,
+                            label: "删除当前方案",
+                            danger: true,
+                            disabled: !canDelete,
+                          },
+                        ],
+                      }}
+                    >
+                      <Button icon={<MoreOutlined />}>方案管理</Button>
+                    </Dropdown>
+                  </Space>
                 </div>
-                <Space wrap size={8}>
-                  <Button type="primary" icon={<PlusOutlined />} onClick={() => openProfileModal("create")}>
-                    新建方案
-                  </Button>
-                  <Dropdown
-                    trigger={["click"]}
-                    menu={{
-                      onClick: handleProfileAction,
-                      items: [
-                        { key: "edit", icon: <EditOutlined />, label: "编辑名称与说明" },
-                        { key: "duplicate", icon: <CopyOutlined />, label: "复制当前方案" },
-                        { type: "divider" },
-                        { key: "default", icon: <StarOutlined />, label: activeProfile.id === defaultProfileId ? "当前已是默认方案" : "设为默认方案", disabled: activeProfile.id === defaultProfileId || activeProfile.archived },
-                        { key: "archive", icon: <InboxOutlined />, label: "归档当前方案", disabled: !canArchive },
-                        { key: "delete", icon: <DeleteOutlined />, label: "删除当前方案", danger: true, disabled: !canDelete },
-                      ],
-                    }}
-                  >
-                    <Button icon={<MoreOutlined />}>方案管理</Button>
-                  </Dropdown>
-                </Space>
+                <Tabs
+                  className="mt-4 [&_.ant-tabs-nav]:mb-0!"
+                  activeKey={activeGroup}
+                  onChange={(key) => setActiveGroup(key as ProfileGroup)}
+                  items={profileTabItems}
+                />
               </div>
-              <Tabs
-                className="mt-4 [&_.ant-tabs-nav]:mb-0!"
-                activeKey={activeGroup}
-                onChange={(key) => setActiveGroup(key as ProfileGroup)}
-                items={profileTabItems}
+            )}
+            <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-6 py-6 md:px-10 md:py-8">
+              {renderContent()}
+            </div>
+          </div>
+        </Form>
+        <Modal
+          title={
+            profileModalMode === "create" ? "新建求职方案" : "编辑方案信息"
+          }
+          open={profileModalMode !== null}
+          okText={profileModalMode === "create" ? "创建并切换" : "保存"}
+          cancelText="取消"
+          onCancel={() => setProfileModalMode(null)}
+          onOk={saveProfileMeta}
+          destroyOnHidden
+        >
+          <Space direction="vertical" size={14} className="mt-3 w-full">
+            <div className="w-full">
+              <Text strong>方案名称</Text>
+              <Input
+                autoFocus
+                className="mt-2"
+                maxLength={40}
+                placeholder="例如：新加坡 AI 应用工程师"
+                value={profileDraft.name}
+                onChange={(event) =>
+                  setProfileDraft((draft) => ({
+                    ...draft,
+                    name: event.target.value,
+                  }))
+                }
+                onPressEnter={saveProfileMeta}
               />
             </div>
-          )}
-          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-6 py-6 md:px-10 md:py-8">
-            {renderContent()}
-          </div>
-        </div>
-      </Form>
-      <Modal
-        title={profileModalMode === "create" ? "新建求职方案" : "编辑方案信息"}
-        open={profileModalMode !== null}
-        okText={profileModalMode === "create" ? "创建并切换" : "保存"}
-        cancelText="取消"
-        onCancel={() => setProfileModalMode(null)}
-        onOk={saveProfileMeta}
-        destroyOnHidden
-      >
-        <Space direction="vertical" size={14} className="mt-3 w-full">
-          <div className="w-full">
-            <Text strong>方案名称</Text>
-            <Input
-              autoFocus
-              className="mt-2"
-              maxLength={40}
-              placeholder="例如：新加坡 AI 应用工程师"
-              value={profileDraft.name}
-              onChange={(event) => setProfileDraft((draft) => ({ ...draft, name: event.target.value }))}
-              onPressEnter={saveProfileMeta}
-            />
-          </div>
-          <div className="w-full">
-            <Text strong>方案说明</Text>
-            <Input.TextArea
-              className="mt-2"
-              autoSize={{ minRows: 3, maxRows: 5 }}
-              maxLength={160}
-              showCount
-              placeholder="说明目标岗位、地区或这张方案的使用场景"
-              value={profileDraft.description}
-              onChange={(event) => setProfileDraft((draft) => ({ ...draft, description: event.target.value }))}
-            />
-          </div>
-          {profileModalMode === "create" && (
-            <Alert type="info" showIcon message="新方案会复制默认方案的当前配置，你可以创建后分别调整。" />
-          )}
-        </Space>
-      </Modal>
-    </div>
+            <div className="w-full">
+              <Text strong>方案说明</Text>
+              <Input.TextArea
+                className="mt-2"
+                autoSize={{ minRows: 3, maxRows: 5 }}
+                maxLength={160}
+                showCount
+                placeholder="说明目标岗位、地区或这张方案的使用场景"
+                value={profileDraft.description}
+                onChange={(event) =>
+                  setProfileDraft((draft) => ({
+                    ...draft,
+                    description: event.target.value,
+                  }))
+                }
+              />
+            </div>
+            {profileModalMode === "create" && (
+              <Alert
+                type="info"
+                showIcon
+                message="新方案会复制默认方案的当前配置，你可以创建后分别调整。"
+              />
+            )}
+          </Space>
+        </Modal>
+      </div>
+    </>
   );
 }

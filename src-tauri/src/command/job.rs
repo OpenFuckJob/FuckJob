@@ -765,7 +765,11 @@ pub async fn job_analyze_batch(
         Err(e) => return CommandResult::err(format!("加载配置失败: {}", e)),
     };
     if app_config.llm_chain().is_empty() {
-        return CommandResult::err("请先配置大模型服务".to_string());
+        return CommandResult::err(if app_config.llm_configured() {
+            "大模型已停用，请先启用模型服务".to_string()
+        } else {
+            "请先配置大模型服务".to_string()
+        });
     }
     let skip_analyzed = skip_analyzed.unwrap_or(true);
 

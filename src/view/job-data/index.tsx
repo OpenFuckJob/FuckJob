@@ -320,8 +320,9 @@ function KanbanView({
 
 /* ────────── Page ────────── */
 
-const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled, highMatchScore = DEFAULT_HIGH_MATCH_SCORE, onStartInterview }: {
+const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, onFocusHandled, highMatchScore = DEFAULT_HIGH_MATCH_SCORE, onStartInterview }: {
   aiConfigured: boolean;
+  llmConfigured: boolean;
   onConfigureAi: () => void;
   /** 从其他页面跳转过来时需要直接打开沟通记录的岗位 */
   focusJobId?: string;
@@ -763,6 +764,7 @@ const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled, 
                   <AnalysisReport
                     job={currentJob}
                     aiConfigured={aiConfigured}
+                    llmConfigured={llmConfigured}
                     onConfigureAi={onConfigureAi}
                     onAnalyzed={(analysis) =>
                       setAnalyses((current) => ({

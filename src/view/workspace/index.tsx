@@ -819,7 +819,7 @@ const WorkspacePage = ({
               </div>
 
               {currentEnvironment.phase === "idle" ? (
-                <Typography.Text type="secondary" style={{ fontSize: 12.5 }}>尚未检查。需要确认登录状态时点击右侧按钮，本次结果会保留在当前平台卡片中。</Typography.Text>
+                <Typography.Text type="secondary" style={{ fontSize: 12.5 }}>尚未检查。需要确认登录状态时点击右侧按钮。</Typography.Text>
               ) : (
                 <Steps
                   size="small"
@@ -899,7 +899,6 @@ const WorkspacePage = ({
             type="info"
             showIcon
             message={queueTasks.length === 0 ? "任务队列为空" : "当前筛选下没有任务"}
-            description={queueTasks.length === 0 ? "从左侧添加任务后，会在这里显示执行状态和顺序。" : "可切换为全部或另一个平台查看任务。"}
           />
         ) : (
           <div

@@ -1,17 +1,31 @@
-import { useEffect, useMemo, useState } from "react";
-import { Alert, AutoComplete, Button, Card, Collapse, Divider, Form, Input, Modal, Select, Space, Switch, Tag, Typography } from "antd";
-import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, PlusOutlined } from "@ant-design/icons";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Alert, AutoComplete, Button, Card, Collapse, Form, Input, Modal, Select, Space, Switch, Tag, Typography } from "antd";
 import {
+  ApiOutlined,
+  ArrowDownOutlined,
+  ArrowUpOutlined,
+  CheckCircleFilled,
+  ClockCircleOutlined,
+  DeleteOutlined,
+  FieldTimeOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  SafetyCertificateOutlined,
+} from "@ant-design/icons";
+import {
+  DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS,
   MAX_NETWORK_RETRY_ATTEMPTS,
+  MAX_LLM_REQUEST_TIMEOUT_SECONDS,
   MAX_RETRY_BASE_DELAY_MS,
   MIN_RETRY_BASE_DELAY_MS,
+  MIN_LLM_REQUEST_TIMEOUT_SECONDS,
   PRIMARY_LLM_ENTRY_ID,
   type LlmConfig,
   type LlmProviderEntry,
   type LlmProviderPreset,
   type LlmRetryConfig,
 } from "@/types/app-config";
-import { NumberField } from "@/components/NumberField";
+import { SettingGroup, SettingSlider } from "@/components/SettingField";
 import {
   clearLlmApiKey,
   clearLlmApiKeyFor,
@@ -118,6 +132,11 @@ export const clampRetryAttempts = (value: number | null | undefined) =>
   Math.min(Math.max(Math.round(value ?? 0), 0), MAX_NETWORK_RETRY_ATTEMPTS);
 export const clampRetryBaseDelay = (value: number | null | undefined) =>
   Math.min(Math.max(Math.round(value ?? MIN_RETRY_BASE_DELAY_MS), MIN_RETRY_BASE_DELAY_MS), MAX_RETRY_BASE_DELAY_MS);
+export const clampRequestTimeout = (value: number | null | undefined) =>
+  Math.min(
+    Math.max(Math.round(value ?? DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS), MIN_LLM_REQUEST_TIMEOUT_SECONDS),
+    MAX_LLM_REQUEST_TIMEOUT_SECONDS,
+  );
 
 const fallbackTitle = (entry: LlmProviderEntry, index: number) =>
   entry.label?.trim() || entry.model.trim() || `备用 ${index + 1}`;
@@ -130,7 +149,9 @@ const credentialSourceText: Record<LlmCredentialStatus["source"], string> = {
 
 export interface LlmConfigPanelProps {
   config: LlmConfig | null;
+  enabled?: boolean;
   onChange: (config: LlmConfig | null) => void;
+  onEnabledChange?: (enabled: boolean) => void;
   onPersist?: (config: LlmConfig | null) => Promise<boolean>;
   onPendingApiKeyChange?: (apiKey: string) => void;
   compact?: boolean;
@@ -147,7 +168,9 @@ export interface LlmConfigPanelProps {
 
 export function LlmConfigPanel({
   config,
+  enabled,
   onChange,
+  onEnabledChange,
   onPersist,
   onPendingApiKeyChange,
   compact,
@@ -158,13 +181,36 @@ export function LlmConfigPanel({
   dirty,
   onPersistAll,
 }: LlmConfigPanelProps) {
+  const [modal, modalContextHolder] = Modal.useModal();
   const [credentials, setCredentials] = useState<Record<string, LlmCredentialStatus>>({});
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
   const [models, setModels] = useState<Record<string, string[]>>({});
   const [modelsLoadingId, setModelsLoadingId] = useState<string | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [activeKeys, setActiveKeys] = useState<string[]>([]);
-  const [feedback, setFeedback] = useState<{ type: "success" | "error" | "info"; text: string } | null>(null);
+  const [connectionOk, setConnectionOk] = useState<Record<string, boolean>>({});
+  // 旧配置没有 llm_enabled 时按启用处理；只有明确写入 false 才代表停用。
+  const llmEnabled = enabled !== false;
+  const canToggle = Boolean(onEnabledChange && enabled !== undefined);
+  const statusLabel = config ? (llmEnabled ? "已启用" : "已停用") : "未配置";
+
+  const showFeedback = useCallback(
+    (
+      type: "success" | "error" | "info" | "warning",
+      title: string,
+      content: ReactNode,
+      width = 520,
+    ) => {
+      modal[type]({
+        title,
+        content,
+        centered: true,
+        width,
+        okText: "知道了",
+      });
+    },
+    [modal],
+  );
 
   const chain = useMemo(() => fallbacks ?? [], [fallbacks]);
   const chainEnabled = Boolean(config && onFallbacksChange && !compact);
@@ -180,9 +226,9 @@ export function LlmConfigPanel({
         const single = await getLlmCredentialStatus();
         if (cancelled) return;
         if (single.success && single.data) setCredentials({ [PRIMARY_LLM_ENTRY_ID]: single.data });
-        else setFeedback({ type: "info", text: "无法读取凭据状态；可继续配置本地服务。" });
+        else showFeedback("info", "凭据状态", "无法读取凭据状态；可继续配置本地服务。");
       } catch {
-        if (!cancelled) setFeedback({ type: "info", text: "无法读取凭据状态；可继续配置本地服务。" });
+        if (!cancelled) showFeedback("info", "凭据状态", "无法读取凭据状态；可继续配置本地服务。");
       }
     };
     // 一次性拉取整条链的凭据状态，避免每个服务各发一次请求
@@ -196,14 +242,18 @@ export function LlmConfigPanel({
       })
       .catch(() => (cancelled ? undefined : fallbackToPrimaryOnly()));
     return () => { cancelled = true; };
-  }, [entryIdsKey]);
+  }, [entryIdsKey, showFeedback]);
 
   const options = useMemo(() => Object.entries(LLM_PRESETS).map(([value, item]) => ({ value, label: item.label })), []);
   const serviceOf = (entryId: string): LlmServiceFields | null =>
     entryId === PRIMARY_LLM_ENTRY_ID ? config : chain.find((entry) => entry.id === entryId) ?? null;
 
   const clearModels = (entryId: string) => setModels((current) => ({ ...current, [entryId]: [] }));
+  const invalidateConnection = (entryId: string) => {
+    setConnectionOk((current) => current[entryId] ? { ...current, [entryId]: false } : current);
+  };
   const patchEntry = (entryId: string, next: Partial<LlmServiceFields>) => {
+    invalidateConnection(entryId);
     if (next.provider || next.base_url !== undefined) clearModels(entryId);
     if (entryId === PRIMARY_LLM_ENTRY_ID) {
       if (config) onChange({ ...config, ...next });
@@ -215,20 +265,34 @@ export function LlmConfigPanel({
     patchEntry(entryId, { provider, base_url: LLM_PRESETS[provider].baseUrl, model: "" });
 
   const changeApiKey = (entryId: string, value: string) => {
+    invalidateConnection(entryId);
     setApiKeys((current) => ({ ...current, [entryId]: value }));
     if (entryId === PRIMARY_LLM_ENTRY_ID) onPendingApiKeyChange?.(value);
   };
 
-  const storeKey = async (entryId: string) => {
+  const storeKey = async (entryId: string, showSuccess = true): Promise<boolean> => {
     const draft = (apiKeys[entryId] ?? "").trim();
-    if (!draft) { setFeedback({ type: "error", text: "请输入 API Key" }); return; }
-    const result = entryId === PRIMARY_LLM_ENTRY_ID ? await setLlmApiKey(draft) : await setLlmApiKeyFor(entryId, draft);
-    const status = result.data;
-    if (result.success && status) {
-      setCredentials((current) => ({ ...current, [entryId]: status }));
-      changeApiKey(entryId, "");
-      setFeedback({ type: "success", text: "凭据已安全保存，可展开模型列表获取模型" });
-    } else setFeedback({ type: "error", text: resultError(result.error, "保存凭据失败") });
+    if (!draft) {
+      showFeedback("error", "保存凭据失败", "请输入 API Key");
+      return false;
+    }
+
+    try {
+      const result = entryId === PRIMARY_LLM_ENTRY_ID
+        ? await setLlmApiKey(draft)
+        : await setLlmApiKeyFor(entryId, draft);
+      const status = result.data;
+      if (result.success && status) {
+        setCredentials((current) => ({ ...current, [entryId]: status }));
+        changeApiKey(entryId, "");
+        if (showSuccess) showFeedback("success", "凭据已保存", "凭据已安全保存，可展开模型列表获取模型");
+        return true;
+      }
+      showFeedback("error", "保存凭据失败", resultError(result.error, "保存凭据失败"));
+    } catch (error) {
+      showFeedback("error", "保存凭据失败", error instanceof Error ? error.message : "保存凭据失败");
+    }
+    return false;
   };
 
   const clearKey = async (entryId: string) => {
@@ -237,21 +301,38 @@ export function LlmConfigPanel({
     if (result.success && status) {
       setCredentials((current) => ({ ...current, [entryId]: status }));
       changeApiKey(entryId, "");
-      setFeedback({ type: "success", text: "凭据已清除" });
-    } else setFeedback({ type: "error", text: resultError(result.error, "清除凭据失败") });
+      showFeedback("success", "凭据已清除", "凭据已清除");
+    } else showFeedback("error", "清除凭据失败", resultError(result.error, "清除凭据失败"));
   };
 
   const fetchModels = async (entryId: string, showSuccess = false) => {
     const service = serviceOf(entryId);
     if (!service) return;
-    if (!service.base_url.trim()) { setFeedback({ type: "error", text: "请先填写服务地址" }); return; }
-    if (!shouldFetchLlmModels(service, Boolean(credentials[entryId]?.configured), true)) {
-      setFeedback({ type: "info", text: "请先保存 API Key，再展开模型列表获取模型" });
+    if (!service.base_url.trim()) { showFeedback("error", "获取模型列表失败", "请先填写服务地址"); return; }
+
+    // 首次配置时模型尚未落盘，但用户可能已经在当前表单输入了 API Key。
+    // 先把这份草稿密钥保存到系统凭据库，再请求模型列表，避免「保存配置要模型、
+    // 获取模型要密钥」互相等待。这里使用返回值而不是依赖异步更新后的 state。
+    let credentialConfigured = Boolean(credentials[entryId]?.configured);
+    if (LLM_PRESETS[service.provider].requiresKey) {
+      const pendingKey = (apiKeys[entryId] ?? "").trim();
+      if (pendingKey) {
+        // 即使已有环境变量或旧凭据，用户刚输入的替换 Key 也必须先落盘，
+        // 否则刷新模型列表仍会悄悄使用旧密钥。
+        if (!await storeKey(entryId, false)) return;
+        credentialConfigured = true;
+      } else if (!credentialConfigured) {
+        showFeedback("info", "获取模型列表", "请先填写 API Key。填写后点击获取模型会自动保存并继续获取。");
+        return;
+      }
+    }
+    if (!shouldFetchLlmModels(service, credentialConfigured, true)) {
+      showFeedback("info", "获取模型列表", "请先填写服务地址后再获取模型");
       return;
     }
     // 备用服务的模型列表读的是已落盘的配置，草稿状态下拉取到的会是旧内容
     if (entryId !== PRIMARY_LLM_ENTRY_ID && dirty) {
-      setFeedback({ type: "info", text: "备用服务的模型列表读取的是已保存的配置，请等待自动保存完成后再获取" });
+      showFeedback("info", "获取模型列表", "备用服务的模型列表读取的是已保存的配置，请等待自动保存完成后再获取");
       return;
     }
     setModelsLoadingId(entryId);
@@ -263,14 +344,14 @@ export function LlmConfigPanel({
         const list = result.data;
         setModels((current) => ({ ...current, [entryId]: list }));
         if (!service.model.trim() && list[0]) patchEntry(entryId, { model: list[0] });
-        if (showSuccess) setFeedback({ type: "success", text: `已获取 ${list.length} 个模型` });
+        if (showSuccess) showFeedback("success", "模型列表已更新", `已获取 ${list.length} 个模型`);
       } else {
         clearModels(entryId);
-        setFeedback({ type: "error", text: resultError(result.error, "获取模型列表失败") });
+        showFeedback("error", "获取模型列表失败", resultError(result.error, "获取模型列表失败"));
       }
     } catch (error) {
       clearModels(entryId);
-      setFeedback({ type: "error", text: error instanceof Error ? error.message : "获取模型列表失败" });
+      showFeedback("error", "获取模型列表失败", error instanceof Error ? error.message : "获取模型列表失败");
     } finally {
       setModelsLoadingId(null);
     }
@@ -281,23 +362,48 @@ export function LlmConfigPanel({
     if (!service) return;
     setTestingId(entryId);
     try {
-      if (!isValidLlmConfig(service)) { setFeedback({ type: "error", text: "请检查服务地址和模型名称" }); return; }
+      if (!isValidLlmConfig(service)) { showFeedback("error", "短连接测试失败", "请检查服务地址和模型名称"); return; }
       if (LLM_PRESETS[service.provider].requiresKey && !credentials[entryId]?.configured) {
-        setFeedback({ type: "error", text: "该服务需要先配置 API Key" });
+        showFeedback("error", "短连接测试失败", "该服务需要先配置 API Key");
         return;
       }
       // 后端测试的是已落盘的配置，先保证磁盘上的内容与界面一致，避免测出误导性的结果
       if (entryId === PRIMARY_LLM_ENTRY_ID) {
         if (onPersist && !await onPersist(config)) return;
       } else if (dirty) {
-        if (!onPersistAll) { setFeedback({ type: "error", text: "请先保存配置后再测试" }); return; }
-        if (!await onPersistAll()) { setFeedback({ type: "error", text: "配置保存失败，请修正后再测试" }); return; }
+        if (!onPersistAll) { showFeedback("error", "短连接测试失败", "请先保存配置后再测试"); return; }
+        if (!await onPersistAll()) { showFeedback("error", "短连接测试失败", "配置保存失败，请修正后再测试"); return; }
       }
       const result = entryId === PRIMARY_LLM_ENTRY_ID ? await testLlmConnection() : await testLlmEntryConnection(entryId);
-      if (result.success && result.data) setFeedback({ type: "success", text: `短连接测试成功 · 模型 ${result.data.model}${result.data.latency_ms ? ` · ${result.data.latency_ms}ms` : ""} · 响应: ${result.data.response}` });
-      else setFeedback({ type: "error", text: resultError(result.error, "连接测试失败") });
+      if (result.success && result.data) {
+        setConnectionOk((current) => ({ ...current, [entryId]: true }));
+        showFeedback(
+          "success",
+          "短连接测试成功",
+          (
+            <Space direction="vertical" size={8}>
+              <Typography.Text>
+                模型：<Typography.Text strong>{result.data.model}</Typography.Text>
+              </Typography.Text>
+              {result.data.latency_ms !== undefined && (
+                <Typography.Text>
+                  耗时：<Typography.Text strong>{result.data.latency_ms}ms</Typography.Text>
+                </Typography.Text>
+              )}
+              <Typography.Paragraph className="mb-0 break-words">
+                响应：{result.data.response}
+              </Typography.Paragraph>
+            </Space>
+          ),
+          560,
+        );
+      } else {
+        invalidateConnection(entryId);
+        showFeedback("error", "连接测试失败", resultError(result.error, "连接测试失败"));
+      }
     } catch (error) {
-      setFeedback({ type: "error", text: error instanceof Error ? error.message : "连接测试失败" });
+      invalidateConnection(entryId);
+      showFeedback("error", "连接测试失败", error instanceof Error ? error.message : "连接测试失败");
     } finally {
       setTestingId(null);
     }
@@ -321,7 +427,7 @@ export function LlmConfigPanel({
       onOk: async () => {
         await clearLlmApiKeyFor(entry.id).catch(() => undefined);
         onFallbacksChange?.(chain.filter((_, i) => i !== index));
-        setFeedback({ type: "success", text: `已删除「${fallbackTitle(entry, index)}」及其 API Key` });
+        showFeedback("success", "备用服务已删除", `已删除「${fallbackTitle(entry, index)}」及其 API Key`);
       },
     });
   };
@@ -360,7 +466,7 @@ export function LlmConfigPanel({
           .then((result) => (result.success && Array.isArray(result.data) ? result.data : null))
           .catch(() => null);
         if (!statuses) {
-          setFeedback({ type: "error", text: "交换 API Key 失败，已取消本次调整，配置保持不变。" });
+          showFeedback("error", "切换主用服务失败", "交换 API Key 失败，已取消本次调整，配置保持不变。");
           return;
         }
         onChange(swapped.primary);
@@ -375,169 +481,320 @@ export function LlmConfigPanel({
           ),
         }));
         setModels({});
-        setFeedback({ type: "success", text: "已交换主用与备用服务，API Key 已随服务一并对调。" });
+        setConnectionOk({});
+        showFeedback("success", "已切换主用服务", "已交换主用与备用服务，API Key 已随服务一并对调。");
       },
     });
   };
 
-  const renderServiceFields = (entryId: string, service: LlmServiceFields) => {
-    const credential = credentials[entryId] ?? null;
+  const renderModelField = (entryId: string, service: LlmServiceFields) => {
     const entryModels = models[entryId] ?? [];
     const loadingModels = modelsLoadingId === entryId;
     return (
+      <div className="flex min-w-0 gap-2">
+        <AutoComplete
+          className="min-w-0 flex-1"
+          aria-label={`${entryId} 模型`}
+          value={service.model}
+          options={entryModels.map((model) => ({ value: model, label: model }))}
+          placeholder="自动获取或手动输入模型名称"
+          onChange={(model) => patchEntry(entryId, { model })}
+          onOpenChange={(open) => {
+            if (open && !loadingModels && entryModels.length === 0) void fetchModels(entryId);
+          }}
+          filterOption={(input, option) => String(option?.value ?? "").toLowerCase().includes(input.toLowerCase())}
+        />
+        <Button
+          aria-label={`刷新${entryId}模型列表`}
+          title="刷新模型列表"
+          loading={loadingModels}
+          icon={<ReloadOutlined />}
+          onClick={() => void fetchModels(entryId, true)}
+        />
+      </div>
+    );
+  };
+
+  const renderServiceFields = (entryId: string, service: LlmServiceFields) => (
+    <div className="grid grid-cols-1 gap-x-4 md:grid-cols-2">
+      <Form.Item label="服务地址" validateStatus={service.base_url.trim() ? undefined : "error"}>
+        <Input
+          aria-label={`${entryId} 服务地址`}
+          value={service.base_url}
+          placeholder="服务 API 地址，可按需自定义 BaseURL"
+          onChange={(e) => patchEntry(entryId, { base_url: e.target.value })}
+        />
+      </Form.Item>
+      <Form.Item label="模型" validateStatus={service.model.trim() ? undefined : "error"}>
+        {renderModelField(entryId, service)}
+      </Form.Item>
+    </div>
+  );
+
+  const renderCredentialFields = (entryId: string) => {
+    const credential = credentials[entryId] ?? null;
+    const tested = connectionOk[entryId] === true;
+    return (
       <>
-        <Form.Item label="服务地址" validateStatus={service.base_url.trim() ? undefined : "error"}>
-          <Input
-            aria-label={`${entryId} 服务地址`}
-            value={service.base_url}
-            placeholder="服务 API 地址，可按需自定义 BaseURL"
-            onChange={(e) => patchEntry(entryId, { base_url: e.target.value })}
-          />
-        </Form.Item>
-        <Form.Item label="模型" validateStatus={service.model.trim() ? undefined : "error"}>
-          <AutoComplete
-            aria-label={`${entryId} 模型`}
-            value={service.model}
-            options={entryModels.map((model) => ({ value: model, label: model }))}
-            placeholder="自动获取或手动输入模型名称"
-            onChange={(model) => patchEntry(entryId, { model })}
-            onOpenChange={(open) => {
-              if (open && !loadingModels && entryModels.length === 0) void fetchModels(entryId);
-            }}
-            filterOption={(input, option) => String(option?.value ?? "").toLowerCase().includes(input.toLowerCase())}
-            style={{ width: "100%" }}
-          />
-          <Button style={{ marginTop: 8 }} loading={loadingModels} onClick={() => void fetchModels(entryId, true)}>刷新模型列表</Button>
-        </Form.Item>
-        <Typography.Text type="secondary">
-          凭据状态：{credential?.configured ? `已配置（${credentialSourceText[credential.source]}）` : "未配置"}。应用不会读取或显示明文。
-        </Typography.Text>
-        <Space.Compact block style={{ marginTop: 12 }}>
+        <Form.Item label="API Key" className="!mb-3">
+          <div className="flex gap-2">
           <Input.Password
             aria-label={`${entryId} API Key`}
             value={apiKeys[entryId] ?? ""}
             placeholder="设置或替换 API Key"
             onChange={(e) => changeApiKey(entryId, e.target.value)}
           />
-          <Button onClick={() => void storeKey(entryId)}>保存凭据</Button>
-          <Button danger disabled={!credential?.configured} onClick={() => void clearKey(entryId)}>清除</Button>
-        </Space.Compact>
+            <Button
+              className="shrink-0"
+              loading={testingId === entryId}
+              icon={tested ? <CheckCircleFilled className="text-emerald-500" /> : undefined}
+              onClick={() => void test(entryId)}
+            >
+              验证连接
+            </Button>
+          </div>
+        </Form.Item>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-3">
+          <Typography.Text type="secondary" className="text-xs">
+            <SafetyCertificateOutlined className="mr-1 text-sky-500" />
+            凭据状态：{credential?.configured ? `已配置（${credentialSourceText[credential.source]}）` : "未配置"}。应用不会读取或显示明文。
+          </Typography.Text>
+          <Space size={8}>
+            <Button size="small" onClick={() => void storeKey(entryId)}>保存凭据</Button>
+            <Button size="small" danger disabled={!credential?.configured} onClick={() => void clearKey(entryId)}>清除</Button>
+          </Space>
+        </div>
       </>
     );
   };
 
-  return <Card title="大模型配置">
-    <Form layout="vertical">
-      <Form.Item label={<Space size={4}>服务预设{chainEnabled && chain.length > 0 && <Tag color="blue">主用</Tag>}</Space>}>
-        <Select aria-label="服务预设" value={config?.provider} placeholder="选择服务后开始配置" options={options} onChange={(provider: LlmProviderPreset) => (config ? chooseProvider(PRIMARY_LLM_ENTRY_ID, provider) : onChange({ provider, base_url: LLM_PRESETS[provider].baseUrl, model: "" }))} />
-      </Form.Item>
-      {config && <>
-        {renderServiceFields(PRIMARY_LLM_ENTRY_ID, config)}
-        <Space wrap style={{ marginTop: 16 }}>
-          <Button loading={testingId === PRIMARY_LLM_ENTRY_ID} type="primary" onClick={() => void test(PRIMARY_LLM_ENTRY_ID)}>短连接测试</Button>
-          <Button danger onClick={() => onChange(null)}>停用 AI</Button>
-        </Space>
+  return <Card
+    title="大模型配置"
+    extra={canToggle ? (
+      <Space size={8}>
+        <Typography.Text type={config ? undefined : "secondary"}>
+          {statusLabel}
+        </Typography.Text>
+        <Switch
+          aria-label="大模型启用开关"
+          checked={Boolean(config && llmEnabled)}
+          disabled={!config}
+          onChange={(next) => {
+            if (config) onEnabledChange?.(next);
+          }}
+        />
+      </Space>
+    ) : undefined}
+  >
+    {modalContextHolder}
+    {config && !llmEnabled ? (
+      <Typography.Text type="secondary">
+        配置已保留，启用大模型后展开编辑。
+      </Typography.Text>
+    ) : (
+      <Form layout="vertical">
+        {!config ? (
+          <section className="rounded-lg border border-slate-200/80 bg-white p-4">
+            <Typography.Title level={5} className="!mb-4">基础配置</Typography.Title>
+            <Form.Item label="服务预设" className="!mb-0">
+              <Select
+                aria-label="服务预设"
+                value={undefined}
+                placeholder="选择服务后开始配置"
+                options={options}
+                onChange={(provider: LlmProviderPreset) => onChange({
+                  provider,
+                  base_url: LLM_PRESETS[provider].baseUrl,
+                  model: "",
+                })}
+              />
+            </Form.Item>
+          </section>
+        ) : (
+          <>
+            <section className="rounded-lg border border-slate-200/80 bg-white p-4 md:p-5">
+              <div className="mb-4 flex items-start justify-between gap-4">
+                <div>
+                  <Typography.Title level={5} className="!mb-1">基础配置</Typography.Title>
+                  <Typography.Text type="secondary" className="text-xs">
+                    配置主用模型服务，连接失败时会按下方顺序切换备用服务。
+                  </Typography.Text>
+                </div>
+                <Tag color="blue" className="!mr-0">主用</Tag>
+              </div>
 
-        {chainEnabled && <>
-          <Divider style={{ marginTop: 24 }} />
-          <Typography.Title level={5} style={{ marginTop: 0 }}>降级链</Typography.Title>
-          <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
-            主用服务不可用时，会按下面的顺序自动降级到备用服务，可用于应对网络波动或额度用尽。
-          </Typography.Paragraph>
-          {chain.length > 0 && (
-            <Collapse
-              style={{ marginBottom: 12 }}
-              activeKey={activeKeys}
-              onChange={(keys) => setActiveKeys(Array.isArray(keys) ? keys : [keys])}
-              items={chain.map((entry, index) => ({
-                key: entry.id,
-                label: (
-                  <Space size={8} wrap>
-                    <Tag>备用 {index + 1}</Tag>
-                    <Typography.Text strong>{fallbackTitle(entry, index)}</Typography.Text>
-                    {!entry.enabled && <Tag>已停用</Tag>}
-                  </Space>
-                ),
-                extra: (
-                  <Space size={4} onClick={(event) => event.stopPropagation()}>
-                    <Button size="small" aria-label={`上移备用 ${index + 1}`} icon={<ArrowUpOutlined />} disabled={index === 0} onClick={() => reorderFallback(index, index - 1)} />
-                    <Button size="small" aria-label={`下移备用 ${index + 1}`} icon={<ArrowDownOutlined />} disabled={index === chain.length - 1} onClick={() => reorderFallback(index, index + 1)} />
-                    <Button size="small" onClick={() => promoteFallback(index)}>设为主用</Button>
-                    <Button size="small" danger aria-label={`删除备用 ${index + 1}`} icon={<DeleteOutlined />} onClick={() => removeFallback(index)} />
-                  </Space>
-                ),
-                children: (
-                  <>
-                    <Form.Item label="名称（选填）">
-                      <Input
-                        aria-label={`备用 ${index + 1} 名称`}
-                        value={entry.label ?? ""}
-                        placeholder="留空时显示模型名"
-                        onChange={(e) => onFallbacksChange?.(chain.map((item) => item.id === entry.id ? { ...item, label: e.target.value || null } : item))}
-                      />
-                    </Form.Item>
-                    <Form.Item label="服务预设">
-                      <Select aria-label={`备用 ${index + 1} 服务预设`} value={entry.provider} options={options} onChange={(provider: LlmProviderPreset) => chooseProvider(entry.id, provider)} />
-                    </Form.Item>
-                    {renderServiceFields(entry.id, entry)}
-                    <Space wrap style={{ marginTop: 16 }}>
-                      <Button loading={testingId === entry.id} onClick={() => void test(entry.id)}>短连接测试</Button>
-                      <Space size={8}>
-                        <Switch
-                          aria-label={`启用备用 ${index + 1}`}
-                          checked={entry.enabled}
-                          onChange={(enabled) => onFallbacksChange?.(chain.map((item) => item.id === entry.id ? { ...item, enabled } : item))}
-                        />
-                        <Typography.Text type="secondary">参与降级链</Typography.Text>
-                      </Space>
-                    </Space>
-                  </>
-                ),
-              }))}
-            />
-          )}
-          <Button icon={<PlusOutlined />} onClick={addFallback}>添加备用服务</Button>
-          {chain.some((entry) => !entry.base_url.trim() || !entry.model.trim()) && (
-            <Alert
-              style={{ marginTop: 12 }}
-              type="warning"
-              showIcon
-              message="有备用服务尚未填写完整"
-              description="服务地址和模型名称都填写后配置才能保存，未填完期间自动保存会一直提示失败。"
-            />
-          )}
-        </>}
+              <div className="grid grid-cols-1 gap-x-4 md:grid-cols-2">
+                <Form.Item label="服务预设">
+                  <Select
+                    aria-label="服务预设"
+                    value={config.provider}
+                    options={options}
+                    onChange={(provider: LlmProviderPreset) => chooseProvider(PRIMARY_LLM_ENTRY_ID, provider)}
+                  />
+                </Form.Item>
+                <Form.Item label="模型" validateStatus={config.model.trim() ? undefined : "error"}>
+                  {renderModelField(PRIMARY_LLM_ENTRY_ID, config)}
+                </Form.Item>
+              </div>
 
-        {retryConfig && onRetryConfigChange && !compact && <>
-          <Divider style={{ marginTop: 24 }} />
-          <Typography.Title level={5} style={{ marginTop: 0 }}>重试策略</Typography.Title>
-          <Form.Item label="网络故障重试次数" extra="仅对网络连接失败重试；请求超时和密钥错误不会重试。重试次数用尽后才会降级到下一个服务。">
-            <NumberField
-              aria-label="网络故障重试次数"
-              min={0}
-              max={MAX_NETWORK_RETRY_ATTEMPTS}
-              precision={0}
-              fallback={0}
-              value={retryConfig.network_retry_attempts}
-              onChange={(value) => onRetryConfigChange({ ...retryConfig, network_retry_attempts: clampRetryAttempts(value) })}
-            />
-          </Form.Item>
-          <Form.Item label="首次重试等待" extra="之后按指数退避，第二次等待翻倍。">
-            <NumberField
-              aria-label="首次重试等待"
-              min={MIN_RETRY_BASE_DELAY_MS}
-              max={MAX_RETRY_BASE_DELAY_MS}
-              step={100}
-              precision={0}
-              addonAfter="毫秒"
-              fallback={MIN_RETRY_BASE_DELAY_MS}
-              value={retryConfig.retry_base_delay_ms}
-              onChange={(value) => onRetryConfigChange({ ...retryConfig, retry_base_delay_ms: clampRetryBaseDelay(value) })}
-            />
-          </Form.Item>
-        </>}
-      </>}
-      {feedback && <Alert style={{ marginTop: 16 }} type={feedback.type} showIcon message={feedback.text} />}
-    </Form>
+              <Form.Item label="服务地址" validateStatus={config.base_url.trim() ? undefined : "error"}>
+                <Input
+                  aria-label="primary 服务地址"
+                  value={config.base_url}
+                  placeholder="服务 API 地址，可按需自定义 BaseURL"
+                  onChange={(e) => patchEntry(PRIMARY_LLM_ENTRY_ID, { base_url: e.target.value })}
+                />
+              </Form.Item>
+              {renderCredentialFields(PRIMARY_LLM_ENTRY_ID)}
+            </section>
+
+            {chainEnabled && (
+              <section className="mt-4 overflow-hidden rounded-lg border border-slate-200/80 bg-white">
+                <div className="border-b border-slate-100 px-4 py-4 md:px-5">
+                  <Typography.Title level={5} className="!mb-1">可用模型（降级链）</Typography.Title>
+                  <Typography.Text type="secondary" className="text-xs">
+                    主用服务不可用时，按以下顺序自动切换备用服务，提升可用性与稳定性。
+                  </Typography.Text>
+                </div>
+
+                <div className="mx-4 my-4 overflow-hidden rounded-lg border border-slate-200/80 md:mx-5">
+                  <div className="flex min-h-14 items-center gap-3 border-b border-slate-100 px-3 py-2.5 md:px-4">
+                    <span className="w-6 shrink-0 text-center text-xs font-semibold text-slate-400">1</span>
+                    <Typography.Text strong className="min-w-0 flex-1 truncate">
+                      {config.model.trim() || "未选择模型"}
+                    </Typography.Text>
+                    <Tag color="green" className="!mr-0">主用</Tag>
+                  </div>
+
+                  {chain.length > 0 && (
+                    <Collapse
+                      bordered={false}
+                      className="!rounded-none"
+                      activeKey={activeKeys}
+                      onChange={(keys) => setActiveKeys(Array.isArray(keys) ? keys : [keys])}
+                      items={chain.map((entry, index) => ({
+                        key: entry.id,
+                        label: (
+                          <div className="flex min-w-0 items-center gap-3">
+                            <span className="w-6 shrink-0 text-center text-xs font-semibold text-slate-400">{index + 2}</span>
+                            <Typography.Text strong className="min-w-0 flex-1 truncate">
+                              {fallbackTitle(entry, index)}
+                            </Typography.Text>
+                            <Tag color={entry.enabled ? undefined : "red"} className="!mr-0">
+                              {entry.enabled ? "备用" : "已停用"}
+                            </Tag>
+                            <span className="sr-only">备用 {index + 1}</span>
+                          </div>
+                        ),
+                        extra: (
+                          <Space size={2} onClick={(event) => event.stopPropagation()}>
+                            <Button size="small" type="text" aria-label={`上移备用 ${index + 1}`} icon={<ArrowUpOutlined />} disabled={index === 0} onClick={() => reorderFallback(index, index - 1)} />
+                            <Button size="small" type="text" aria-label={`下移备用 ${index + 1}`} icon={<ArrowDownOutlined />} disabled={index === chain.length - 1} onClick={() => reorderFallback(index, index + 1)} />
+                            <Button size="small" onClick={() => promoteFallback(index)}>设为主用</Button>
+                            <Button size="small" type="text" danger aria-label={`删除备用 ${index + 1}`} icon={<DeleteOutlined />} onClick={() => removeFallback(index)} />
+                          </Space>
+                        ),
+                        children: (
+                          <div className="px-1 pb-1 pt-2">
+                            <Form.Item label="名称（选填）">
+                              <Input
+                                aria-label={`备用 ${index + 1} 名称`}
+                                value={entry.label ?? ""}
+                                placeholder="留空时显示模型名"
+                                onChange={(e) => onFallbacksChange?.(chain.map((item) => item.id === entry.id ? { ...item, label: e.target.value || null } : item))}
+                              />
+                            </Form.Item>
+                            <Form.Item label="服务预设">
+                              <Select aria-label={`备用 ${index + 1} 服务预设`} value={entry.provider} options={options} onChange={(provider: LlmProviderPreset) => chooseProvider(entry.id, provider)} />
+                            </Form.Item>
+                            {renderServiceFields(entry.id, entry)}
+                            {renderCredentialFields(entry.id)}
+                            <div className="flex items-center gap-2 border-t border-slate-100 pt-3">
+                              <Switch
+                                aria-label={`启用备用 ${index + 1}`}
+                                checked={entry.enabled}
+                                onChange={(enabled) => onFallbacksChange?.(chain.map((item) => item.id === entry.id ? { ...item, enabled } : item))}
+                              />
+                              <Typography.Text type="secondary" className="text-xs">参与降级链</Typography.Text>
+                            </div>
+                          </div>
+                        ),
+                      }))}
+                    />
+                  )}
+                </div>
+
+                <div className="px-4 pb-4 md:px-5">
+                  <Button block type="dashed" icon={<PlusOutlined />} onClick={addFallback}>添加备用服务</Button>
+                  {chain.some((entry) => !entry.base_url.trim() || !entry.model.trim()) && (
+                    <Alert
+                      className="mt-3"
+                      type="warning"
+                      showIcon
+                      message="有备用服务尚未填写完整"
+                      description="服务地址和模型名称都填写后配置才能保存。"
+                    />
+                  )}
+                </div>
+              </section>
+            )}
+
+            {retryConfig && onRetryConfigChange && !compact && (
+              <section className="mt-4 overflow-hidden rounded-lg border border-slate-200/80 bg-white">
+                <div className="border-b border-slate-100 px-4 py-4 md:px-5">
+                  <Typography.Title level={5} className="!mb-1">重试与超时</Typography.Title>
+                  <Typography.Text type="secondary" className="text-xs">
+                    控制网络故障时的重试节奏，以及单次模型请求的最长等待时间。
+                  </Typography.Text>
+                </div>
+                <SettingGroup className="rounded-none border-0">
+                  <SettingSlider
+                    icon={<ApiOutlined />}
+                    title="网络故障重试次数"
+                    description="仅对网络连接失败重试；请求超时和密钥错误不会重试。重试次数用尽后才会降级到下一个服务"
+                    min={0}
+                    max={MAX_NETWORK_RETRY_ATTEMPTS}
+                    fallback={0}
+                    value={retryConfig.network_retry_attempts}
+                    unit="次"
+                    valueLabel={(value) => (value === 0 ? "不重试" : null)}
+                    onChange={(value) => onRetryConfigChange({ ...retryConfig, network_retry_attempts: clampRetryAttempts(value) })}
+                  />
+                  <SettingSlider
+                    icon={<ClockCircleOutlined />}
+                    title="首次重试等待"
+                    description="之后按指数退避，第二次等待翻倍"
+                    min={MIN_RETRY_BASE_DELAY_MS}
+                    max={MAX_RETRY_BASE_DELAY_MS}
+                    sliderMax={3000}
+                    step={100}
+                    fallback={MIN_RETRY_BASE_DELAY_MS}
+                    value={retryConfig.retry_base_delay_ms}
+                    unit="毫秒"
+                    onChange={(value) => onRetryConfigChange({ ...retryConfig, retry_base_delay_ms: clampRetryBaseDelay(value) })}
+                  />
+                  <SettingSlider
+                    icon={<FieldTimeOutlined />}
+                    title="模型请求超时"
+                    description="超过这个时间仍未返回结果，就会判定为超时并终止本次请求"
+                    min={MIN_LLM_REQUEST_TIMEOUT_SECONDS}
+                    max={MAX_LLM_REQUEST_TIMEOUT_SECONDS}
+                    sliderMax={180}
+                    step={5}
+                    fallback={DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS}
+                    value={retryConfig.request_timeout_seconds}
+                    unit="秒"
+                    onChange={(value) => onRetryConfigChange({
+                      ...retryConfig,
+                      request_timeout_seconds: clampRequestTimeout(value),
+                    })}
+                  />
+                </SettingGroup>
+              </section>
+            )}
+          </>
+        )}
+      </Form>
+    )}
   </Card>;
 }

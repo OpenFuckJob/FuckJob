@@ -332,15 +332,17 @@ pub fn inspect_readiness(
     items.push(ReadinessItem {
         key: "llm".to_string(),
         label: "大模型".to_string(),
-        level: if !llm_needed || config.llm_config.is_some() {
+        level: if !llm_needed || config.llm_active() {
             ReadinessLevel::Ready
         } else {
             ReadinessLevel::Blocked
         },
         message: if !llm_needed {
             "当前模式不依赖大模型".to_string()
-        } else if config.llm_config.is_some() {
+        } else if config.llm_active() {
             "大模型服务已配置".to_string()
+        } else if config.llm_configured() {
+            "大模型已停用，请先启用模型服务".to_string()
         } else {
             "当前功能使用了大模型，请先配置模型服务".to_string()
         },

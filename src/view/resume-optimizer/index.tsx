@@ -9,6 +9,7 @@ import { fetchJobDescriptionText } from "@/lib/job-description";
 import { MockInterviewPanel } from "./MockInterviewPanel";
 import { MockInterviewReportPage } from "./MockInterviewReportPage";
 import { MockInterviewSetupPage } from "./MockInterviewSetupPage";
+import { isLlmActive } from "@/types/app-config";
 import {
   deleteInterviewSession,
   generateInterviewReport,
@@ -60,6 +61,7 @@ export function findSectionIndexByRenderedTitle(sections: ResumeMarkdownSection[
 
 export interface ResumeOptimizerPageProps {
   config: AppRuntimeConfig;
+  llmConfigured: boolean;
   onOpenLlmConfig: () => void;
   onUpdateResume: (content: string) => void;
   /** 从岗位管理跳过来时要直接预填的岗位 */
@@ -73,14 +75,15 @@ type PageState =
   | { name: "session"; sessionId: string }
   | { name: "report"; sessionId: string; initialTab?: "summary" | "abilities" | "questions" | "transcript" };
 
-function ResumeOptimizerPage({ config, onOpenLlmConfig, pendingInterviewJob, onPendingInterviewHandled }: ResumeOptimizerPageProps) {
+function ResumeOptimizerPage({ config, llmConfigured, onOpenLlmConfig, pendingInterviewJob, onPendingInterviewHandled }: ResumeOptimizerPageProps) {
   const [page, setPage] = useState<PageState>({ name: "home" });
   const [sessions, setSessions] = useState<InterviewSession[]>(listInterviewSessions);
   const [settings, setSettings] = useState<MockInterviewSettings>({ ...DEFAULT_INTERVIEW_SETTINGS });
   const [setupFromJob, setSetupFromJob] = useState(false);
   const [messageApi, contextHolder] = message.useMessage();
   const resumeContent = (config.resume_config.resume_content ?? "").trim();
-  const canStart = !!config.llm_config && !!resumeContent;
+  const aiReady = isLlmActive(config);
+  const canStart = aiReady && !!resumeContent;
 
   useEffect(() => subscribeInterviewSessions(() => setSessions(listInterviewSessions())), []);
   // 从岗位管理带岗位过来时直接进配置页，岗位信息已经填好，用户只需要挑面试参数
@@ -162,7 +165,8 @@ function ResumeOptimizerPage({ config, onOpenLlmConfig, pendingInterviewJob, onP
         <MockInterviewSetupPage
           value={settings}
           resumeReady={!!resumeContent}
-          aiReady={!!config.llm_config}
+          aiReady={aiReady}
+          llmConfigured={llmConfigured}
           fromJob={setupFromJob}
           onChange={setSettings}
           onBack={() => setPage({ name: "home" })}

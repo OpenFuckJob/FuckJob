@@ -394,6 +394,10 @@ export interface AppRuntimeConfig {
   job_filter_config: JobFilterConfig;
   platform_filter_config: PlatformFilterConfig;
   llm_config: LlmConfig | null;
+  /**
+   * 主用大模型是否启用；旧配置缺这块时默认视为启用，停用时只改这个字段，不清除 llm_config
+   */
+  llm_enabled?: boolean;
   llm_fallbacks: LlmProviderEntry[];
   llm_retry_config: LlmRetryConfig;
   greet_config: GreetConfig;
@@ -417,6 +421,22 @@ export function getAnalysisConfig(
   source: Pick<AppRuntimeConfig, "analysis_config"> | Pick<JobProfile, "analysis_config">,
 ): AnalysisConfig {
   return { ...DEFAULT_ANALYSIS_CONFIG, ...(source.analysis_config ?? {}) };
+}
+
+/** 是否已经保存过主用大模型配置。 */
+export function isLlmConfigured(config: Pick<AppRuntimeConfig, "llm_config">): boolean {
+  return config.llm_config !== null;
+}
+
+/**
+ * 主用大模型是否处于可用状态。
+ *
+ * 旧配置没有 `llm_enabled` 时默认按启用处理；如果根本没配置主用服务，则始终视为未启用。
+ */
+export function isLlmActive(
+  config: Pick<AppRuntimeConfig, "llm_config" | "llm_enabled">,
+): boolean {
+  return config.llm_config !== null && config.llm_enabled !== false;
 }
 
 /** 读取轮询节奏，旧配置缺这块时回落到默认节奏。 */

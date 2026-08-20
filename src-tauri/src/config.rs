@@ -90,6 +90,7 @@ pub fn default_app_config() -> AppRuntimeConfig {
         schema_version: CURRENT_SCHEMA_VERSION,
         onboarding_completed: false,
         llm_config: None,
+        llm_enabled: None,
         llm_fallbacks: Vec::new(),
         llm_retry_config: LlmRetryConfig::default(),
         job_profiles: vec![default_profile],
@@ -253,6 +254,10 @@ pub(crate) fn parse_config_content(content: &str) -> Result<AppRuntimeConfig, St
     if let Some(llm_config) = value.get("llm_config") {
         config.llm_config = parse_llm_config(llm_config, config.schema_version == 0)?;
     }
+    if let Some(llm_enabled) = value.get("llm_enabled") {
+        config.llm_enabled =
+            serde_yaml::from_value(llm_enabled.clone()).map_err(|error| error.to_string())?;
+    }
     if let Some(llm_fallbacks) = value.get("llm_fallbacks") {
         config.llm_fallbacks =
             serde_yaml::from_value(llm_fallbacks.clone()).map_err(|error| error.to_string())?;
@@ -413,6 +418,11 @@ pub fn validate_and_normalize(config: &mut AppRuntimeConfig) -> Result<(), Strin
         .browser_config
         .max_parallel_tasks
         .clamp(MIN_PARALLEL_TASKS, MAX_PARALLEL_TASKS);
+
+    if config.llm_config.is_none() {
+        config.llm_enabled = None;
+        return Ok(());
+    }
 
     let Some(llm_config) = config.llm_config.as_mut() else {
         return Ok(());
@@ -583,6 +593,10 @@ pub struct AppRuntimeConfig {
     /// 主用大模型服务，同时也是降级链的首位
     #[serde(default)]
     pub llm_config: Option<LlmConfig>,
+
+    /// 主用大模型是否启用。旧配置没有这块时默认按启用处理，停用时只改这个字段
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_enabled: Option<bool>,
 
     /// 主用服务不可用时按顺序尝试的备用服务
     #[serde(default)]
@@ -891,6 +905,18 @@ impl LlmChainLink {
 }
 
 impl AppRuntimeConfig {
+    /// 主用大模型是否已经配置。
+    pub fn llm_configured(&self) -> bool {
+        self.llm_config.is_some()
+    }
+
+    /// 主用大模型是否当前可用。
+    ///
+    /// 旧配置没有 `llm_enabled` 时默认视为启用；如果根本没配置主用服务，则始终不可用。
+    pub fn llm_active(&self) -> bool {
+        self.llm_config.is_some() && self.llm_enabled.unwrap_or(true)
+    }
+
     /// 按稳定标识查找方案；未传标识时使用默认方案。
     pub fn job_profile(&self, profile_id: Option<&str>) -> Result<&JobProfile, String> {
         let profile_id = profile_id
@@ -904,10 +930,14 @@ impl AppRuntimeConfig {
     }
 
     /// 按调用顺序返回大模型降级链：主用服务在前，其后是处于启用状态的备用服务。
-    /// 未配置主用服务时返回空链，调用方据此报「请先配置大模型服务」。
+    /// 未配置或已停用主用服务时返回空链，调用方据此阻止模型调用。
     pub fn llm_chain(&self) -> Vec<LlmChainLink> {
-        // 全局的 AI 功能门禁都以「是否配置了主用服务」为准，
-        // 这里必须保持一致：没有主用服务时整条链不可用，而不是退而使用备用服务。
+        // 全局的 AI 功能门禁都以「主用服务是否可用」为准，
+        // 这里必须保持一致：没有主用服务或已停用时整条链都不可用，而不是退而使用备用服务。
+        if !self.llm_active() {
+            return Vec::new();
+        }
+
         let Some(primary) = self.llm_config.as_ref() else {
             return Vec::new();
         };
@@ -1793,6 +1823,7 @@ mod tests {
         assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
         assert!(!config.onboarding_completed);
         assert!(config.llm_config.is_none());
+        assert!(config.llm_enabled.is_none());
     }
 
     #[test]
@@ -2721,6 +2752,20 @@ job_profiles: []
         config.llm_fallbacks = vec![fallback_entry("backup-a", "qwen-max")];
 
         assert!(config.llm_chain().is_empty());
+    }
+
+    #[test]
+    fn llm_chain_is_empty_when_primary_is_disabled_but_kept() {
+        let mut config = default_app_config();
+        config.llm_config = Some(LlmConfig {
+            provider: LlmProviderPreset::DeepSeek,
+            base_url: "https://api.deepseek.com".to_string(),
+            model: "deepseek-chat".to_string(),
+        });
+        config.llm_enabled = Some(false);
+
+        assert!(config.llm_chain().is_empty());
+        assert!(config.llm_config.is_some());
     }
 
     #[test]

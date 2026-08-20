@@ -1,42 +1,59 @@
-import { Radio, Typography } from "antd";
-import { ExperimentOutlined, SafetyCertificateOutlined } from "@ant-design/icons";
+import { Radio } from "antd";
+import {
+  AimOutlined,
+  BarChartOutlined,
+  CoffeeOutlined,
+  InfoCircleOutlined,
+  LineChartOutlined,
+  SafetyCertificateOutlined,
+  UserOutlined,
+} from "@ant-design/icons";
+import type { ReactNode } from "react";
 import {
   type HumanizeConfig,
   type HumanizeIntensity,
 } from "../../types/app-config";
 import { SettingGroup, SettingToggle } from "@/components/SettingField";
 
-const { Text } = Typography;
-
 /**
- * 强度档位。
- *
- * 每档只说「会发生什么」和「代价是什么」——具体数字由后端按当天的人格现算，
- * 写死在这里迟早和实际行为对不上，而对不上的说明比没有说明更糟
+ * 强度档位只表达用户能感知到的行为差异，具体节奏仍由后端按人格种子推导。
+ * 这样 UI 不会把某一组固定数字误认为是运行时的硬编码参数。
  */
 const INTENSITY_OPTIONS: Array<{
   value: HumanizeIntensity;
   label: string;
   description: string;
   cost: string;
+  icon: ReactNode;
+  badge: string;
+  badgeIcon: ReactNode;
 }> = [
   {
     value: "light",
     label: "轻度",
-    description: "只在既有节奏上小幅抖动，投递量基本不变",
+    description: "仅在既有节奏上小幅抖动，投递节奏基本不变",
     cost: "产出几乎无损失",
+    icon: <AimOutlined />,
+    badge: "稳定优先",
+    badgeIcon: <BarChartOutlined />,
   },
   {
     value: "standard",
     label: "标准",
     description: "投一批歇几分钟，偶尔跳过一个岗位、停下来发会儿呆",
     cost: "产出约降一到两成",
+    icon: <UserOutlined />,
+    badge: "平衡推荐",
+    badgeIcon: <LineChartOutlined />,
   },
   {
     value: "cautious",
     label: "谨慎",
-    description: "休息更勤更久、跳过更多、动作更慢，适合已经被限制过的账号",
+    description: "休息更勤更久、跳过更多、动作更慢，适合已被限制过的账号",
     cost: "产出明显下降",
+    icon: <CoffeeOutlined />,
+    badge: "风控优先",
+    badgeIcon: <SafetyCertificateOutlined />,
   },
 ];
 
@@ -46,83 +63,96 @@ interface Props {
 }
 
 /**
- * 拟人化。
+ * 拟人化设置。
  *
- * 这里刻意只有一个开关和三个档位：休息阈值、停顿长度、打字速度这些具体数字
- * 不做成旋钮，而是由系统按一个长期不变的「人格种子」每天现算一套。
- * 一组固定的数字——哪怕是用户自己填的——本身就是可被识别的模式。
+ * 人格种子不是用户可编辑的参数：它由后端首次启用时生成，并在同一天内保持稳定。
+ * 这里把重点放在「是否启用」和「行为倾向」上，避免把实现细节堆进配置表单。
  */
 export default function HumanizeSection({ config, onChange }: Props) {
   return (
-    <div className="space-y-4 rounded-2xl border border-slate-200/80 bg-white/85 p-6">
-      <div>
-        <Text className="block font-bold text-slate-900">拟人化</Text>
-        <Text className="text-xs text-slate-500">
-          让投递节奏和鼠标、键盘动作带上真人的不确定性。已在跑的任务不受影响
-        </Text>
-      </div>
-
-      <SettingGroup>
-        <SettingToggle
-          icon={<SafetyCertificateOutlined />}
-          title="启用拟人化"
-          description="平台看的不是单次动作像不像人，而是长期模式：每条都隔 4 秒、每轮都正好 30 条，连起来就是一条没有呼吸的直线"
-          checked={config.enabled}
-          onChange={(enabled) => onChange({ enabled })}
-        >
-          {config.enabled && (
-            <div className="space-y-3">
-              <Radio.Group
-                value={config.intensity}
-                onChange={(event) => onChange({ intensity: event.target.value as HumanizeIntensity })}
-                className="w-full"
-              >
-                <div className="space-y-2">
-                  {INTENSITY_OPTIONS.map((option) => (
+    <SettingGroup>
+      <SettingToggle
+        icon={<SafetyCertificateOutlined />}
+        title="启用拟人化"
+        description="模拟真人的操作节奏和行为模式，减少机械化特征"
+        checked={config.enabled}
+        onChange={(enabled) => onChange({ enabled })}
+      >
+        {config.enabled && (
+          <div className="space-y-2">
+            <Radio.Group
+              aria-label="拟人化强度"
+              value={config.intensity}
+              onChange={(event) => onChange({ intensity: event.target.value as HumanizeIntensity })}
+              className="!block"
+            >
+              <div className="space-y-1.5">
+                {INTENSITY_OPTIONS.map((option) => {
+                  const selected = config.intensity === option.value;
+                  return (
                     <Radio
                       key={option.value}
                       value={option.value}
-                      className="flex w-full items-start rounded-xl border border-slate-200 bg-white px-3 py-2"
+                      aria-label={option.label}
+                      className={`!m-0 !flex !w-full !items-center !gap-2 !rounded-lg !border !px-2.5 !py-2 transition-colors ${
+                        selected
+                          ? "!border-sky-400 !bg-sky-50/60"
+                          : "!border-slate-200 !bg-white hover:!border-sky-200 hover:!bg-slate-50/60"
+                      }`}
                     >
-                      <div className="min-w-0">
-                        <div className="text-sm font-semibold text-slate-900">{option.label}</div>
-                        <div className="mt-0.5 text-xs leading-relaxed text-slate-500">
-                          {option.description}
+                      <div className="flex min-w-0 flex-1 items-center gap-2">
+                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-sky-50 text-sm text-sky-600">
+                          {option.icon}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-baseline gap-x-2">
+                            <span className="text-sm font-semibold leading-5 text-slate-900">
+                              {option.label}
+                            </span>
+                            <span className="text-xs leading-5 text-slate-500">
+                              {option.description}
+                            </span>
+                          </div>
+                          <span className="block text-[11px] leading-4 text-amber-600">
+                            {option.cost}
+                          </span>
                         </div>
-                        <div className="mt-0.5 text-xs text-amber-600">{option.cost}</div>
+                        <span className={`inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium ${
+                          selected ? "bg-sky-100 text-sky-700" : "bg-slate-50 text-slate-500"
+                        }`}>
+                          {option.badgeIcon}
+                          {option.badge}
+                        </span>
                       </div>
                     </Radio>
-                  ))}
-                </div>
-              </Radio.Group>
-
-              <div className="flex items-start gap-2 rounded-xl bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-500">
-                <ExperimentOutlined className="mt-0.5 shrink-0 text-slate-400" />
-                <span>{describePersona(config)}</span>
+                  );
+                })}
               </div>
+            </Radio.Group>
+
+            <div className="flex items-start gap-2 rounded-lg bg-slate-50 px-2.5 py-2 text-xs leading-5 text-slate-500">
+              <InfoCircleOutlined className="mt-0.5 shrink-0 text-blue-600" />
+              <span className="whitespace-pre-line">{describePersona(config)}</span>
             </div>
-          )}
-        </SettingToggle>
-      </SettingGroup>
-    </div>
+          </div>
+        )}
+      </SettingToggle>
+    </SettingGroup>
   );
 }
 
 /**
- * 说明当前这套策略从哪来。
- *
- * 不展示具体数字：界面上的数字是渲染那一刻算的，而真正生效的是任务启动时
- * 后端按当天日期算的那套，两者对不上时用户只会怀疑功能坏了
+ * 说明当前人格策略的来源，不展示运行时的具体随机数字。
+ * 任务启动时后端会根据人格种子和当天日期推导实际节奏。
  */
 export function describePersona(config: HumanizeConfig): string {
   if (!config.enabled) {
-    return "关闭时投递节奏与改造前完全一致。";
+    return "拟人化已关闭，任务会按原有节奏执行。";
   }
   if (!config.persona_seed) {
     return "启用后系统会生成一套专属的操作习惯，保存配置即生效。";
   }
   return (
-    "系统已按你的专属编号生成一套操作习惯：手速、歇多久、什么时候跳过一个岗位，" +
-    "当天固定不变，每天自动换一套。具体节奏会写在任务日志里。"
+    "同一账号在不同天的表现也会随机化而略有差异。"
   );
 }

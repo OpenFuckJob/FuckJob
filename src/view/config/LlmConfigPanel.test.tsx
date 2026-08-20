@@ -1,10 +1,14 @@
 import { useState } from "react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
 import type { LlmConfig, LlmProviderEntry, LlmRetryConfig } from "@/types/app-config";
 import {
+  DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS,
   MAX_NETWORK_RETRY_ATTEMPTS,
+  MAX_LLM_REQUEST_TIMEOUT_SECONDS,
   MAX_RETRY_BASE_DELAY_MS,
+  MIN_LLM_REQUEST_TIMEOUT_SECONDS,
   MIN_RETRY_BASE_DELAY_MS,
   PRIMARY_LLM_ENTRY_ID,
 } from "@/types/app-config";
@@ -24,6 +28,7 @@ import {
   LlmConfigPanel,
   clampRetryAttempts,
   clampRetryBaseDelay,
+  clampRequestTimeout,
   createFallbackEntry,
   createLlmEntryId,
   isValidLlmConfig,
@@ -189,6 +194,13 @@ describe("重试策略取值区间", () => {
     expect(clampRetryBaseDelay(null)).toBe(100);
     expect(clampRetryBaseDelay(750)).toBe(750);
   });
+
+  it("模型请求超时被限制在 1 到 600 秒", () => {
+    expect(clampRequestTimeout(0)).toBe(MIN_LLM_REQUEST_TIMEOUT_SECONDS);
+    expect(clampRequestTimeout(999999)).toBe(MAX_LLM_REQUEST_TIMEOUT_SECONDS);
+    expect(clampRequestTimeout(null)).toBe(DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS);
+    expect(clampRequestTimeout(240)).toBe(240);
+  });
 });
 
 const primaryConfig: LlmConfig = {
@@ -198,21 +210,30 @@ const primaryConfig: LlmConfig = {
 };
 
 function Harness({
+  initialConfig = primaryConfig,
   initialFallbacks = [],
   onFallbacks,
   onRetry,
 }: {
+  initialConfig?: LlmConfig;
   initialFallbacks?: LlmProviderEntry[];
   onFallbacks?: (next: LlmProviderEntry[]) => void;
   onRetry?: (next: LlmRetryConfig) => void;
 }) {
-  const [config, setConfig] = useState<LlmConfig | null>(primaryConfig);
+  const [config, setConfig] = useState<LlmConfig | null>(initialConfig);
+  const [enabled, setEnabled] = useState(true);
   const [fallbacks, setFallbacks] = useState<LlmProviderEntry[]>(initialFallbacks);
-  const [retry, setRetry] = useState<LlmRetryConfig>({ network_retry_attempts: 2, retry_base_delay_ms: 500 });
+  const [retry, setRetry] = useState<LlmRetryConfig>({
+    network_retry_attempts: 2,
+    retry_base_delay_ms: 500,
+    request_timeout_seconds: DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS,
+  });
   return (
     <LlmConfigPanel
       config={config}
+      enabled={enabled}
       onChange={setConfig}
+      onEnabledChange={setEnabled}
       fallbacks={fallbacks}
       onFallbacksChange={(next) => {
         onFallbacks?.(next);
@@ -249,8 +270,50 @@ describe("LlmConfigPanel 降级链界面", () => {
     expect(screen.queryByRole("button", { name: "设为主用" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "上移备用 1" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "下移备用 1" })).not.toBeInTheDocument();
-    // 主用标签只在存在备用服务时出现，单服务用户的观感与改动前一致
-    expect(screen.queryByText("主用")).not.toBeInTheDocument();
+    // 参考表单始终明确标出主用服务，且降级链中的第一行同步显示主用状态。
+    expect(screen.getAllByText("主用").length).toBeGreaterThan(0);
+  });
+
+  it("首次获取模型时先保存当前输入的 API Key，再请求模型列表", async () => {
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "list_llm_credential_status") {
+        return Promise.resolve({ success: true, data: [], error: null });
+      }
+      if (command === "set_llm_api_key") {
+        return Promise.resolve({ success: true, data: { configured: true, source: "keychain" }, error: null });
+      }
+      if (command === "list_llm_models") {
+        return Promise.resolve({ success: true, data: ["gpt-first"], error: null });
+      }
+      return Promise.resolve({ success: true, data: { configured: false, source: "none" }, error: null });
+    });
+
+    render(<Harness initialConfig={{ ...primaryConfig, model: "" }} />);
+    fireEvent.change(await screen.findByLabelText("primary API Key"), { target: { value: "secret-key" } });
+    fireEvent.click(screen.getByRole("button", { name: "刷新primary模型列表" }));
+
+    await waitFor(() => expect(screen.getByLabelText("primary 模型")).toHaveValue("gpt-first"));
+    const commands = vi.mocked(invoke).mock.calls.map(([command]) => command);
+    expect(commands.indexOf("set_llm_api_key")).toBeGreaterThanOrEqual(0);
+    expect(commands.indexOf("list_llm_models")).toBeGreaterThan(commands.indexOf("set_llm_api_key"));
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("set_llm_api_key", { apiKey: "secret-key" });
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("list_llm_models", {
+      provider: "openai",
+      baseUrl: "https://api.openai.com/v1",
+    });
+  });
+
+  it("停用只切换状态，不清除主用配置", async () => {
+    render(<Harness />);
+
+    expect(await screen.findByLabelText("大模型启用开关")).toBeChecked();
+    fireEvent.click(screen.getByLabelText("大模型启用开关"));
+    expect(screen.getByText("已停用")).toBeInTheDocument();
+    expect(screen.getByText("配置已保留，启用大模型后展开编辑。")).toBeInTheDocument();
+    expect(screen.queryByLabelText("primary 模型")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("大模型启用开关"));
+    expect(screen.getByLabelText("primary 模型")).toHaveValue("gpt-test");
   });
 
   it("新增备用服务后列表出现新条目，其标识非空且不等于 primary", async () => {
@@ -309,7 +372,7 @@ describe("LlmConfigPanel 降级链界面", () => {
     const lastCallArg = (mock: typeof onRetry) =>
       mock.mock.calls[mock.mock.calls.length - 1]?.[0];
 
-    const attempts = await screen.findByLabelText("网络故障重试次数");
+    const attempts = await screen.findByLabelText("网络故障重试次数（输入数值）");
     expect(attempts).toHaveAttribute("aria-valuemin", "0");
     expect(attempts).toHaveAttribute("aria-valuemax", String(MAX_NETWORK_RETRY_ATTEMPTS));
     fireEvent.change(attempts, { target: { value: "4" } });
@@ -317,11 +380,19 @@ describe("LlmConfigPanel 降级链界面", () => {
     expect(lastCallArg(onRetry).network_retry_attempts).toBe(4);
 
     onRetry.mockClear();
-    const delay = screen.getByLabelText("首次重试等待");
+    const delay = screen.getByLabelText("首次重试等待（输入数值）");
     expect(delay).toHaveAttribute("aria-valuemin", String(MIN_RETRY_BASE_DELAY_MS));
     expect(delay).toHaveAttribute("aria-valuemax", String(MAX_RETRY_BASE_DELAY_MS));
     fireEvent.change(delay, { target: { value: "800" } });
     await waitFor(() => expect(onRetry).toHaveBeenCalled());
     expect(lastCallArg(onRetry).retry_base_delay_ms).toBe(800);
+
+    onRetry.mockClear();
+    const timeout = screen.getByLabelText("模型请求超时（输入数值）");
+    expect(timeout).toHaveAttribute("aria-valuemin", String(MIN_LLM_REQUEST_TIMEOUT_SECONDS));
+    expect(timeout).toHaveAttribute("aria-valuemax", String(MAX_LLM_REQUEST_TIMEOUT_SECONDS));
+    fireEvent.change(timeout, { target: { value: "240" } });
+    await waitFor(() => expect(onRetry).toHaveBeenCalled());
+    expect(lastCallArg(onRetry).request_timeout_seconds).toBe(240);
   });
 });
