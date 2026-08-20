@@ -15,7 +15,7 @@ pub fn job_list() -> CommandResult<Vec<JobDetail>> {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CommunicationStatus {
     Rejected,
@@ -28,6 +28,9 @@ pub struct JobListItem {
     #[serde(flatten)]
     pub job: JobDetail,
     pub communication_status: CommunicationStatus,
+    pub latest_message: Option<String>,
+    pub latest_message_at: Option<i64>,
+    pub latest_message_received: Option<bool>,
 }
 
 fn is_explicit_rejection(text: &str) -> bool {
@@ -61,40 +64,58 @@ fn is_explicit_rejection(text: &str) -> bool {
         .any(|phrase| normalized.contains(phrase))
 }
 
+fn build_job_list_items(jobs: Vec<JobDetail>, messages: Vec<ChatMessageRecord>) -> Vec<JobListItem> {
+    let mut replied_job_ids = HashSet::new();
+    let mut rejected_job_ids = HashSet::new();
+    let mut latest_messages_by_job_id: HashMap<String, ChatMessageRecord> = HashMap::new();
+
+    for message in messages
+        .into_iter()
+        .filter(|message| !message.job_id.is_empty() && !message.text.trim().is_empty())
+    {
+        if message.received {
+            replied_job_ids.insert(message.job_id.clone());
+            if is_explicit_rejection(&message.text) {
+                rejected_job_ids.insert(message.job_id.clone());
+            }
+        }
+
+        let should_replace = latest_messages_by_job_id
+            .get(&message.job_id)
+            .map(|current| (message.time, message.mid) > (current.time, current.mid))
+            .unwrap_or(true);
+        if should_replace {
+            latest_messages_by_job_id.insert(message.job_id.clone(), message);
+        }
+    }
+
+    jobs.into_iter()
+        .map(|job| {
+            let communication_status = if rejected_job_ids.contains(&job.id) {
+                CommunicationStatus::Rejected
+            } else if replied_job_ids.contains(&job.id) {
+                CommunicationStatus::Replied
+            } else {
+                CommunicationStatus::NoReply
+            };
+            let latest_message = latest_messages_by_job_id.get(&job.id);
+            JobListItem {
+                job,
+                communication_status,
+                latest_message: latest_message.map(|message| message.text.clone()),
+                latest_message_at: latest_message.map(|message| message.time),
+                latest_message_received: latest_message.map(|message| message.received),
+            }
+        })
+        .collect()
+}
+
 #[tauri::command]
 pub fn job_list_with_status() -> CommandResult<Vec<JobListItem>> {
     let result = (|| -> anyhow::Result<Vec<JobListItem>> {
         let jobs = job_detail_dao::list()?;
         let messages = chat_message_dao::list()?;
-        let mut replied_job_ids = HashSet::new();
-        let mut rejected_job_ids = HashSet::new();
-
-        for message in messages
-            .into_iter()
-            .filter(|message| message.received && !message.text.trim().is_empty())
-        {
-            replied_job_ids.insert(message.job_id.clone());
-            if is_explicit_rejection(&message.text) {
-                rejected_job_ids.insert(message.job_id);
-            }
-        }
-
-        Ok(jobs
-            .into_iter()
-            .map(|job| {
-                let communication_status = if rejected_job_ids.contains(&job.id) {
-                    CommunicationStatus::Rejected
-                } else if replied_job_ids.contains(&job.id) {
-                    CommunicationStatus::Replied
-                } else {
-                    CommunicationStatus::NoReply
-                };
-                JobListItem {
-                    job,
-                    communication_status,
-                }
-            })
-            .collect())
+        Ok(build_job_list_items(jobs, messages))
     })();
 
     match result {
@@ -105,7 +126,43 @@ pub fn job_list_with_status() -> CommandResult<Vec<JobListItem>> {
 
 #[cfg(test)]
 mod communication_status_tests {
-    use super::is_explicit_rejection;
+    use super::{build_job_list_items, is_explicit_rejection, CommunicationStatus};
+    use crate::dao::model::{ChatMessageRecord, JobDetail};
+
+    fn job(id: &str) -> JobDetail {
+        JobDetail {
+            id: id.into(),
+            platform: "boss".into(),
+            source_task_id: None,
+            profile_id: None,
+            profile_name: None,
+            profile_snapshot_id: None,
+            title: format!("{id} title"),
+            company_name: format!("{id} company"),
+            detail: String::new(),
+            salary: String::new(),
+            location: None,
+            is_reply: false,
+            is_send_resume: false,
+            created_at: "2026-08-19 09:00:00".into(),
+            resume_sent_at: None,
+            updated_at: "2026-08-19 09:00:00".into(),
+        }
+    }
+
+    fn message(job_id: &str, mid: i64, received: bool, text: &str, time: i64) -> ChatMessageRecord {
+        ChatMessageRecord {
+            id: ChatMessageRecord::build_id("boss", job_id, mid),
+            job_id: job_id.into(),
+            platform: "boss".into(),
+            conversation_id: job_id.into(),
+            mid,
+            received,
+            text: text.into(),
+            time,
+            from_name: if received { "招聘方" } else { "我" }.into(),
+        }
+    }
 
     #[test]
     fn recognizes_explicit_rejection_messages() {
@@ -118,6 +175,65 @@ mod communication_status_tests {
     fn does_not_treat_normal_replies_as_rejection() {
         assert!(!is_explicit_rejection("你好，可以发一份简历吗？"));
         assert!(!is_explicit_rejection("感谢关注，我们先沟通一下"));
+    }
+
+    #[test]
+    fn keeps_replied_and_rejected_received_only() {
+        let items = build_job_list_items(
+            vec![job("self-only"), job("hr-replied"), job("hr-rejected")],
+            vec![
+                message("self-only", 1, false, "我主动发了一条消息", 10),
+                message("hr-replied", 2, true, "可以发一份简历吗？", 20),
+                message("hr-rejected", 3, true, "这个岗位暂不考虑", 30),
+            ],
+        );
+
+        let self_only = items.iter().find(|item| item.job.id == "self-only").unwrap();
+        let hr_replied = items.iter().find(|item| item.job.id == "hr-replied").unwrap();
+        let hr_rejected = items.iter().find(|item| item.job.id == "hr-rejected").unwrap();
+
+        assert_eq!(self_only.communication_status, CommunicationStatus::NoReply);
+        assert_eq!(hr_replied.communication_status, CommunicationStatus::Replied);
+        assert_eq!(hr_rejected.communication_status, CommunicationStatus::Rejected);
+    }
+
+    #[test]
+    fn latest_message_ignores_blank_text_and_empty_job_id() {
+        let items = build_job_list_items(
+            vec![job("job-1"), job("job-2")],
+            vec![
+                message("job-1", 1, true, "有效消息", 10),
+                message("job-1", 2, true, "   ", 20),
+                message("", 3, true, "无法关联岗位", 30),
+            ],
+        );
+
+        let job_1 = items.iter().find(|item| item.job.id == "job-1").unwrap();
+        let job_2 = items.iter().find(|item| item.job.id == "job-2").unwrap();
+
+        assert_eq!(job_1.latest_message.as_deref(), Some("有效消息"));
+        assert_eq!(job_1.latest_message_at, Some(10));
+        assert_eq!(job_2.latest_message, None);
+        assert_eq!(job_2.latest_message_at, None);
+        assert_eq!(job_2.latest_message_received, None);
+    }
+
+    #[test]
+    fn latest_message_uses_mid_as_tiebreaker_for_same_millisecond() {
+        let items = build_job_list_items(
+            vec![job("job-1")],
+            vec![
+                message("job-1", 10, true, "同毫秒较小 mid", 100),
+                message("job-1", 12, false, "同毫秒较大 mid", 100),
+                message("job-1", 11, true, "更早时间", 99),
+            ],
+        );
+
+        let item = items.iter().find(|item| item.job.id == "job-1").unwrap();
+
+        assert_eq!(item.latest_message.as_deref(), Some("同毫秒较大 mid"));
+        assert_eq!(item.latest_message_at, Some(100));
+        assert_eq!(item.latest_message_received, Some(false));
     }
 }
 

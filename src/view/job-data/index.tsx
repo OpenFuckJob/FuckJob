@@ -86,6 +86,33 @@ const renderCommunicationStatus = (status: CommunicationStatus) => {
   return <Tag color={meta.color}>{meta.label}</Tag>;
 };
 
+const formatLatestMessageTime = (time: number): string =>
+  new Date(time).toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+const renderLatestMessage = (job: JobListItem) => {
+  if (!job.latest_message?.trim() || !job.latest_message_at) {
+    return "-";
+  }
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+      <Tag color={job.latest_message_received ? "green" : "blue"} style={{ margin: 0 }}>
+        {job.latest_message_received ? "招聘方" : "我"}
+      </Tag>
+      <Typography.Text type="secondary" style={{ flex: "0 0 auto", fontSize: 12 }}>
+        {formatLatestMessageTime(job.latest_message_at)}
+      </Typography.Text>
+      <Typography.Text ellipsis title={job.latest_message} style={{ minWidth: 0, flex: 1 }}>
+        {job.latest_message}
+      </Typography.Text>
+    </div>
+  );
+};
 /* ────────── Kanban lane config ────────── */
 
 interface KanbanLane {
@@ -492,6 +519,13 @@ const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled, 
         renderCommunicationStatus(status),
     },
     {
+      title: "最新消息",
+      key: "latest_message",
+      width: 280,
+      sorter: (a, b) => (a.latest_message_at ?? 0) - (b.latest_message_at ?? 0),
+      render: (_: unknown, record: JobListItem) => renderLatestMessage(record),
+    },
+    {
       title: "平台",
       key: "platform",
       width: 90,
@@ -689,7 +723,7 @@ const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled, 
               preserveSelectedRowKeys: true,
             }}
             size="middle"
-            scroll={{ x: 1300, y: "calc(100vh - 290px)" }}
+            scroll={{ x: 1700, y: "calc(100vh - 290px)" }}
             pagination={{
               defaultPageSize: 15,
               showSizeChanger: true,

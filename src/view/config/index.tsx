@@ -70,6 +70,8 @@ import {
   salaryOptions,
   experienceOptions,
   degreeOptions,
+  stageOptions,
+  scaleOptions,
   industryTreeOptions,
   cityTreeOptions,
 } from "@/lib/constants";
@@ -206,6 +208,11 @@ const buildReplyPromptVariables = (resumeEnabled: boolean) => [
     description: "岗位沟通上下文",
   },
 ];
+
+const normalizeMultiSelectCodes = (values: number[]) => {
+  if (values.includes(0)) return [];
+  return Array.from(new Set(values.filter((value) => value !== 0)));
+};
 
 interface PromptVariableGuideProps {
   items: typeof basePromptVariableItems;
@@ -804,6 +811,46 @@ export function ConfigPage(props: ConfigPageProps) {
                       label: o.name,
                     }))}
                     onChange={(v) => props.updateJobFilter({ dgree: v })}
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={12}>
+                <Form.Item
+                  label="融资阶段 (多选)"
+                  name={["job_filter_config", "stage"]}
+                >
+                  <Select
+                    mode="multiple"
+                    placeholder="选择融资阶段"
+                    options={stageOptions.map((o) => ({
+                      value: o.code,
+                      label: o.name,
+                    }))}
+                    onChange={(v) =>
+                      props.updateJobFilter({
+                        stage: normalizeMultiSelectCodes(v),
+                      })
+                    }
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={12}>
+                <Form.Item
+                  label="企业规模 (多选)"
+                  name={["job_filter_config", "scale"]}
+                >
+                  <Select
+                    mode="multiple"
+                    placeholder="选择企业规模"
+                    options={scaleOptions.map((o) => ({
+                      value: o.code,
+                      label: o.name,
+                    }))}
+                    onChange={(v) =>
+                      props.updateJobFilter({
+                        scale: normalizeMultiSelectCodes(v),
+                      })
+                    }
                   />
                 </Form.Item>
               </Col>

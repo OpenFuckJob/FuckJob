@@ -19,6 +19,9 @@ export type CommunicationStatus = "rejected" | "replied" | "no_reply";
 
 export interface JobListItem extends JobDetail {
   communication_status: CommunicationStatus;
+  latest_message?: string | null;
+  latest_message_at?: number | null;
+  latest_message_received?: boolean | null;
 }
 
 /* ── 岗位描述的结构化视图 ──
