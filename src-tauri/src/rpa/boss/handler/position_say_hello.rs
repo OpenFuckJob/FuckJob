@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::{
     auto_analysis,
@@ -13,6 +13,7 @@ use crate::{
         greet::build_greet_resources,
         run_flow::is_job_task_stop_requested,
         run_flow::PlatformKind,
+        schedule::{BudgetVerdict, RoundBudget},
     },
     utils::salary::decode_salary,
     verify,
@@ -25,11 +26,13 @@ use urlencoding::encode;
 // 岗位打招呼轰炸
 pub async fn position_say_hello(
     app_runtime_config: &AppRuntimeConfig,
+    budget: RoundBudget,
 ) -> Result<(), anyhow::Error> {
     let app_runtime_config = app_runtime_config.clone();
     browser::with_browser(|connection| {
         Box::pin(async move {
-            position_say_hello_on_page(connection, connection.tab(), &app_runtime_config).await
+            position_say_hello_on_page(connection, connection.tab(), &app_runtime_config, budget)
+                .await
         })
     })
     .await
@@ -40,8 +43,10 @@ pub async fn position_say_hello_on_page(
     connection: &ChromiumPage,
     page: &Page,
     app_runtime_config: &AppRuntimeConfig,
+    budget: RoundBudget,
 ) -> Result<(), anyhow::Error> {
     let app_runtime_config = app_runtime_config.clone();
+    let round_started = Instant::now();
     let search_url = build_job_search_url(&app_runtime_config.job_filter_config);
     // 加载本地已处理的岗位ID，用于去重
     let mut processed_job_ids: HashSet<String> = job_detail_dao::list()
@@ -74,10 +79,18 @@ pub async fn position_say_hello_on_page(
     }
     let mut no_new_count = 0u32;
     let mut stats = RoundStats::default();
+    // 撞上平台每日沟通上限之后打招呼会一条接一条地失败，而列表还能一直往下滚。
+    // 这个计数是那种「零产出却停不下来」的唯一出口
+    let mut consecutive_greet_failures = 0u32;
 
     let stop_reason = 'outer: loop {
         if is_job_task_stop_requested() {
             break 'outer StopReason::UserStopped;
+        }
+        if let Some(reason) =
+            budget_stop_reason(&budget, &stats, round_started, consecutive_greet_failures)
+        {
+            break 'outer reason;
         }
 
         let jeb_card_area_eles = page.eles(".card-area")?;
@@ -92,6 +105,11 @@ pub async fn position_say_hello_on_page(
         for job_card_area_ele in jeb_card_area_eles {
             if is_job_task_stop_requested() {
                 break 'outer StopReason::UserStopped;
+            }
+            if let Some(reason) =
+                budget_stop_reason(&budget, &stats, round_started, consecutive_greet_failures)
+            {
+                break 'outer reason;
             }
             stats.scanned += 1;
             let greet_job = match read_job_card(page, &job_card_area_ele, &processed_job_ids) {
@@ -155,9 +173,10 @@ pub async fn position_say_hello_on_page(
                 &app_runtime_config,
             );
             match handle_greet(connection, greet_job.clone(), app_runtime_config.clone()).await {
-                Ok(()) => {}
+                Ok(()) => consecutive_greet_failures = 0,
                 Err(error) => {
                     stats.greet_failed += 1;
+                    consecutive_greet_failures += 1;
                     logger::warning(greet_failure_message(
                         &greet_job.title,
                         &greet_job.company_name,
@@ -382,6 +401,12 @@ enum StopReason {
     EmptyList,
     /// 打招呼失败且策略要求立即终止
     GreetFailureAborted,
+    /// 本轮打招呼条数达到设定上限
+    GreetQuotaReached,
+    /// 本轮耗时达到设定上限
+    TimeLimitReached,
+    /// 连续多次打招呼失败，本轮熔断
+    TooManyGreetFailures,
 }
 
 impl StopReason {
@@ -389,6 +414,15 @@ impl StopReason {
         match self {
             StopReason::ReachedBottom => "岗位列表已触底，该搜索条件下的岗位已全部浏览完毕",
             StopReason::NoMoreFromApi => "接口返回无更多岗位，该搜索条件下的岗位已全部浏览完毕",
+            StopReason::GreetQuotaReached => {
+                "本轮打招呼条数已达设定上限，提前结束本轮；周期投递会在下一轮继续"
+            }
+            StopReason::TimeLimitReached => {
+                "本轮运行时长已达设定上限，提前结束本轮；周期投递会在下一轮继续"
+            }
+            StopReason::TooManyGreetFailures => {
+                "连续多次打招呼失败，可能已达平台每日沟通上限或触发了安全验证，本轮提前结束"
+            }
             StopReason::NoNewJobs => {
                 "连续多次滚动均未加载到新岗位，判定已到列表末尾，这是正常结束、不是程序崩溃；可更换岗位关键词/城市，或改用周期投递持续跟进"
             }
@@ -399,6 +433,25 @@ impl StopReason {
             StopReason::EmptyList => "当前筛选条件下暂无岗位列表，建议放宽筛选条件后重试",
             StopReason::GreetFailureAborted => "打招呼失败已终止本轮任务",
         }
+    }
+}
+
+/// 把预算判定翻译成本轮的结束原因。预算还够时返回 None
+fn budget_stop_reason(
+    budget: &RoundBudget,
+    stats: &RoundStats,
+    round_started: Instant,
+    consecutive_greet_failures: u32,
+) -> Option<StopReason> {
+    match budget.check(
+        stats.greet_success,
+        round_started.elapsed(),
+        consecutive_greet_failures,
+    ) {
+        BudgetVerdict::Continue => None,
+        BudgetVerdict::GreetLimit => Some(StopReason::GreetQuotaReached),
+        BudgetVerdict::TimeLimit => Some(StopReason::TimeLimitReached),
+        BudgetVerdict::FailureLimit => Some(StopReason::TooManyGreetFailures),
     }
 }
 
@@ -1437,6 +1490,59 @@ mod tests {
             assert!(text.contains("正常结束、不是程序崩溃"), "{text}");
             assert!(text.contains("周期投递"), "{text}");
         }
+    }
+
+    /// 不设上界时行为必须与改造前完全一致，否则「单轮自动求职」会莫名其妙提前收工
+    #[test]
+    fn an_unlimited_budget_never_ends_the_round_early() {
+        let stats = RoundStats {
+            greet_success: 500,
+            ..RoundStats::default()
+        };
+
+        assert_eq!(
+            budget_stop_reason(&RoundBudget::unlimited(), &stats, Instant::now(), 99),
+            None
+        );
+    }
+
+    #[test]
+    fn budget_limits_map_to_their_own_stop_reasons() {
+        let budget = RoundBudget {
+            max_greets: 3,
+            max_minutes: 0,
+            max_consecutive_greet_failures: 5,
+        };
+        let fresh = RoundStats::default();
+        let spent = RoundStats {
+            greet_success: 3,
+            ..RoundStats::default()
+        };
+
+        assert_eq!(budget_stop_reason(&budget, &fresh, Instant::now(), 0), None);
+        assert_eq!(
+            budget_stop_reason(&budget, &spent, Instant::now(), 0),
+            Some(StopReason::GreetQuotaReached)
+        );
+        assert_eq!(
+            budget_stop_reason(&budget, &fresh, Instant::now(), 5),
+            Some(StopReason::TooManyGreetFailures)
+        );
+    }
+
+    /// 提前结束不是故障，文案必须说清楚「下一轮还会继续」，
+    /// 否则用户会以为周期投递挂了
+    #[test]
+    fn budget_stop_reasons_read_as_normal_endings() {
+        assert!(StopReason::GreetQuotaReached
+            .describe()
+            .contains("下一轮继续"));
+        assert!(StopReason::TimeLimitReached
+            .describe()
+            .contains("下一轮继续"));
+        assert!(StopReason::TooManyGreetFailures
+            .describe()
+            .contains("每日沟通上限"));
     }
 
     #[test]

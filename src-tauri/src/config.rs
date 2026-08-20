@@ -101,6 +101,7 @@ pub fn default_app_config() -> AppRuntimeConfig {
         replay_config,
         analysis_config: AnalysisConfig::default(),
         reply_polling_config: ReplyPollingConfig::default(),
+        periodic_delivery_config: PeriodicDeliveryConfig::default(),
         browser_config: BrowserConfig {
             user_data_dir: "".to_string(),
             chrome_exe_path: None,
@@ -396,6 +397,7 @@ pub fn validate_and_normalize(config: &mut AppRuntimeConfig) -> Result<(), Strin
     normalize_llm_retry_config(&mut config.llm_retry_config);
     normalize_llm_fallbacks(&mut config.llm_fallbacks)?;
     normalize_analysis_config(&mut config.analysis_config);
+    config.periodic_delivery_config.migrate_legacy_window();
     normalize_job_profiles(config)?;
     config.browser_config.max_parallel_tasks = config
         .browser_config
@@ -608,6 +610,10 @@ pub struct AppRuntimeConfig {
     /// 自动回复轮询节奏。全局唯一，不随求职方案变化
     #[serde(default)]
     pub reply_polling_config: ReplyPollingConfig,
+
+    /// 周期投递的默认参数。启动任务时把它当初值带进弹窗，改动只对那次任务生效
+    #[serde(default)]
+    pub periodic_delivery_config: PeriodicDeliveryConfig,
 
     /// 浏览器运行配置
     pub browser_config: BrowserConfig,
@@ -1296,6 +1302,129 @@ fn default_humanize_delay_max_seconds() -> u64 {
 }
 
 // ================================
+// 周期投递配置
+//
+// 这里存的是启动弹窗的初值，不是正在跑的任务的参数：任务一旦入队就带着自己的
+// 计划快照，之后改这里不会影响它。放在顶层而不是方案卡里，理由和轮询节奏一样
+// ——它是运行节奏，不是求职策略。
+// ================================
+
+/// 一天的分钟数。窗口用「零点起的分钟数」表示，才装得下 09:30 这种半点边界
+pub const MINUTES_PER_DAY: u32 = 24 * 60;
+/// 单轮打招呼上限的允许区间上界
+pub const MAX_GREETS_PER_ROUND: u32 = 200;
+/// 单轮时长上限的允许区间上界（分钟）
+pub const MAX_ROUND_MINUTES: u64 = 240;
+/// 自动结束时长的允许区间上界（小时）
+pub const MAX_RUN_HOURS: u64 = 72;
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct PeriodicDeliveryConfig {
+    /// 两轮投递之间的间隔（分钟）
+    #[serde(default = "default_delivery_interval_minutes")]
+    pub interval_minutes: u64,
+
+    /// 是否只在指定时段投递。关掉后全天可投
+    #[serde(default)]
+    pub window_enabled: bool,
+
+    /// 投递时段，可以有多段：上午一段、下午一段，中间的午休就空出来了。
+    /// 每段以「零点起的分钟数」表示，左闭右开
+    #[serde(default = "default_delivery_windows")]
+    pub windows: Vec<DeliveryWindow>,
+
+    /// 单段时代的字段，只用于读入老配置，读完即并入 `windows` 并不再写回。
+    ///
+    /// 缺了这条迁移的表现不是报错而是静默重置：老用户升级后时段回到 09:00-18:00，
+    /// 而他原本设的可能是夜间投递
+    #[serde(default, skip_serializing)]
+    pub window_start_minute: Option<u32>,
+
+    #[serde(default, skip_serializing)]
+    pub window_end_minute: Option<u32>,
+
+    /// 启动后最多跑多少小时，0 表示不自动结束。
+    ///
+    /// 存成时长而不是绝对时刻：配置是「下次也这么跑」的模板，存死某个钟点
+    /// 隔天就过期了。提交任务时才换算成绝对的结束时刻
+    #[serde(default)]
+    pub max_run_hours: u64,
+
+    /// 单轮最多打招呼多少条，0 表示不限。
+    ///
+    /// 这是「一直在投递、回复轮不上」的正解：岗位列表几乎是无限的，
+    /// 一轮不设上界就可能跑几个小时，两轮之间的空闲期自然永远轮不到
+    #[serde(default = "default_max_greets_per_round")]
+    pub max_greets_per_round: u32,
+
+    /// 单轮最长跑多少分钟，0 表示不限
+    #[serde(default = "default_max_round_minutes")]
+    pub max_round_minutes: u64,
+}
+
+/// 配置文件里的一段投递时段。与 `rpa::schedule::DailyWindow` 同形，
+/// 但配置层不该反向依赖 RPA 模块，提交任务时再转换
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeliveryWindow {
+    pub start_minute: u32,
+    pub end_minute: u32,
+}
+
+impl PeriodicDeliveryConfig {
+    /// 把老配置的单段字段并进 `windows`。已经有多段数据时以多段为准
+    fn migrate_legacy_window(&mut self) {
+        let legacy = self.window_start_minute.zip(self.window_end_minute);
+        if let Some((start, end)) = legacy {
+            if self.windows.is_empty() {
+                self.windows = vec![DeliveryWindow {
+                    start_minute: start,
+                    end_minute: end,
+                }];
+            }
+        }
+        self.window_start_minute = None;
+        self.window_end_minute = None;
+        if self.windows.is_empty() {
+            self.windows = default_delivery_windows();
+        }
+    }
+}
+
+impl Default for PeriodicDeliveryConfig {
+    fn default() -> Self {
+        Self {
+            interval_minutes: default_delivery_interval_minutes(),
+            window_enabled: false,
+            windows: default_delivery_windows(),
+            window_start_minute: None,
+            window_end_minute: None,
+            max_run_hours: 0,
+            max_greets_per_round: default_max_greets_per_round(),
+            max_round_minutes: default_max_round_minutes(),
+        }
+    }
+}
+
+fn default_delivery_interval_minutes() -> u64 {
+    30
+}
+
+fn default_delivery_windows() -> Vec<DeliveryWindow> {
+    vec![DeliveryWindow {
+        start_minute: 9 * 60,
+        end_minute: 18 * 60,
+    }]
+}
+
+fn default_max_greets_per_round() -> u32 {
+    30
+}
+
+fn default_max_round_minutes() -> u64 {
+    60
+}
+
+// ================================
 // 岗位分析配置
 //
 // 一次分析就是一次完整的大模型调用，成本比筛选高一个量级，所以触发时机做成单选：
@@ -1604,6 +1733,7 @@ mod tests {
         let mut value = serde_yaml::to_value(default_app_config()).unwrap();
         let root = value.as_mapping_mut().unwrap();
         root.remove(serde_yaml::Value::String("reply_polling_config".into()));
+        root.remove(serde_yaml::Value::String("periodic_delivery_config".into()));
         root.get_mut(serde_yaml::Value::String("replay_config".into()))
             .and_then(serde_yaml::Value::as_mapping_mut)
             .unwrap()
@@ -1615,6 +1745,85 @@ mod tests {
         assert_eq!(config.replay_config.auto_reply_window_hours, 24);
         assert_eq!(config.reply_polling_config.interval_minutes, 5);
         assert_eq!(config.reply_polling_config.max_conversations_per_round, 10);
+        assert_eq!(
+            config.periodic_delivery_config,
+            PeriodicDeliveryConfig::default()
+        );
+        assert_eq!(config.periodic_delivery_config.interval_minutes, 30);
+        assert_eq!(config.periodic_delivery_config.max_greets_per_round, 30);
+    }
+
+    /// 老配置里投递时段是 `window_start_minute`/`window_end_minute` 两个标量。
+    /// 缺了这条迁移，表现不是报错而是静默重置：老用户升级后时段回到 09:00-18:00，
+    /// 而他原本设的可能是夜间投递，任务于是在完全不该跑的时间开投
+    #[test]
+    fn a_legacy_single_window_config_migrates_into_the_window_list() {
+        let mut config = default_app_config();
+        config.periodic_delivery_config.windows = Vec::new();
+        config.periodic_delivery_config.window_start_minute = Some(22 * 60);
+        config.periodic_delivery_config.window_end_minute = Some(6 * 60);
+
+        validate_and_normalize(&mut config).unwrap();
+
+        assert_eq!(
+            config.periodic_delivery_config.windows,
+            vec![DeliveryWindow {
+                start_minute: 22 * 60,
+                end_minute: 6 * 60,
+            }]
+        );
+        // 迁移完就把老字段清空，写回配置文件时不再出现
+        assert_eq!(config.periodic_delivery_config.window_start_minute, None);
+        assert_eq!(config.periodic_delivery_config.window_end_minute, None);
+    }
+
+    /// 已经有多段数据时不能被老字段覆盖，否则每次存盘都会退回单段
+    #[test]
+    fn an_existing_window_list_wins_over_the_legacy_fields() {
+        let mut config = default_app_config();
+        config.periodic_delivery_config.windows = vec![
+            DeliveryWindow { start_minute: 9 * 60, end_minute: 12 * 60 },
+            DeliveryWindow { start_minute: 14 * 60, end_minute: 18 * 60 },
+        ];
+        config.periodic_delivery_config.window_start_minute = Some(0);
+        config.periodic_delivery_config.window_end_minute = Some(60);
+
+        validate_and_normalize(&mut config).unwrap();
+
+        assert_eq!(config.periodic_delivery_config.windows.len(), 2);
+        assert_eq!(
+            config.periodic_delivery_config.windows[0].start_minute,
+            9 * 60
+        );
+    }
+
+    /// 时段列表被清空时兜回默认，而不是留一个「开了时段限制却一段都没有」的空壳
+    #[test]
+    fn an_empty_window_list_falls_back_to_the_default_window() {
+        let mut config = default_app_config();
+        config.periodic_delivery_config.windows = Vec::new();
+
+        validate_and_normalize(&mut config).unwrap();
+
+        assert_eq!(
+            config.periodic_delivery_config.windows,
+            default_delivery_windows()
+        );
+    }
+
+    /// 单轮上限的默认值不是随便填的：它是「一直在投递、回复轮不上」的正解。
+    /// 哪天被改回 0（不限），周期投递会退回到一轮跑几个小时、空闲期永远轮不到的状态，
+    /// 而配置读取、任务启动全都正常，症状只在挂了半天之后才显出来
+    #[test]
+    fn periodic_delivery_defaults_bound_a_single_round() {
+        let config = PeriodicDeliveryConfig::default();
+
+        assert!(config.max_greets_per_round > 0);
+        assert!(config.max_round_minutes > 0);
+        assert!(config.interval_minutes > 0);
+        // 时段与自动结束默认不启用：这两项是可选约束，不该在用户没设过时突然生效
+        assert!(!config.window_enabled);
+        assert_eq!(config.max_run_hours, 0);
     }
 
     #[test]

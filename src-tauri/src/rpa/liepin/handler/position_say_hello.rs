@@ -14,6 +14,7 @@ use crate::{
         greet::build_greet_resources,
         liepin::LIEPIN_SITE_URL,
         run_flow::is_job_task_stop_requested,
+        schedule::{BudgetVerdict, RoundBudget},
     },
     utils::salary::decode_salary,
     verify,
@@ -23,12 +24,15 @@ use rust_drission::{utils::sleep_random_ms, ChromiumPage, Page};
 use serde::Deserialize;
 use urlencoding::encode;
 
-pub async fn position_say_hello(config: &AppRuntimeConfig) -> Result<(), anyhow::Error> {
+pub async fn position_say_hello(
+    config: &AppRuntimeConfig,
+    budget: RoundBudget,
+) -> Result<(), anyhow::Error> {
     let config = config.clone();
     browser::with_browser(|connection| {
-        Box::pin(
-            async move { position_say_hello_on_page(connection, connection.tab(), &config).await },
-        )
+        Box::pin(async move {
+            position_say_hello_on_page(connection, connection.tab(), &config, budget).await
+        })
     })
     .await
 }
@@ -38,8 +42,13 @@ pub async fn position_say_hello_on_page(
     connection: &ChromiumPage,
     page: &Page,
     config: &AppRuntimeConfig,
+    budget: RoundBudget,
 ) -> Result<(), anyhow::Error> {
     let config = config.clone();
+    let round_started = Instant::now();
+    // 页级 RoundStats 每页都会重置，而预算按整轮算，所以另攒两个整轮计数
+    let mut round_greeted = 0u32;
+    let mut consecutive_greet_failures = 0u32;
     let search_url = build_job_search_url(&config);
     let mut processed_job_ids: HashSet<String> = job_detail_dao::list()
         .unwrap_or_default()
@@ -64,6 +73,15 @@ pub async fn position_say_hello_on_page(
             logger::info("猎聘求职任务已结束")?;
             return Ok(());
         }
+        if let Some(reason) = budget_stop_reason(
+            &budget,
+            round_greeted,
+            round_started,
+            consecutive_greet_failures,
+        ) {
+            logger::info(reason)?;
+            return Ok(());
+        }
 
         let jobs = collect_jobs(page)?;
         if jobs.is_empty() {
@@ -76,6 +94,16 @@ pub async fn position_say_hello_on_page(
         for job in jobs {
             if is_job_task_stop_requested() {
                 logger::info("猎聘求职任务已结束")?;
+                return Ok(());
+            }
+            if let Some(reason) = budget_stop_reason(
+                &budget,
+                round_greeted,
+                round_started,
+                consecutive_greet_failures,
+            ) {
+                logger::info(stats.summary())?;
+                logger::info(reason)?;
                 return Ok(());
             }
 
@@ -135,14 +163,18 @@ pub async fn position_say_hello_on_page(
             match greet_job(connection, job.clone(), config.clone()).await {
                 Ok(false) => {
                     stats.skipped_hold += 1;
+                    consecutive_greet_failures = 0;
                 }
                 Ok(true) => {
                     stats.greeted += 1;
+                    round_greeted += 1;
+                    consecutive_greet_failures = 0;
                     processed_job_ids.insert(format!("liepin:{}", job.platform_job_id));
                     processed_job_ids.insert(job.platform_job_id.clone());
                 }
                 Err(error) => {
                     stats.greet_failed += 1;
+                    consecutive_greet_failures += 1;
                     logger::warning(greet_failure_message(&job.title, &job.company_name, &error))?;
                     continue;
                 }
@@ -155,6 +187,33 @@ pub async fn position_say_hello_on_page(
         if !scroll_next(page)? {
             logger::info("猎聘岗位列表已触底")?;
             return Ok(());
+        }
+    }
+}
+
+/// 把预算判定翻译成本轮的结束语。预算还够时返回 None。
+///
+/// 提前结束不是故障，文案必须说清楚「下一轮还会继续」，否则用户会以为投递挂了
+fn budget_stop_reason(
+    budget: &RoundBudget,
+    round_greeted: u32,
+    round_started: Instant,
+    consecutive_greet_failures: u32,
+) -> Option<&'static str> {
+    match budget.check(
+        round_greeted,
+        round_started.elapsed(),
+        consecutive_greet_failures,
+    ) {
+        BudgetVerdict::Continue => None,
+        BudgetVerdict::GreetLimit => {
+            Some("猎聘本轮打招呼条数已达设定上限，提前结束本轮；周期投递会在下一轮继续")
+        }
+        BudgetVerdict::TimeLimit => {
+            Some("猎聘本轮运行时长已达设定上限，提前结束本轮；周期投递会在下一轮继续")
+        }
+        BudgetVerdict::FailureLimit => {
+            Some("猎聘连续多次打招呼失败，可能已达平台每日沟通上限或触发了安全验证，本轮提前结束")
         }
     }
 }

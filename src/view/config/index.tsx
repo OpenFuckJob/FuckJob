@@ -41,9 +41,12 @@ import {
   AnalysisConfig,
   AnalysisTrigger,
   ReplyPollingConfig,
+  PeriodicDeliveryConfig,
+  DEFAULT_PERIODIC_DELIVERY_CONFIG,
   getAnalysisConfig,
   getJobProfiles,
   getReplyPollingConfig,
+  getPeriodicDeliveryConfig,
   DEFAULT_AUTO_REPLY_WINDOW_HOURS,
   DEFAULT_MAX_AUTO_REPLIES,
   DEFAULT_MAX_REPLY_CHARS,
@@ -61,6 +64,7 @@ import {
   SettingToggle,
 } from "@/components/SettingField";
 import ReplyPollingSection from "./ReplyPollingSection";
+import PeriodicDeliverySection from "./PeriodicDeliverySection";
 import {
   jobTypeOptions,
   salaryOptions,
@@ -268,6 +272,7 @@ export interface ConfigPageProps {
   removeReplyResource: (templateIndex: number, resourceIndex: number) => void;
   updateAnalysis: (next: Partial<AnalysisConfig>) => void;
   updatePolling: (next: Partial<ReplyPollingConfig>) => void;
+  updatePeriodicDelivery: (next: Partial<PeriodicDeliveryConfig>) => void;
   updateBrowser: (next: Partial<BrowserConfig>) => void;
   updateResume: (next: Partial<ResumeConfig>) => void;
   updateRule: (index: number, next: Partial<RegexRule>) => void;
@@ -1100,6 +1105,13 @@ export function ConfigPage(props: ConfigPageProps) {
                   ),
                 },
               ]}
+            />
+
+            <PeriodicDeliverySection
+              config={getPeriodicDeliveryConfig(props.config)}
+              onChange={props.updatePeriodicDelivery}
+              resetTo={DEFAULT_PERIODIC_DELIVERY_CONFIG}
+              resetLabel="恢复出厂默认"
             />
           </Space>
         );
