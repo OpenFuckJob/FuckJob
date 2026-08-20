@@ -15,7 +15,6 @@ import {
   Cascader,
   Collapse,
   Alert,
-  Radio,
   Dropdown,
   Modal,
   Tabs,
@@ -66,6 +65,7 @@ import {
   SettingSlider,
   SettingToggle,
 } from "@/components/SettingField";
+import { RadioCardGroup } from "@/components/RadioCardGroup";
 import ReplyPollingSection from "./ReplyPollingSection";
 import PeriodicDeliverySection from "./PeriodicDeliverySection";
 import HumanizeSection from "./HumanizeSection";
@@ -149,30 +149,31 @@ const REPLY_STRATEGY_OPTIONS: {
   label: string;
   description: string;
   needsLlm: boolean;
+  recommended?: boolean;
 }[] = [
   {
     value: "template_first",
-    label: "规则优先，AI 兜底（推荐）",
-    description:
-      "命中正则规则的消息直接发固定话术，不消耗模型额度；其余交给 AI 判断",
+    label: "规则优先，AI 兜底",
+    description: "命中规则的直接发话术，不耗额度；其余交给 AI",
     needsLlm: true,
+    recommended: true,
   },
   {
     value: "llm",
     label: "仅 AI 回复",
-    description: "每条未读都交给大模型判断该回什么、要不要投简历",
+    description: "每条未读都交给大模型判断怎么回",
     needsLlm: true,
   },
   {
     value: "template",
     label: "仅规则回复",
-    description: "只回命中正则规则的消息，其余留给人工处理",
+    description: "只回命中规则的消息，其余留给人工",
     needsLlm: false,
   },
   {
     value: "off",
     label: "关闭自动回复",
-    description: "沟通任务只同步消息，不代你发送任何内容",
+    description: "只同步消息，不代你发送任何内容",
     needsLlm: false,
   },
 ];
@@ -313,29 +314,31 @@ const ANALYSIS_TRIGGER_OPTIONS: Array<{
   label: string;
   description: string;
   needsLlm: boolean;
+  recommended?: boolean;
 }> = [
   {
     value: "off",
     label: "关闭自动分析",
-    description: "只在岗位详情页或岗位管理页的批量入口手动分析",
+    description: "只在岗位详情页手动触发",
     needsLlm: false,
   },
   {
     value: "greet_sent",
     label: "打招呼发送成功后",
-    description: "只分析真正投出去的岗位，最省模型额度，推荐日常使用",
+    description: "只分析投出去的岗位，最省额度",
     needsLlm: true,
+    recommended: true,
   },
   {
     value: "filter_passed",
     label: "通过筛选规则后",
-    description: "规则命中即分析，覆盖最全；被模型判定不该投的岗位也会消耗额度",
+    description: "规则命中即分析，覆盖最全但更费额度",
     needsLlm: true,
   },
   {
     value: "reply_received",
     label: "收到 HR 回复后",
-    description: "对方回复了才分析，此时聊天记录已有内容，报告最贴合面试准备",
+    description: "对方回复后才分析，最贴合面试准备",
     needsLlm: true,
   },
 ];
@@ -1544,33 +1547,15 @@ export function ConfigPage(props: ConfigPageProps) {
                 </Text>
               </div>
 
-              <Radio.Group
+              <RadioCardGroup
+                ariaLabel="分析时机"
                 value={analysis.trigger}
-                onChange={(e) =>
-                  props.updateAnalysis({
-                    trigger: e.target.value as AnalysisTrigger,
-                  })
-                }
-                className="w-full"
-              >
-                <div className="flex flex-col gap-2 w-full">
-                  {ANALYSIS_TRIGGER_OPTIONS.map((option) => (
-                    <Radio
-                      key={option.value}
-                      value={option.value}
-                      disabled={option.needsLlm && !llmActive}
-                      className="items-start! rounded-xl border border-slate-200/80 px-4 py-3 m-0! hover:border-sky-300"
-                    >
-                      <Text className="text-slate-900 font-bold block">
-                        {option.label}
-                      </Text>
-                      <Text className="text-slate-500 text-xs">
-                        {option.description}
-                      </Text>
-                    </Radio>
-                  ))}
-                </div>
-              </Radio.Group>
+                options={ANALYSIS_TRIGGER_OPTIONS.map((option) => ({
+                  ...option,
+                  disabled: option.needsLlm && !llmActive,
+                }))}
+                onChange={(trigger) => props.updateAnalysis({ trigger })}
+              />
 
               {!llmActive && (
                 <Text className="text-slate-400 text-xs block">
@@ -1688,45 +1673,17 @@ export function ConfigPage(props: ConfigPageProps) {
                 </Text>
               </div>
 
-              <Radio.Group
-                aria-label="回复策略"
+              <RadioCardGroup
+                ariaLabel="回复策略"
                 value={replayStrategy}
-                onChange={(e) =>
-                  props.updateReplay(
-                    REPLY_STRATEGY_FLAGS[e.target.value as ReplyStrategy],
-                  )
+                options={REPLY_STRATEGY_OPTIONS.map((option) => ({
+                  ...option,
+                  disabled: option.needsLlm && !llmActive,
+                }))}
+                onChange={(strategy) =>
+                  props.updateReplay(REPLY_STRATEGY_FLAGS[strategy])
                 }
-                className="!block w-full"
-              >
-                <div className="flex w-full flex-col gap-1.5">
-                  {REPLY_STRATEGY_OPTIONS.map((option) => {
-                    const selected = replayStrategy === option.value;
-                    const disabled = option.needsLlm && !llmActive;
-                    return (
-                      <Radio
-                        key={option.value}
-                        value={option.value}
-                        aria-label={option.label}
-                        disabled={disabled}
-                        className={`!m-0 !flex !w-full !items-center !gap-2 !rounded-lg !border !px-2.5 !py-2 transition-colors ${
-                          selected
-                            ? "!border-sky-400 !bg-sky-50/60"
-                            : "!border-slate-200 !bg-white hover:!border-sky-200 hover:!bg-slate-50/60"
-                        } ${disabled ? "!cursor-not-allowed !bg-slate-50/70" : ""}`}
-                      >
-                        <div className="min-w-0 flex-1">
-                          <Text className="block text-sm font-semibold leading-5 text-slate-900">
-                            {option.label}
-                          </Text>
-                          <Text className="block text-xs leading-5 text-slate-500">
-                            {option.description}
-                          </Text>
-                        </div>
-                      </Radio>
-                    );
-                  })}
-                </div>
-              </Radio.Group>
+              />
 
               {!llmActive && (
                 <Text className="text-slate-400 text-xs block">
