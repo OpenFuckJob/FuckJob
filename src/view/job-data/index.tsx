@@ -8,6 +8,7 @@ import {
   Select,
   Space,
   Table,
+  Tabs,
   Tag,
   Typography,
   message,
@@ -26,7 +27,6 @@ import type { ColumnsType } from "antd/es/table";
 import type { CommandResult } from "../../types/command";
 import { commandErrorMessage } from "../../types/command";
 import type {
-  ChatMessageRecord,
   CommunicationStatus,
   JobDetail,
   JobListItem,
@@ -34,6 +34,8 @@ import type {
 import type { InterviewJobAnalysis } from "../../types/analysis";
 import { DEFAULT_HIGH_MATCH_SCORE } from "../../types/app-config";
 import AnalysisReport from "./AnalysisReport";
+import ChatThreadModal from "./ChatThread";
+import JobBrief from "./JobBrief";
 import "./style.css";
 
 /** 与 Rust 侧 BatchAnalysisResult 对应 */
@@ -111,120 +113,6 @@ const renderLatestMessage = (job: JobListItem) => {
     </div>
   );
 };
-
-/* ────────── Chat messages modal ────────── */
-
-const ChatMessagesModal = ({
-  job,
-  open,
-  onClose,
-}: {
-  job: JobDetail;
-  open: boolean;
-  onClose: () => void;
-}) => {
-  const [messages, setMessages] = useState<ChatMessageRecord[]>([]);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (!open) return;
-    setLoading(true);
-    invoke<CommandResult<ChatMessageRecord[]>>("chat_messages_by_job", {
-      jobId: job.id,
-    })
-      .then((result) => {
-        if (result.success && result.data) {
-          setMessages(
-            [...result.data].sort((a, b) => a.time - b.time),
-          );
-        } else {
-          setMessages([]);
-        }
-      })
-      .catch(() => setMessages([]))
-      .finally(() => setLoading(false));
-  }, [job.id, open]);
-
-  return (
-    <Modal
-      title={`${job.title} - 沟通记录`}
-      open={open}
-      onCancel={onClose}
-      footer={null}
-      width={560}
-      styles={{ body: { maxHeight: 480, overflowY: "auto", padding: "16px 24px" } }}
-    >
-      {loading ? (
-        <div style={{ textAlign: "center", padding: 24, color: "#999" }}>
-          加载中...
-        </div>
-      ) : messages.length === 0 ? (
-        <div style={{ textAlign: "center", padding: 24, color: "#999" }}>
-          暂无沟通记录
-        </div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {messages.map((msg) => {
-            const isMine = !msg.received;
-            const time = new Date(msg.time).toLocaleString("zh-CN", {
-              month: "2-digit",
-              day: "2-digit",
-              hour: "2-digit",
-              minute: "2-digit",
-            });
-            return (
-              <div
-                key={msg.id}
-                style={{
-                  display: "flex",
-                  flexDirection: isMine ? "row-reverse" : "row",
-                  alignItems: "flex-start",
-                  gap: 8,
-                }}
-              >
-                <div
-                  style={{
-                    maxWidth: "75%",
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: isMine ? "flex-end" : "flex-start",
-                  }}
-                >
-                  <div
-                    style={{
-                      padding: "8px 12px",
-                      borderRadius: 12,
-                      backgroundColor: isMine ? "#1677ff" : "#f0f0f0",
-                      color: isMine ? "#fff" : "#333",
-                      fontSize: 13,
-                      lineHeight: 1.5,
-                      wordBreak: "break-word",
-                      ...(isMine
-                        ? { borderBottomRightRadius: 4 }
-                        : { borderBottomLeftRadius: 4 }),
-                    }}
-                  >
-                    {msg.text}
-                  </div>
-                  <span
-                    style={{
-                      fontSize: 11,
-                      color: "#999",
-                      marginTop: 2,
-                    }}
-                  >
-                    {msg.from_name} · {time}
-                  </span>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </Modal>
-  );
-};
-
 /* ────────── Kanban lane config ────────── */
 
 interface KanbanLane {
@@ -307,7 +195,7 @@ function JobKanbanCard({
       className="job-card"
       role="button"
       tabIndex={0}
-      title="查看面试分析报告"
+      title="查看岗位详情与分析报告"
       onClick={() => onView(job)}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -432,8 +320,9 @@ function KanbanView({
 
 /* ────────── Page ────────── */
 
-const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled, highMatchScore = DEFAULT_HIGH_MATCH_SCORE, onStartInterview }: {
+const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, onFocusHandled, highMatchScore = DEFAULT_HIGH_MATCH_SCORE, onStartInterview }: {
   aiConfigured: boolean;
+  llmConfigured: boolean;
   onConfigureAi: () => void;
   /** 从其他页面跳转过来时需要直接打开沟通记录的岗位 */
   focusJobId?: string;
@@ -835,7 +724,7 @@ const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled, 
               preserveSelectedRowKeys: true,
             }}
             size="middle"
-            scroll={{ x: 1580, y: "calc(100vh - 290px)" }}
+            scroll={{ x: 1700, y: "calc(100vh - 290px)" }}
             pagination={{
               defaultPageSize: 15,
               showSizeChanger: true,
@@ -845,36 +734,55 @@ const JobDataPage = ({ aiConfigured, onConfigureAi, focusJobId, onFocusHandled, 
         </div>
       )}
 
-      {/* ── analysis modal ── */}
+      {/* ── job detail modal ── */}
       {currentJob && (
         <Modal
-          title={`${currentJob.title} - 面试分析报告`}
+          title={`${currentJob.company_name} · ${currentJob.title}`}
           open
           onCancel={() => setCurrentJob(null)}
           footer={null}
           width="min(1180px, 94vw)"
           centered
           destroyOnHidden
-          styles={{ body: { height: "min(74vh, 860px)", overflowY: "auto", padding: "16px 24px" } }}
+          styles={{ body: { height: "min(74vh, 860px)", overflowY: "auto", padding: "8px 24px 16px" } }}
         >
-          <AnalysisReport
-            job={currentJob}
-            aiConfigured={aiConfigured}
-            onConfigureAi={onConfigureAi}
-            onAnalyzed={(analysis) =>
-              setAnalyses((current) => ({ ...current, [analysis.job_id]: analysis }))
-            }
+          {/* 岗位原文在前、AI 分析在后：先看清岗位本身，再看对它的判断 */}
+          <Tabs
+            defaultActiveKey="brief"
+            items={[
+              {
+                key: "brief",
+                label: "岗位详情",
+                children: (
+                  <JobBrief job={currentJob} analysis={analyses[currentJob.id]} />
+                ),
+              },
+              {
+                key: "analysis",
+                label: "面试分析报告",
+                children: (
+                  <AnalysisReport
+                    job={currentJob}
+                    aiConfigured={aiConfigured}
+                    llmConfigured={llmConfigured}
+                    onConfigureAi={onConfigureAi}
+                    onAnalyzed={(analysis) =>
+                      setAnalyses((current) => ({
+                        ...current,
+                        [analysis.job_id]: analysis,
+                      }))
+                    }
+                  />
+                ),
+              },
+            ]}
           />
         </Modal>
       )}
 
       {/* ── chat modal ── */}
       {chatJob && (
-        <ChatMessagesModal
-          job={chatJob}
-          open
-          onClose={() => setChatJob(null)}
-        />
+        <ChatThreadModal job={chatJob} open onClose={() => setChatJob(null)} />
       )}
     </div>
   );

@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::{
     auto_analysis,
@@ -11,8 +11,11 @@ use crate::{
         boss::{handler::send_messages, model::GreetJob},
         conversation::SendVerdict,
         greet::build_greet_resources,
+        human_input,
+        human_pace::GreetPacer,
         run_flow::is_job_task_stop_requested,
         run_flow::PlatformKind,
+        schedule::{BudgetVerdict, RoundBudget},
     },
     utils::salary::decode_salary,
     verify,
@@ -25,11 +28,13 @@ use urlencoding::encode;
 // 岗位打招呼轰炸
 pub async fn position_say_hello(
     app_runtime_config: &AppRuntimeConfig,
+    budget: RoundBudget,
 ) -> Result<(), anyhow::Error> {
     let app_runtime_config = app_runtime_config.clone();
     browser::with_browser(|connection| {
         Box::pin(async move {
-            position_say_hello_on_page(connection, connection.tab(), &app_runtime_config).await
+            position_say_hello_on_page(connection, connection.tab(), &app_runtime_config, budget)
+                .await
         })
     })
     .await
@@ -40,8 +45,10 @@ pub async fn position_say_hello_on_page(
     connection: &ChromiumPage,
     page: &Page,
     app_runtime_config: &AppRuntimeConfig,
+    budget: RoundBudget,
 ) -> Result<(), anyhow::Error> {
     let app_runtime_config = app_runtime_config.clone();
+    let round_started = Instant::now();
     let search_url = build_job_search_url(&app_runtime_config.job_filter_config);
     // 加载本地已处理的岗位ID，用于去重
     let mut processed_job_ids: HashSet<String> = job_detail_dao::list()
@@ -74,10 +81,21 @@ pub async fn position_say_hello_on_page(
     }
     let mut no_new_count = 0u32;
     let mut stats = RoundStats::default();
+    // 休息节奏从用户设的单轮上限派生。拟人化关着时它是个空壳，
+    // 停顿仍是改造前那段 3-5 秒
+    let mut pacer = GreetPacer::new(&app_runtime_config.humanize_config, budget.max_greets);
+    // 撞上平台每日沟通上限之后打招呼会一条接一条地失败，而列表还能一直往下滚。
+    // 这个计数是那种「零产出却停不下来」的唯一出口
+    let mut consecutive_greet_failures = 0u32;
 
     let stop_reason = 'outer: loop {
         if is_job_task_stop_requested() {
             break 'outer StopReason::UserStopped;
+        }
+        if let Some(reason) =
+            budget_stop_reason(&budget, &stats, round_started, consecutive_greet_failures)
+        {
+            break 'outer reason;
         }
 
         let jeb_card_area_eles = page.eles(".card-area")?;
@@ -93,8 +111,14 @@ pub async fn position_say_hello_on_page(
             if is_job_task_stop_requested() {
                 break 'outer StopReason::UserStopped;
             }
+            if let Some(reason) =
+                budget_stop_reason(&budget, &stats, round_started, consecutive_greet_failures)
+            {
+                break 'outer reason;
+            }
             stats.scanned += 1;
-            let greet_job = match read_job_card(page, &job_card_area_ele, &processed_job_ids) {
+            let greet_job =
+                match read_job_card(page, &job_card_area_ele, &processed_job_ids, &mut pacer) {
                 Ok(CardOutcome::Ready(greet_job)) => *greet_job,
                 Ok(CardOutcome::Skipped(reason)) => {
                     stats.record_skip(reason);
@@ -155,9 +179,10 @@ pub async fn position_say_hello_on_page(
                 &app_runtime_config,
             );
             match handle_greet(connection, greet_job.clone(), app_runtime_config.clone()).await {
-                Ok(()) => {}
+                Ok(()) => consecutive_greet_failures = 0,
                 Err(error) => {
                     stats.greet_failed += 1;
+                    consecutive_greet_failures += 1;
                     logger::warning(greet_failure_message(
                         &greet_job.title,
                         &greet_job.company_name,
@@ -178,7 +203,11 @@ pub async fn position_say_hello_on_page(
             stats.greet_success += 1;
             logger::info(format!("{} 初次沟通成功", greet_job.title))?;
             processed_job_ids.insert(greet_job.platform_job_id.clone());
-            sleep_random_ms(3000, 5000);
+            // 停顿、以及连投若干条之后的休息都在这里面。收到停止请求时立即收尾，
+            // 不能让用户等完一段十几分钟的休息
+            if !pacer.after_greet(true).await {
+                break 'outer StopReason::UserStopped;
+            }
         }
 
         // 本页处理结果汇总：一条都没进入打招呼流程时给出聚合提示，避免界面长时间无输出
@@ -252,6 +281,9 @@ pub async fn position_say_hello_on_page(
         stop_reason.describe(),
         stats.total_summary()
     ))?;
+    if let Some(summary) = pacer.summary() {
+        logger::info(summary)?;
+    }
 
     Ok(())
 }
@@ -270,6 +302,8 @@ enum SkipReason {
     AlreadyViewed,
     /// 岗位 ID 已存在于本地库，之前已投递
     AlreadyProcessed,
+    /// 拟人化随机跳过：扫一眼标题就划过去了，没点开
+    Humanized,
 }
 
 /// 读取一张岗位卡片的结果
@@ -292,6 +326,8 @@ struct RoundStats {
     skipped_rule: u32,
     /// 因 AI 语义复核未通过或失败而跳过
     skipped_ai: u32,
+    /// 被拟人化随机跳过（「只看不投」）
+    skipped_humanize: u32,
     /// 卡片读取失败
     read_failed: u32,
     /// 打招呼成功
@@ -305,6 +341,7 @@ impl RoundStats {
         match reason {
             SkipReason::AlreadyViewed => self.skipped_viewed += 1,
             SkipReason::AlreadyProcessed => self.skipped_processed += 1,
+            SkipReason::Humanized => self.skipped_humanize += 1,
         }
     }
 
@@ -328,6 +365,7 @@ impl RoundStats {
                 .saturating_sub(base.skipped_processed),
             skipped_rule: self.skipped_rule.saturating_sub(base.skipped_rule),
             skipped_ai: self.skipped_ai.saturating_sub(base.skipped_ai),
+            skipped_humanize: self.skipped_humanize.saturating_sub(base.skipped_humanize),
             read_failed: self.read_failed.saturating_sub(base.read_failed),
             greet_success: self.greet_success.saturating_sub(base.greet_success),
             greet_failed: self.greet_failed.saturating_sub(base.greet_failed),
@@ -336,12 +374,13 @@ impl RoundStats {
 
     fn summary(&self) -> String {
         format!(
-            "共扫描 {} 条岗位，已浏览跳过 {} 条，已投递跳过 {} 条，规则过滤跳过 {} 条，AI 复核跳过 {} 条，读取失败 {} 条，打招呼成功 {} 条，打招呼失败 {} 条",
+            "共扫描 {} 条岗位，已浏览跳过 {} 条，已投递跳过 {} 条，规则过滤跳过 {} 条，AI 复核跳过 {} 条，拟人化跳过 {} 条，读取失败 {} 条，打招呼成功 {} 条，打招呼失败 {} 条",
             self.scanned,
             self.skipped_viewed,
             self.skipped_processed,
             self.skipped_rule,
             self.skipped_ai,
+            self.skipped_humanize,
             self.read_failed,
             self.greet_success,
             self.greet_failed,
@@ -353,11 +392,12 @@ impl RoundStats {
     /// 否则「共扫描 90 条岗位」会被误读成真的看过 90 个不同岗位。
     fn total_summary(&self) -> String {
         format!(
-            "打招呼成功 {} 条，失败 {} 条；规则过滤跳过 {} 条，AI 复核跳过 {} 条，读取失败 {} 条；累计扫描岗位卡片 {} 次（含滚动后的重复扫描），其中因已浏览或已投递而跳过 {} 次",
+            "打招呼成功 {} 条，失败 {} 条；规则过滤跳过 {} 条，AI 复核跳过 {} 条，拟人化跳过 {} 条，读取失败 {} 条；累计扫描岗位卡片 {} 次（含滚动后的重复扫描），其中因已浏览或已投递而跳过 {} 次",
             self.greet_success,
             self.greet_failed,
             self.skipped_rule,
             self.skipped_ai,
+            self.skipped_humanize,
             self.read_failed,
             self.scanned,
             self.skipped_known(),
@@ -382,6 +422,12 @@ enum StopReason {
     EmptyList,
     /// 打招呼失败且策略要求立即终止
     GreetFailureAborted,
+    /// 本轮打招呼条数达到设定上限
+    GreetQuotaReached,
+    /// 本轮耗时达到设定上限
+    TimeLimitReached,
+    /// 连续多次打招呼失败，本轮熔断
+    TooManyGreetFailures,
 }
 
 impl StopReason {
@@ -389,6 +435,15 @@ impl StopReason {
         match self {
             StopReason::ReachedBottom => "岗位列表已触底，该搜索条件下的岗位已全部浏览完毕",
             StopReason::NoMoreFromApi => "接口返回无更多岗位，该搜索条件下的岗位已全部浏览完毕",
+            StopReason::GreetQuotaReached => {
+                "本轮打招呼条数已达设定上限，提前结束本轮；周期投递会在下一轮继续"
+            }
+            StopReason::TimeLimitReached => {
+                "本轮运行时长已达设定上限，提前结束本轮；周期投递会在下一轮继续"
+            }
+            StopReason::TooManyGreetFailures => {
+                "连续多次打招呼失败，可能已达平台每日沟通上限或触发了安全验证，本轮提前结束"
+            }
             StopReason::NoNewJobs => {
                 "连续多次滚动均未加载到新岗位，判定已到列表末尾，这是正常结束、不是程序崩溃；可更换岗位关键词/城市，或改用周期投递持续跟进"
             }
@@ -399,6 +454,25 @@ impl StopReason {
             StopReason::EmptyList => "当前筛选条件下暂无岗位列表，建议放宽筛选条件后重试",
             StopReason::GreetFailureAborted => "打招呼失败已终止本轮任务",
         }
+    }
+}
+
+/// 把预算判定翻译成本轮的结束原因。预算还够时返回 None
+fn budget_stop_reason(
+    budget: &RoundBudget,
+    stats: &RoundStats,
+    round_started: Instant,
+    consecutive_greet_failures: u32,
+) -> Option<StopReason> {
+    match budget.check(
+        stats.greet_success,
+        round_started.elapsed(),
+        consecutive_greet_failures,
+    ) {
+        BudgetVerdict::Continue => None,
+        BudgetVerdict::GreetLimit => Some(StopReason::GreetQuotaReached),
+        BudgetVerdict::TimeLimit => Some(StopReason::TimeLimitReached),
+        BudgetVerdict::FailureLimit => Some(StopReason::TooManyGreetFailures),
     }
 }
 
@@ -460,6 +534,7 @@ fn read_job_card(
     page: &Page,
     job_card_area_ele: &Element,
     processed_job_ids: &HashSet<String>,
+    pacer: &mut GreetPacer,
 ) -> Result<CardOutcome, anyhow::Error> {
     if job_card_area_ele.attr("class")?.contains("is-seen") {
         return Ok(CardOutcome::Skipped(SkipReason::AlreadyViewed));
@@ -483,7 +558,16 @@ fn read_job_card(
         }
     }
 
-    job_card_ele.click()?;
+    // 「每个岗位都点开看」是人做不到的事：真人扫列表时就会凭标题划过去一些。
+    //
+    // 这一判断必须赶在点击之前。BOSS 会给点开过的卡片打上 is-seen，下一轮扫描
+    // 直接跳过——放在点开之后跳过，等于把这个岗位永久放弃掉，而拟人化的本意
+    // 只是「这次先不投」
+    if pacer.should_skim() {
+        return Ok(CardOutcome::Skipped(SkipReason::Humanized));
+    }
+
+    human_input::click(page, &job_card_ele)?;
     sleep_random_ms(800, 1200);
 
     let job_detail_text = page
@@ -858,7 +942,7 @@ async fn handle_greet_on_work_tab(
     }
 
     // 2. BOSS 的建联按钮使用站内 JavaScript 路由，会将当前工作标签切换到聊天页。
-    btn.click()?;
+    human_input::click(work_page, &btn)?;
     if is_job_task_stop_requested() {
         logger::info("求职任务已结束")?;
         return Ok(());
@@ -1086,7 +1170,11 @@ fn scroll_bottom_probe(page: &Page) -> Result<ScrollProbe, anyhow::Error> {
     let height_before = scroll_height_from_value(&nudged).unwrap_or_default();
 
     sleep_random_ms(200, 400);
-    page.run_js_await(SCROLL_BOTTOM_SCRIPT)?;
+    // 拟人化开着时分几段滚下去：一脚从当前位置踩到 scrollHeight 是滚轮和触控板
+    // 都做不出来的位移。没开时仍走原来那一下
+    if human_input::scroll_to_bottom(page)?.is_none() {
+        page.run_js_await(SCROLL_BOTTOM_SCRIPT)?;
+    }
 
     // 懒加载是异步追加 DOM 的，稍等一下再量高度才有意义
     sleep_random_ms(500, 800);
@@ -1345,6 +1433,7 @@ mod tests {
             skipped_processed: 15,
             skipped_rule: 1,
             skipped_ai: 1,
+            skipped_humanize: 2,
             read_failed: 0,
             greet_success: 1,
             greet_failed: 0,
@@ -1357,8 +1446,28 @@ mod tests {
         assert!(summary.contains("已投递跳过 15 条"));
         assert!(summary.contains("规则过滤跳过 1 条"));
         assert!(summary.contains("AI 复核跳过 1 条"));
+        assert!(summary.contains("拟人化跳过 2 条"));
         assert!(summary.contains("打招呼成功 1 条"));
         assert!(summary.contains("打招呼失败 0 条"));
+    }
+
+    /// 拟人化跳过要和「规则不匹配」分开记：前者是这轮先不投，后者是压根不该投。
+    /// 混在一起的话，用户会以为自己的筛选条件写错了
+    #[test]
+    fn humanized_skips_are_counted_separately_from_rule_skips() {
+        let stats = RoundStats {
+            scanned: 10,
+            skipped_rule: 3,
+            skipped_humanize: 2,
+            greet_success: 5,
+            ..RoundStats::default()
+        };
+
+        let summary = stats.total_summary();
+
+        assert!(summary.contains("规则过滤跳过 3 条"));
+        assert!(summary.contains("拟人化跳过 2 条"));
+        assert_eq!(stats.engaged(), 5);
     }
 
     #[test]
@@ -1368,11 +1477,7 @@ mod tests {
             scanned: 90,
             skipped_viewed: 87,
             skipped_processed: 3,
-            skipped_rule: 0,
-            skipped_ai: 0,
-            read_failed: 0,
-            greet_success: 0,
-            greet_failed: 0,
+            ..RoundStats::default()
         };
 
         let summary = stats.total_summary();
@@ -1381,6 +1486,36 @@ mod tests {
         assert!(summary.contains("因已浏览或已投递而跳过 90 次"));
         assert!(summary.contains("打招呼成功 0 条"));
         assert!(!summary.contains("共扫描 90 条岗位"));
+    }
+
+    /// 拟人化跳过必须发生在点开卡片之前。
+    ///
+    /// BOSS 会给点开过的卡片打上 is-seen，下一轮扫描直接跳过——顺序反了，
+    /// 「这次先不投」就变成了「永久放弃这个岗位」。这是纯粹的位置关系，
+    /// 编译器和运行时都不会报错，只会静默地少投一批岗位
+    #[test]
+    fn the_humanized_skip_happens_before_the_card_is_opened() {
+        let source = include_str!("position_say_hello.rs");
+
+        let skim = source.find("pacer.should_skim()").expect("跳过判断已被移除");
+        let open = source
+            .find("human_input::click(page, &job_card_ele)")
+            .expect("卡片点击已被改写");
+
+        assert!(skim < open, "拟人化跳过跑到了点开卡片之后");
+    }
+
+    /// 拟人化跳过不该混进「已浏览/已投递」那两个桶：那两个是「以前处理过」，
+    /// 而这个是「这次故意没看」，混在一起进度日志会虚报
+    #[test]
+    fn a_humanized_skip_is_counted_on_its_own() {
+        let mut stats = RoundStats::default();
+        stats.record_skip(SkipReason::Humanized);
+        stats.record_skip(SkipReason::AlreadyViewed);
+
+        assert_eq!(stats.skipped_humanize, 1);
+        assert_eq!(stats.skipped_known(), 1);
+        assert_eq!(stats.engaged(), 0);
     }
 
     #[test]
@@ -1437,6 +1572,59 @@ mod tests {
             assert!(text.contains("正常结束、不是程序崩溃"), "{text}");
             assert!(text.contains("周期投递"), "{text}");
         }
+    }
+
+    /// 不设上界时行为必须与改造前完全一致，否则「单轮自动求职」会莫名其妙提前收工
+    #[test]
+    fn an_unlimited_budget_never_ends_the_round_early() {
+        let stats = RoundStats {
+            greet_success: 500,
+            ..RoundStats::default()
+        };
+
+        assert_eq!(
+            budget_stop_reason(&RoundBudget::unlimited(), &stats, Instant::now(), 99),
+            None
+        );
+    }
+
+    #[test]
+    fn budget_limits_map_to_their_own_stop_reasons() {
+        let budget = RoundBudget {
+            max_greets: 3,
+            max_minutes: 0,
+            max_consecutive_greet_failures: 5,
+        };
+        let fresh = RoundStats::default();
+        let spent = RoundStats {
+            greet_success: 3,
+            ..RoundStats::default()
+        };
+
+        assert_eq!(budget_stop_reason(&budget, &fresh, Instant::now(), 0), None);
+        assert_eq!(
+            budget_stop_reason(&budget, &spent, Instant::now(), 0),
+            Some(StopReason::GreetQuotaReached)
+        );
+        assert_eq!(
+            budget_stop_reason(&budget, &fresh, Instant::now(), 5),
+            Some(StopReason::TooManyGreetFailures)
+        );
+    }
+
+    /// 提前结束不是故障，文案必须说清楚「下一轮还会继续」，
+    /// 否则用户会以为周期投递挂了
+    #[test]
+    fn budget_stop_reasons_read_as_normal_endings() {
+        assert!(StopReason::GreetQuotaReached
+            .describe()
+            .contains("下一轮继续"));
+        assert!(StopReason::TimeLimitReached
+            .describe()
+            .contains("下一轮继续"));
+        assert!(StopReason::TooManyGreetFailures
+            .describe()
+            .contains("每日沟通上限"));
     }
 
     #[test]

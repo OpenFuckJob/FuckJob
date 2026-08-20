@@ -2,13 +2,17 @@ use std::{
     cell::RefCell,
     sync::atomic::{AtomicBool, Ordering},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
+use chrono::{DateTime, Local};
 use rust_drission::{ChromiumPage, Page};
 use serde::{Deserialize, Serialize};
 
-use super::{boss, liepin, polling};
+use super::{
+    boss, humanize, liepin, polling,
+    schedule::{self, PeriodicPlan, PeriodicState, RoundBudget},
+};
 use crate::{config::AppRuntimeConfig, logger};
 
 static JOB_TASK_RUNNING: AtomicBool = AtomicBool::new(false);
@@ -82,6 +86,14 @@ pub enum PlatformKind {
 }
 
 impl PlatformKind {
+    /// 落库与解析规则里用的平台标识，与 `JobDetail.platform` 保持一致
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PlatformKind::Boss => "boss",
+            PlatformKind::Liepin => "liepin",
+        }
+    }
+
     pub fn login_message(self) -> &'static str {
         match self {
             PlatformKind::Boss => "请使用 BOSS 直聘 App 扫码登录",
@@ -320,15 +332,17 @@ pub fn inspect_readiness(
     items.push(ReadinessItem {
         key: "llm".to_string(),
         label: "大模型".to_string(),
-        level: if !llm_needed || config.llm_config.is_some() {
+        level: if !llm_needed || config.llm_active() {
             ReadinessLevel::Ready
         } else {
             ReadinessLevel::Blocked
         },
         message: if !llm_needed {
             "当前模式不依赖大模型".to_string()
-        } else if config.llm_config.is_some() {
+        } else if config.llm_active() {
             "大模型服务已配置".to_string()
+        } else if config.llm_configured() {
+            "大模型已停用，请先启用模型服务".to_string()
         } else {
             "当前功能使用了大模型，请先配置模型服务".to_string()
         },
@@ -478,29 +492,24 @@ pub async fn check_env(platform: PlatformKind) -> Result<EnvCheckResult, anyhow:
 pub async fn execute_rpa_flow(
     platform: PlatformKind,
     mode: FlowMode,
-    interval_minutes: Option<u64>,
+    plan: Option<PeriodicPlan>,
     config: &AppRuntimeConfig,
 ) -> Result<(), anyhow::Error> {
     if has_managed_job_task_context() {
         let config = config.clone();
         return crate::browser::with_task_browser(|connection, main_tab| {
             Box::pin(async move {
-                execute_rpa_flow_with_browser(
-                    connection,
-                    main_tab,
-                    platform,
-                    mode,
-                    interval_minutes,
-                    &config,
-                )
-                .await
+                execute_rpa_flow_with_browser(connection, main_tab, platform, mode, plan, &config)
+                    .await
             })
         })
         .await;
     }
 
     match mode {
-        FlowMode::JobHunting => execute_job_hunting(platform, config).await,
+        FlowMode::JobHunting => {
+            execute_job_hunting(platform, config, RoundBudget::unlimited()).await
+        }
         FlowMode::ReplyUnread => {
             execute_reply_unread(platform, config).await?;
             Ok(())
@@ -513,9 +522,9 @@ pub async fn execute_rpa_flow(
             Ok(())
         }
         FlowMode::PeriodicJobHunting => {
-            let interval = resolve_periodic_interval_minutes(interval_minutes)
-                .map_err(|e| anyhow::anyhow!(e))?;
-            periodic_position_say_hello(platform, config, interval).await
+            let plan =
+                schedule::resolve_plan(plan, Local::now()).map_err(|e| anyhow::anyhow!(e))?;
+            periodic_job_hunting(&PeriodicTarget::NewTab(platform), config, &plan).await
         }
         FlowMode::PollingReply => polling_reply(&ReplyTarget::NewTab(platform), config).await,
     }
@@ -527,12 +536,19 @@ pub async fn execute_rpa_flow_with_browser(
     main_tab: &Page,
     platform: PlatformKind,
     mode: FlowMode,
-    interval_minutes: Option<u64>,
+    plan: Option<PeriodicPlan>,
     config: &AppRuntimeConfig,
 ) -> Result<(), anyhow::Error> {
     match mode {
         FlowMode::JobHunting => {
-            execute_job_hunting_on_page(connection, main_tab, platform, config).await
+            execute_job_hunting_on_page(
+                connection,
+                main_tab,
+                platform,
+                config,
+                RoundBudget::unlimited(),
+            )
+            .await
         }
         FlowMode::ReplyUnread => execute_reply_unread_on_page(main_tab, platform, config).await,
         FlowMode::SyncChatHistory => {
@@ -543,10 +559,14 @@ pub async fn execute_rpa_flow_with_browser(
             Ok(())
         }
         FlowMode::PeriodicJobHunting => {
-            let interval = resolve_periodic_interval_minutes(interval_minutes)
-                .map_err(|e| anyhow::anyhow!(e))?;
-            periodic_position_say_hello_on_page(connection, main_tab, platform, config, interval)
-                .await
+            let plan =
+                schedule::resolve_plan(plan, Local::now()).map_err(|e| anyhow::anyhow!(e))?;
+            periodic_job_hunting(
+                &PeriodicTarget::OwnedTab(connection, main_tab, platform),
+                config,
+                &plan,
+            )
+            .await
         }
         FlowMode::PollingReply => {
             polling_reply(&ReplyTarget::OwnedTab(main_tab, platform), config).await
@@ -556,19 +576,20 @@ pub async fn execute_rpa_flow_with_browser(
 
 pub async fn execute_boss_flow(
     mode: FlowMode,
-    interval_minutes: Option<u64>,
+    plan: Option<PeriodicPlan>,
     config: &AppRuntimeConfig,
 ) -> Result<(), anyhow::Error> {
-    execute_rpa_flow(PlatformKind::Boss, mode, interval_minutes, config).await
+    execute_rpa_flow(PlatformKind::Boss, mode, plan, config).await
 }
 
 async fn execute_job_hunting(
     platform: PlatformKind,
     config: &AppRuntimeConfig,
+    budget: RoundBudget,
 ) -> Result<(), anyhow::Error> {
     match platform {
-        PlatformKind::Boss => boss::handler::position_say_hello(config).await,
-        PlatformKind::Liepin => liepin::handler::position_say_hello(config).await,
+        PlatformKind::Boss => boss::handler::position_say_hello(config, budget).await,
+        PlatformKind::Liepin => liepin::handler::position_say_hello(config, budget).await,
     }
 }
 
@@ -593,13 +614,14 @@ async fn execute_job_hunting_on_page(
     main_tab: &Page,
     platform: PlatformKind,
     config: &AppRuntimeConfig,
+    budget: RoundBudget,
 ) -> Result<(), anyhow::Error> {
     match platform {
         PlatformKind::Boss => {
-            boss::handler::position_say_hello_on_page(connection, main_tab, config).await
+            boss::handler::position_say_hello_on_page(connection, main_tab, config, budget).await
         }
         PlatformKind::Liepin => {
-            liepin::handler::position_say_hello_on_page(connection, main_tab, config).await
+            liepin::handler::position_say_hello_on_page(connection, main_tab, config, budget).await
         }
     }
 }
@@ -633,6 +655,10 @@ async fn run_reply_round(
     target: &ReplyTarget<'_>,
     config: &AppRuntimeConfig,
 ) -> Result<(), anyhow::Error> {
+    // 回复同样要拟人：给 HR 打字这件事比投递更该像人，对面是个真人在看。
+    // 这里自己装而不是沿用投递那份——空闲期的回复跑在投递的节奏器之外，
+    // 独立轮询任务更是压根没有投递循环
+    let _persona = humanize::scoped_persona(humanize::Persona::today(&config.humanize_config, 0));
     match target {
         ReplyTarget::NewTab(platform) => execute_reply_unread(*platform, config).await,
         ReplyTarget::OwnedTab(main_tab, platform) => {
@@ -686,119 +712,208 @@ async fn polling_reply(
     }
 }
 
-fn resolve_periodic_interval_minutes(interval_minutes: Option<u64>) -> Result<u64, String> {
-    match interval_minutes {
-        Some(value) if value > 0 => Ok(value),
-        Some(_) => Err("周期性投递间隔必须大于 0 分钟".to_string()),
-        None => Err("周期性投递缺少执行间隔".to_string()),
+/// 连续多少轮投递失败即终止整个周期任务。
+///
+/// 单轮失败不该拖垮长驻任务——岗位列表加载超时、平台偶发风控这类错误下一轮多半
+/// 就好了。但连着失败就不是偶发，多半是登录失效或触发了安全验证，再转下去只是空转
+const MAX_CONSECUTIVE_ROUND_FAILURES: u32 = 3;
+
+/// 一轮周期投递跑在哪里。
+///
+/// 队列任务持有自己的连接和主标签页，兼容入口则每次新开。投递、回复、同步历史
+/// 三件事在两条路径上的差异全都收在这里，主循环只有一份
+enum PeriodicTarget<'a> {
+    NewTab(PlatformKind),
+    OwnedTab(&'a ChromiumPage, &'a Page, PlatformKind),
+}
+
+impl<'a> PeriodicTarget<'a> {
+    fn reply_target(&self) -> ReplyTarget<'a> {
+        match self {
+            Self::NewTab(platform) => ReplyTarget::NewTab(*platform),
+            Self::OwnedTab(_, main_tab, platform) => ReplyTarget::OwnedTab(main_tab, *platform),
+        }
+    }
+
+    async fn deliver(
+        &self,
+        config: &AppRuntimeConfig,
+        budget: RoundBudget,
+    ) -> Result<(), anyhow::Error> {
+        match self {
+            Self::NewTab(platform) => execute_job_hunting(*platform, config, budget).await,
+            Self::OwnedTab(connection, main_tab, platform) => {
+                execute_job_hunting_on_page(connection, main_tab, *platform, config, budget).await
+            }
+        }
+    }
+
+    async fn sync_chat_history(&self) -> Result<(), anyhow::Error> {
+        match self {
+            Self::NewTab(PlatformKind::Boss) => {
+                boss::handler::sync_chat_history().await?;
+                Ok(())
+            }
+            Self::OwnedTab(_, main_tab, PlatformKind::Boss) => {
+                boss::handler::sync_chat_history_on_page(main_tab).await?;
+                Ok(())
+            }
+            _ => Ok(()),
+        }
     }
 }
 
-async fn periodic_position_say_hello(
-    platform: PlatformKind,
+/// 周期投递主循环。
+///
+/// 每次转到循环顶部都重新问一遍计划「现在该干嘛」，而不是自己记状态：任务可能
+/// 一挂就是几天，跨过午夜、跨过投递时段边界，靠增量推算迟早会算歪
+async fn periodic_job_hunting(
+    target: &PeriodicTarget<'_>,
     config: &AppRuntimeConfig,
-    interval_minutes: u64,
+    plan: &PeriodicPlan,
 ) -> Result<(), anyhow::Error> {
+    let base_budget = RoundBudget::from_plan(plan);
+    let mut consecutive_failures = 0u32;
+    // 时段外每轮都播报一次「暂停中」会把日志刷满，只在刚进入暂停时说一次
+    let mut pause_announced = false;
+
     loop {
         if is_job_task_stop_requested() {
             logger::info("周期性投递任务已结束")?;
             return Ok(());
         }
 
-        logger::info("开始执行本轮周期性投递")?;
-        execute_job_hunting(platform, config).await?;
+        match schedule::plan_state(plan, Local::now()) {
+            PeriodicState::Finished => {
+                logger::info("已到设定的结束时间，周期投递任务结束")?;
+                return Ok(());
+            }
+            PeriodicState::Idle(open_at) => {
+                if !pause_announced {
+                    logger::info(format!(
+                        "当前不在投递时段（{}），暂停投递，{} 恢复；期间继续自动回复未读",
+                        schedule::describe_windows(&plan.windows),
+                        open_at.format("%m-%d %H:%M"),
+                    ))?;
+                    pause_announced = true;
+                }
+                if !idle_until(target, config, open_at).await? {
+                    logger::info("周期性投递任务已结束")?;
+                    return Ok(());
+                }
+            }
+            PeriodicState::Deliver => {
+                pause_announced = false;
+                // 每轮重新掷一次：用户设的 30 条是量级不是配额，每轮都精确停在
+                // 第 30 条、每次都隔整 30 分钟，这个「精确」本身就是机器特征。
+                // 抖动只作用于本轮，计划快照始终保持用户提交时的样子
+                let persona = humanize::Persona::today(&config.humanize_config, base_budget.max_greets);
+                let budget = match persona.as_ref() {
+                    Some(persona) => persona.shape_budget(base_budget, humanize::roll()),
+                    None => base_budget,
+                };
+                logger::info("开始执行本轮周期性投递")?;
+                let started = Instant::now();
+                match target.deliver(config, budget).await {
+                    Ok(()) => consecutive_failures = 0,
+                    Err(error) => {
+                        consecutive_failures += 1;
+                        if consecutive_failures >= MAX_CONSECUTIVE_ROUND_FAILURES {
+                            return Err(error.context(format!(
+                                "周期投递连续 {MAX_CONSECUTIVE_ROUND_FAILURES} 轮失败，已终止任务"
+                            )));
+                        }
+                        logger::warning(format!(
+                            "本轮投递失败（连续第 {consecutive_failures} 次），等待下一轮重试：{error}"
+                        ))?;
+                    }
+                }
 
-        if is_job_task_stop_requested() {
-            logger::info("周期性投递任务已结束")?;
-            return Ok(());
-        }
+                if is_job_task_stop_requested() {
+                    logger::info("周期性投递任务已结束")?;
+                    return Ok(());
+                }
 
-        logger::info(format!("本轮投递完成，等待{}分钟后继续", interval_minutes))?;
-        if platform == PlatformKind::Boss {
-            if let Err(error) = boss::handler::sync_chat_history().await {
-                logger::warning(format!(
-                    "周期间歇同步 BOSS 历史对话失败，本轮继续等待: {error}"
+                // 间隔同样只向上抖：抖短了等于替用户提高投递密度，拟人化没这个资格
+                let interval = match persona.as_ref() {
+                    Some(persona) => {
+                        persona.shape_interval_minutes(plan.interval_minutes, humanize::roll())
+                    }
+                    None => plan.interval_minutes,
+                };
+                let next_at = schedule::next_delivery_at_after(plan, Local::now(), interval);
+                logger::info(format!(
+                    "本轮投递用时 {} 分钟，下一轮 {} 开始，其间按轮询节奏检查未读",
+                    started.elapsed().as_secs() / 60,
+                    next_at.format("%m-%d %H:%M"),
                 ))?;
+                if !idle_until(target, config, next_at).await? {
+                    logger::info("周期性投递任务已结束")?;
+                    return Ok(());
+                }
             }
         }
-        wait_periodic_interval(&ReplyTarget::NewTab(platform), config, interval_minutes).await?;
     }
 }
 
-async fn periodic_position_say_hello_on_page(
-    connection: &ChromiumPage,
-    main_tab: &Page,
-    platform: PlatformKind,
-    config: &AppRuntimeConfig,
-    interval_minutes: u64,
-) -> Result<(), anyhow::Error> {
-    loop {
-        if is_job_task_stop_requested() {
-            logger::info("周期性投递任务已结束")?;
-            return Ok(());
-        }
-
-        logger::info("开始执行本轮周期性投递")?;
-        execute_job_hunting_on_page(connection, main_tab, platform, config).await?;
-
-        if is_job_task_stop_requested() {
-            logger::info("周期性投递任务已结束")?;
-            return Ok(());
-        }
-
-        logger::info(format!("本轮投递完成，等待{}分钟后继续", interval_minutes))?;
-        if platform == PlatformKind::Boss {
-            if let Err(error) = boss::handler::sync_chat_history_on_page(main_tab).await {
-                logger::warning(format!(
-                    "周期间歇同步 BOSS 历史对话失败，本轮继续等待: {error}"
-                ))?;
-            }
-        }
-        wait_periodic_interval(
-            &ReplyTarget::OwnedTab(main_tab, platform),
-            config,
-            interval_minutes,
-        )
-        .await?;
-    }
-}
-
-/// 周期投递两轮之间的等待期。
+/// 周期投递的空闲期：两轮之间的等待，以及投递时段之外的暂停。
 ///
 /// 这段时间本来是纯空闲——投递间隔通常半小时起步，而调度器对每个平台只放行一个任务，
-/// 另起一个轮询任务只会跟投递互抢浏览器。所以把等待期切成若干个轮询间隔，
-/// 间隙里顺手把未读回掉，一个任务就同时具备投递和回复两条能力
-async fn wait_periodic_interval(
-    target: &ReplyTarget<'_>,
+/// 另起一个轮询任务只会跟投递互抢浏览器。所以把空闲期交给自动回复，一个任务就同时
+/// 具备投递和回复两条能力。
+///
+/// 用绝对的 deadline 而不是倒扣剩余秒数：回复本身要花时间（默认单轮最多 10 个会话，
+/// 每个还带拟人延迟），倒扣的写法把这段耗时算在周期之外，实际周期会被撑成
+/// 「间隔 + N×回复耗时」，投递节奏跟着漂。返回 false 表示中途收到停止请求
+async fn idle_until(
+    target: &PeriodicTarget<'_>,
     config: &AppRuntimeConfig,
-    interval_minutes: u64,
-) -> Result<(), anyhow::Error> {
-    let mut remaining_seconds = interval_minutes.saturating_mul(60);
+    deadline: DateTime<Local>,
+) -> Result<bool, anyhow::Error> {
+    // 同步历史对话放在空闲期之内而不是之外：它一样要占用浏览器，摆在外面等于
+    // 每轮都在周期预算之上再加一笔，投递间隔就名不副实了
+    if let Err(error) = target.sync_chat_history().await {
+        logger::warning(format!("周期间歇同步历史对话失败，本轮继续：{error}"))?;
+    }
 
-    while remaining_seconds > 0 {
+    let mut was_active = true;
+    loop {
         if is_job_task_stop_requested() {
-            logger::info("周期性投递任务已结束")?;
-            return Ok(());
+            return Ok(false);
+        }
+        let mut remaining = schedule::seconds_until(deadline, Local::now());
+        if remaining == 0 {
+            return Ok(true);
+        }
+
+        // 先回一轮再睡。刚投完正是对方可能已经回消息的时候；更要紧的是空闲期短于
+        // 轮询间隔时（投递间隔 10 分钟撞上默认 5 分钟轮询加 120 秒抖动就会发生），
+        // 先睡的写法会让这一整段空闲期一次都不回复
+        if polling::is_active_now(&config.reply_polling_config) {
+            if let Err(error) = run_reply_round(&target.reply_target(), config).await {
+                logger::warning(format!("周期间歇自动回复失败，稍后重试：{error}"))?;
+            }
+            remaining = schedule::seconds_until(deadline, Local::now());
+            if remaining == 0 {
+                return Ok(true);
+            }
         }
 
         let wake = polling::next_wake_now(&config.reply_polling_config);
-        let sleep_seconds = wake.seconds().min(remaining_seconds);
-        if !sleep_interruptible(sleep_seconds).await {
-            logger::info("周期性投递任务已结束")?;
-            return Ok(());
+        let active = matches!(wake, polling::NextWake::Sleep(_));
+        if was_active != active {
+            logger::info(if active {
+                "已进入自动回复时段，空闲期恢复回复未读"
+            } else {
+                "当前不在自动回复时段，空闲期暂停回复"
+            })?;
+            was_active = active;
         }
-        remaining_seconds -= sleep_seconds;
 
-        // 等待期已经走完就别再插一轮回复，否则下一轮投递被平白推迟。
-        // 不在活跃时段时这次醒来只是重新判断时段，此时开口等于半夜秒回 HR
-        if remaining_seconds > 0 && matches!(wake, polling::NextWake::Sleep(_)) {
-            if let Err(error) = run_reply_round(target, config).await {
-                logger::warning(format!("周期间歇自动回复失败，本轮继续等待: {error}"))?;
-            }
+        if !sleep_interruptible(wake.seconds().min(remaining)).await {
+            return Ok(false);
         }
     }
-
-    Ok(())
 }
 
 /// 可被停止请求打断的睡眠。返回 true 表示睡满了，false 表示中途收到停止请求。
@@ -1049,11 +1164,20 @@ mod tests {
         assert_eq!(liepin, PlatformKind::Liepin);
     }
 
+    /// 周期投递的计划校验发生在真正开跑之前。这里只钉住「run_flow 确实走了校验」，
+    /// 各种边界由 `schedule` 的单测覆盖
     #[test]
-    fn resolve_periodic_interval_minutes_requires_positive_minutes() {
-        assert_eq!(resolve_periodic_interval_minutes(Some(10)).unwrap(), 10);
-        assert!(resolve_periodic_interval_minutes(Some(0)).is_err());
-        assert!(resolve_periodic_interval_minutes(None).is_err());
+    fn periodic_plan_is_validated_before_the_loop_starts() {
+        let now = Local::now();
+
+        assert_eq!(
+            schedule::resolve_plan(Some(PeriodicPlan::every(10)), now)
+                .unwrap()
+                .interval_minutes,
+            10
+        );
+        assert!(schedule::resolve_plan(Some(PeriodicPlan::every(0)), now).is_err());
+        assert!(schedule::resolve_plan(None, now).is_err());
     }
 
     #[test]

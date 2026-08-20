@@ -43,7 +43,7 @@ const emptyJob: JobInput = {
   location: "",
 };
 
-const ConversationDebugPage = ({ aiConfigured, onConfigureAi }: { aiConfigured: boolean; onConfigureAi: () => void }) => {
+const ConversationDebugPage = ({ aiConfigured, llmConfigured, onConfigureAi }: { aiConfigured: boolean; llmConfigured: boolean; onConfigureAi: () => void }) => {
   const [job, setJob] = useState<JobInput>(emptyJob);
   const [bubbles, setBubbles] = useState<ChatBubble[]>([]);
   const [inputText, setInputText] = useState("");
@@ -147,7 +147,7 @@ const ConversationDebugPage = ({ aiConfigured, onConfigureAi }: { aiConfigured: 
   return (
     <div style={{ display: "flex", height: "100%", gap: 0 }}>
       {contextHolder}
-      <AiFeatureGate configured={aiConfigured} onConfigure={onConfigureAi}><></></AiFeatureGate>
+      <AiFeatureGate active={aiConfigured} configured={llmConfigured} onConfigure={onConfigureAi}><></></AiFeatureGate>
 
       {/* 左侧：岗位信息输入 */}
       <div

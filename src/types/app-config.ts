@@ -96,12 +96,17 @@ export interface LlmRetryConfig {
   network_retry_attempts: number;
   /** 首次重试前的等待毫秒数，之后按指数退避 */
   retry_base_delay_ms: number;
+  /** 单次模型请求的超时时间（秒） */
+  request_timeout_seconds: number;
 }
 
 /** 与 Rust 侧 validate_and_normalize 保持一致的取值区间 */
 export const MAX_NETWORK_RETRY_ATTEMPTS = 5;
 export const MIN_RETRY_BASE_DELAY_MS = 100;
 export const MAX_RETRY_BASE_DELAY_MS = 10_000;
+export const DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS = 120;
+export const MIN_LLM_REQUEST_TIMEOUT_SECONDS = 1;
+export const MAX_LLM_REQUEST_TIMEOUT_SECONDS = 600;
 
 export type ReplayResourceType = "Text" | "Image" | "LLM";
 
@@ -218,6 +223,141 @@ export const DEFAULT_REPLY_POLLING_CONFIG: ReplyPollingConfig = {
   humanize_delay_max_seconds: 120,
 };
 
+/** 一天的分钟数。投递时段用「零点起的分钟数」表示，才装得下 09:30 这种半点边界 */
+export const MINUTES_PER_DAY = 24 * 60;
+export const MAX_GREETS_PER_ROUND = 200;
+export const MAX_ROUND_MINUTES = 240;
+export const MAX_RUN_HOURS = 72;
+
+/** 一段投递时段，以「零点起的分钟数」表示，左闭右开 */
+export interface DailyWindow {
+  start_minute: number;
+  end_minute: number;
+}
+
+/**
+ * 周期投递的默认参数。
+ *
+ * 存的是启动弹窗的初值，不是正在跑的任务的参数——任务一旦入队就带着自己的计划
+ * 快照，之后改这里不影响它。和轮询节奏一样放在顶层：这是运行节奏，不是求职策略。
+ */
+export interface PeriodicDeliveryConfig {
+  /** 两轮投递之间的间隔 */
+  interval_minutes: number;
+  /** 是否只在指定时段投递，关掉后全天可投 */
+  window_enabled: boolean;
+  /** 投递时段，可以有多段：上午一段、下午一段，中间的午休就空出来了 */
+  windows: DailyWindow[];
+  /** 启动后最多跑多少小时，0 表示不自动结束 */
+  max_run_hours: number;
+  /** 单轮最多打招呼多少条，0 表示不限。这是「一直在投递、回复轮不上」的正解 */
+  max_greets_per_round: number;
+  /** 单轮最长跑多少分钟，0 表示不限 */
+  max_round_minutes: number;
+}
+
+/** 与 Rust 侧 PeriodicDeliveryConfig 的 serde 默认值保持一致 */
+export const DEFAULT_PERIODIC_DELIVERY_CONFIG: PeriodicDeliveryConfig = {
+  interval_minutes: 30,
+  window_enabled: false,
+  windows: [{ start_minute: 9 * 60, end_minute: 18 * 60 }],
+  max_run_hours: 0,
+  max_greets_per_round: 30,
+  max_round_minutes: 60,
+};
+
+/** 时段格子的粒度：一格一小时 */
+export const HOURS_PER_DAY = 24;
+
+/**
+ * 把时段列表摊成 24 个小时格的选中状态，供格子控件渲染。
+ *
+ * 一格代表 `[h:00, h+1:00)`，只要这一小时里有任何一分钟落在时段内就算选中。
+ * 半点边界（09:30）因此会被向外取整——格子的粒度只到整点，这是它的取舍
+ */
+export function windowsToHours(windows: DailyWindow[]): boolean[] {
+  const hours = Array.from({ length: HOURS_PER_DAY }, () => false);
+  for (const window of windows) {
+    const start = Math.max(0, Math.min(MINUTES_PER_DAY, window.start_minute));
+    const end = Math.max(0, Math.min(MINUTES_PER_DAY, window.end_minute));
+    // 跨零点的段（22:00-06:00）在格子上就是两头都亮，不需要单独的表示法
+    const ranges =
+      start < end
+        ? [[start, end]]
+        : start > end
+          ? [
+              [start, MINUTES_PER_DAY],
+              [0, end],
+            ]
+          : [[0, MINUTES_PER_DAY]]; // 起止相同 = 全天
+    for (const [from, to] of ranges) {
+      for (let hour = Math.floor(from / 60); hour < Math.ceil(to / 60); hour += 1) {
+        if (hour >= 0 && hour < HOURS_PER_DAY) hours[hour] = true;
+      }
+    }
+  }
+  return hours;
+}
+
+/**
+ * 把 24 个小时格合并回时段列表：连续亮着的格子并成一段。
+ *
+ * 全选返回空数组——空在后端一律读作「不限制」，塞一个 00:00-24:00 进去
+ * 只会让每一步判断都多绕一次
+ */
+export function hoursToWindows(hours: boolean[]): DailyWindow[] {
+  const windows: DailyWindow[] = [];
+  let start: number | null = null;
+  for (let hour = 0; hour <= HOURS_PER_DAY; hour += 1) {
+    const on = hour < HOURS_PER_DAY && hours[hour] === true;
+    if (on && start === null) start = hour;
+    if (!on && start !== null) {
+      windows.push({ start_minute: start * 60, end_minute: hour * 60 });
+      start = null;
+    }
+  }
+  if (windows.length === 1 && windows[0].start_minute === 0 && windows[0].end_minute === MINUTES_PER_DAY) {
+    return [];
+  }
+  return windows;
+}
+
+/**
+ * 拟人化强度。只决定扰动幅度，不引入新的数值参数——
+ * 休息阈值、停顿长度、打字速度全部由后端从既有配置派生。
+ */
+export type HumanizeIntensity = "light" | "standard" | "cautious";
+
+/**
+ * 拟人化。
+ *
+ * 平台风控看的不是单次动作像不像人，而是长期模式：每条投递都隔 4 秒、每轮都
+ * 正好 30 条——单看每一步都合法，连起来是一条没有呼吸的直线。开启后后端会给
+ * 既有的「单轮上限 / 投递间隔 / 停顿」蒙上一层扰动，用户设的量级不变。
+ */
+export interface HumanizeConfig {
+  enabled: boolean;
+  intensity: HumanizeIntensity;
+  /**
+   * 人格种子，由后端首次启用时生成。界面只读不改：改了等于换一个人，
+   * 当天已经形成的节奏会整个变掉。
+   *
+   * 后端刻意把它限制在 2^53 以内，这个字段才能安全地经 JSON 往返
+   */
+  persona_seed: number;
+}
+
+export const DEFAULT_HUMANIZE_CONFIG: HumanizeConfig = {
+  enabled: false,
+  intensity: "standard",
+  persona_seed: 0,
+};
+
+/** 读取拟人化配置，旧配置缺这块时回落到「关闭」。 */
+export function getHumanizeConfig(config: Pick<AppRuntimeConfig, "humanize_config">): HumanizeConfig {
+  return { ...DEFAULT_HUMANIZE_CONFIG, ...(config.humanize_config ?? {}) };
+}
+
 export interface BrowserConfig {
   user_data_dir: string;
   chrome_exe_path: string | null;
@@ -254,6 +394,10 @@ export interface AppRuntimeConfig {
   job_filter_config: JobFilterConfig;
   platform_filter_config: PlatformFilterConfig;
   llm_config: LlmConfig | null;
+  /**
+   * 主用大模型是否启用；旧配置缺这块时默认视为启用，停用时只改这个字段，不清除 llm_config
+   */
+  llm_enabled?: boolean;
   llm_fallbacks: LlmProviderEntry[];
   llm_retry_config: LlmRetryConfig;
   greet_config: GreetConfig;
@@ -261,6 +405,10 @@ export interface AppRuntimeConfig {
   analysis_config?: AnalysisConfig;
   /** 旧配置没有这块，读取时请使用 getReplyPollingConfig 兜底 */
   reply_polling_config?: ReplyPollingConfig;
+  /** 旧配置没有这块，读取时请使用 getPeriodicDeliveryConfig 兜底 */
+  periodic_delivery_config?: PeriodicDeliveryConfig;
+  /** 旧配置没有这块，读取时请使用 getHumanizeConfig 兜底 */
+  humanize_config?: HumanizeConfig;
   browser_config: BrowserConfig;
   resume_config: ResumeConfig;
   /** 旧配置/测试 mock 可能暂时不包含这两个字段，读取时请使用 getJobProfiles。 */
@@ -275,9 +423,80 @@ export function getAnalysisConfig(
   return { ...DEFAULT_ANALYSIS_CONFIG, ...(source.analysis_config ?? {}) };
 }
 
+/**
+ * 一个大模型服务是否填写完整、可以真正发起调用。
+ *
+ * 配置页允许保存填了一半的服务（模型名要拉列表才知道，拉列表又得先存好密钥），
+ * 所以「存下来了」不等于「能用」。与 Rust 侧的 `service_is_usable` 保持一致。
+ */
+export function isLlmServiceUsable(
+  service: Pick<LlmConfig, "base_url" | "model"> | null | undefined,
+): boolean {
+  return Boolean(service?.base_url.trim() && service.model.trim());
+}
+
+/** 是否已经保存过主用大模型配置。填了一半也算，界面据此显示「继续配置」而不是「去配置」。 */
+export function isLlmConfigured(config: Pick<AppRuntimeConfig, "llm_config">): boolean {
+  return config.llm_config !== null;
+}
+
+/**
+ * 主用大模型是否处于可用状态。
+ *
+ * 旧配置没有 `llm_enabled` 时默认按启用处理；没配置主用服务、
+ * 或者服务还没填完时都视为不可用。
+ */
+export function isLlmActive(
+  config: Pick<AppRuntimeConfig, "llm_config" | "llm_enabled">,
+): boolean {
+  return config.llm_enabled !== false && isLlmServiceUsable(config.llm_config);
+}
+
 /** 读取轮询节奏，旧配置缺这块时回落到默认节奏。 */
 export function getReplyPollingConfig(config: Pick<AppRuntimeConfig, "reply_polling_config">): ReplyPollingConfig {
   return { ...DEFAULT_REPLY_POLLING_CONFIG, ...(config.reply_polling_config ?? {}) };
+}
+
+/** 读取周期投递默认参数，旧配置缺这块时回落到默认值。 */
+export function getPeriodicDeliveryConfig(
+  config: Pick<AppRuntimeConfig, "periodic_delivery_config">,
+): PeriodicDeliveryConfig {
+  return {
+    ...DEFAULT_PERIODIC_DELIVERY_CONFIG,
+    ...(config.periodic_delivery_config ?? {}),
+  };
+}
+
+/**
+ * 两份周期投递配置是否等价。
+ *
+ * 「恢复默认」按钮靠它决定该不该置灰。逐字段比而不是 JSON.stringify：后者依赖
+ * 键顺序，两份内容相同、来源不同的对象会被判成不等，按钮于是永远亮着。
+ * `windows` 是数组，必须按内容比——引用比较对它永远返回 false
+ */
+export function isSamePeriodicDelivery(
+  left: PeriodicDeliveryConfig,
+  right: PeriodicDeliveryConfig,
+): boolean {
+  return (
+    left.interval_minutes === right.interval_minutes &&
+    left.window_enabled === right.window_enabled &&
+    left.max_run_hours === right.max_run_hours &&
+    left.max_greets_per_round === right.max_greets_per_round &&
+    left.max_round_minutes === right.max_round_minutes &&
+    isSameWindows(left.windows, right.windows)
+  );
+}
+
+function isSameWindows(left: DailyWindow[], right: DailyWindow[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (window, index) =>
+        window.start_minute === right[index].start_minute &&
+        window.end_minute === right[index].end_minute,
+    )
+  );
 }
 
 /** 把旧版顶层求职配置投影为默认方案，供迁移期 UI 安全读取。 */

@@ -90,6 +90,7 @@ pub fn default_app_config() -> AppRuntimeConfig {
         schema_version: CURRENT_SCHEMA_VERSION,
         onboarding_completed: false,
         llm_config: None,
+        llm_enabled: None,
         llm_fallbacks: Vec::new(),
         llm_retry_config: LlmRetryConfig::default(),
         job_profiles: vec![default_profile],
@@ -101,6 +102,8 @@ pub fn default_app_config() -> AppRuntimeConfig {
         replay_config,
         analysis_config: AnalysisConfig::default(),
         reply_polling_config: ReplyPollingConfig::default(),
+        periodic_delivery_config: PeriodicDeliveryConfig::default(),
+        humanize_config: HumanizeConfig::default(),
         browser_config: BrowserConfig {
             user_data_dir: "".to_string(),
             chrome_exe_path: None,
@@ -192,25 +195,33 @@ pub fn load_app_config_inner(app_handle: tauri::AppHandle) -> Result<AppRuntimeC
     Ok(config)
 }
 
+/// 保存并返回落盘后的配置，细节见 [`save_app_config_unlocked`]
 pub fn save_app_config_inner(
     app_handle: tauri::AppHandle,
     config: AppRuntimeConfig,
-) -> Result<(), AppError> {
+) -> Result<AppRuntimeConfig, AppError> {
     let _permit = read_lock();
     save_app_config_unlocked(app_handle, config)
 }
 
+/// 保存并返回**落盘后的**配置。
+///
+/// 返回规整结果而不是 `()`：`validate_and_normalize` 会做迁移、夹取上下界、
+/// 补生成人格种子，落盘的内容和调用方提交的那份并不相同。不把它交回去，
+/// 前端手里就一直是提交前的旧值，下次保存又原样提交一遍——对夹取类字段只是
+/// 显示不同步，对人格种子则是每保存一次就换一套人格，「稳定随机」直接失效
 pub(crate) fn save_app_config_unlocked(
     app_handle: tauri::AppHandle,
     mut config: AppRuntimeConfig,
-) -> Result<(), AppError> {
+) -> Result<AppRuntimeConfig, AppError> {
     let path = config_path(&app_handle)?;
     validate_and_normalize(&mut config).map_err(AppError::validation)?;
     config.schema_version = CURRENT_SCHEMA_VERSION;
     let content = serde_yaml::to_string(&config).map_err(|error| {
         AppError::configuration("无法序列化应用配置").with_detail(error.to_string())
     })?;
-    atomic_write(&path, content.as_bytes())
+    atomic_write(&path, content.as_bytes())?;
+    Ok(config)
 }
 
 fn read_config_file(path: &Path) -> Result<AppRuntimeConfig, AppError> {
@@ -242,6 +253,10 @@ pub(crate) fn parse_config_content(content: &str) -> Result<AppRuntimeConfig, St
 
     if let Some(llm_config) = value.get("llm_config") {
         config.llm_config = parse_llm_config(llm_config, config.schema_version == 0)?;
+    }
+    if let Some(llm_enabled) = value.get("llm_enabled") {
+        config.llm_enabled =
+            serde_yaml::from_value(llm_enabled.clone()).map_err(|error| error.to_string())?;
     }
     if let Some(llm_fallbacks) = value.get("llm_fallbacks") {
         config.llm_fallbacks =
@@ -396,24 +411,28 @@ pub fn validate_and_normalize(config: &mut AppRuntimeConfig) -> Result<(), Strin
     normalize_llm_retry_config(&mut config.llm_retry_config);
     normalize_llm_fallbacks(&mut config.llm_fallbacks)?;
     normalize_analysis_config(&mut config.analysis_config);
+    config.periodic_delivery_config.migrate_legacy_window();
+    config.humanize_config.ensure_seed();
     normalize_job_profiles(config)?;
     config.browser_config.max_parallel_tasks = config
         .browser_config
         .max_parallel_tasks
         .clamp(MIN_PARALLEL_TASKS, MAX_PARALLEL_TASKS);
 
+    if config.llm_config.is_none() {
+        config.llm_enabled = None;
+        return Ok(());
+    }
+
     let Some(llm_config) = config.llm_config.as_mut() else {
         return Ok(());
     };
 
+    // 只做规整，不因为「还没填完」拒绝落盘：
+    // 配置页要靠已保存的密钥去拉模型列表，拒绝保存会让用户永远填不完这份配置。
+    // 未填完的服务由 `llm_active` / `llm_chain` 挡在调用之外。
     llm_config.base_url = llm_config.base_url.trim().trim_end_matches('/').to_string();
     llm_config.model = llm_config.model.trim().to_string();
-    if llm_config.base_url.is_empty() {
-        return Err("大模型地址不能为空".to_string());
-    }
-    if llm_config.model.is_empty() {
-        return Err("模型名称不能为空".to_string());
-    }
     Ok(())
 }
 
@@ -463,6 +482,10 @@ fn normalize_llm_retry_config(retry: &mut LlmRetryConfig) {
     retry.retry_base_delay_ms = retry
         .retry_base_delay_ms
         .clamp(MIN_RETRY_BASE_DELAY_MS, MAX_RETRY_BASE_DELAY_MS);
+    retry.request_timeout_seconds = retry.request_timeout_seconds.clamp(
+        MIN_LLM_REQUEST_TIMEOUT_SECONDS,
+        MAX_LLM_REQUEST_TIMEOUT_SECONDS,
+    );
 }
 
 /// 标识只允许字母、数字、下划线和连字符：它会被拼进 keyring 条目名，
@@ -487,10 +510,12 @@ fn normalize_llm_fallbacks(fallbacks: &mut Vec<LlmProviderEntry>) -> Result<(), 
             .map(str::to_string);
     }
 
-    // 界面上新增一行后还没来得及填写就保存，属于常见操作，静默丢弃即可；
-    // 填了一半才是真的配置错误，必须挡下来提醒用户。
+    // 界面上新增一行后还没来得及填写就保存，属于常见操作，静默丢弃即可
     fallbacks.retain(|entry| !(entry.base_url.is_empty() && entry.model.is_empty()));
 
+    // 只校验标识——它决定密钥存放在哪个 keyring 条目，错了会读写到别人的密钥。
+    // 地址和模型名填了一半不算错误：那只是还没编辑完的草稿，
+    // 由 `LlmProviderEntry::is_usable` 决定它进不进降级链。
     let mut seen_ids: HashSet<&str> = HashSet::new();
     for entry in fallbacks.iter() {
         if !is_valid_entry_id(&entry.id) {
@@ -503,12 +528,6 @@ fn normalize_llm_fallbacks(fallbacks: &mut Vec<LlmProviderEntry>) -> Result<(), 
         }
         if !seen_ids.insert(entry.id.as_str()) {
             return Err(format!("备用大模型服务标识重复：{}", entry.id));
-        }
-        if entry.base_url.is_empty() {
-            return Err("备用大模型服务的地址不能为空".to_string());
-        }
-        if entry.model.is_empty() {
-            return Err("备用大模型服务的模型名称不能为空".to_string());
         }
     }
 
@@ -568,6 +587,10 @@ pub struct AppRuntimeConfig {
     #[serde(default)]
     pub llm_config: Option<LlmConfig>,
 
+    /// 主用大模型是否启用。旧配置没有这块时默认按启用处理，停用时只改这个字段
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_enabled: Option<bool>,
+
     /// 主用服务不可用时按顺序尝试的备用服务
     #[serde(default)]
     pub llm_fallbacks: Vec<LlmProviderEntry>,
@@ -608,6 +631,14 @@ pub struct AppRuntimeConfig {
     /// 自动回复轮询节奏。全局唯一，不随求职方案变化
     #[serde(default)]
     pub reply_polling_config: ReplyPollingConfig,
+
+    /// 周期投递的默认参数。启动任务时把它当初值带进弹窗，改动只对那次任务生效
+    #[serde(default)]
+    pub periodic_delivery_config: PeriodicDeliveryConfig,
+
+    /// 拟人化。和轮询节奏一样是全局运行行为，不随求职方案变化
+    #[serde(default)]
+    pub humanize_config: HumanizeConfig,
 
     /// 浏览器运行配置
     pub browser_config: BrowserConfig,
@@ -763,6 +794,21 @@ pub struct LlmConfig {
     pub model: String,
 }
 
+/// 一个大模型服务是否填写完整、可以真正发起调用。
+///
+/// 配置页允许存在填了一半的服务：模型名要从服务端拉列表才知道，而拉列表得先存密钥，
+/// 密钥又跟着这份配置一起落盘——若要求「填完才准保存」，这三者就会互相等待。
+/// 因此校验放宽为「可以存」，能不能用改由这里判断，未填完的服务不会进入降级链。
+fn service_is_usable(base_url: &str, model: &str) -> bool {
+    !base_url.trim().is_empty() && !model.trim().is_empty()
+}
+
+impl LlmConfig {
+    pub fn is_usable(&self) -> bool {
+        service_is_usable(&self.base_url, &self.model)
+    }
+}
+
 /// 主用服务在降级链中的保留标识。它的 API Key 仍存放在旧的 keyring 条目里，
 /// 这样老用户升级后无需重新填写密钥。
 pub const PRIMARY_LLM_ENTRY_ID: &str = "primary";
@@ -789,6 +835,12 @@ pub struct LlmProviderEntry {
     pub enabled: bool,
 }
 
+impl LlmProviderEntry {
+    pub fn is_usable(&self) -> bool {
+        service_is_usable(&self.base_url, &self.model)
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -803,6 +855,10 @@ pub struct LlmRetryConfig {
     /// 首次重试前的等待毫秒数，之后按指数退避
     #[serde(default = "default_retry_base_delay_ms")]
     pub retry_base_delay_ms: u64,
+
+    /// 单次大模型请求的超时时间（秒）
+    #[serde(default = "default_request_timeout_seconds")]
+    pub request_timeout_seconds: u64,
 }
 
 fn default_network_retry_attempts() -> u32 {
@@ -813,11 +869,16 @@ fn default_retry_base_delay_ms() -> u64 {
     500
 }
 
+fn default_request_timeout_seconds() -> u64 {
+    120
+}
+
 impl Default for LlmRetryConfig {
     fn default() -> Self {
         Self {
             network_retry_attempts: default_network_retry_attempts(),
             retry_base_delay_ms: default_retry_base_delay_ms(),
+            request_timeout_seconds: default_request_timeout_seconds(),
         }
     }
 }
@@ -827,6 +888,9 @@ pub const MAX_NETWORK_RETRY_ATTEMPTS: u32 = 5;
 /// 重试等待时长的允许区间（毫秒）
 pub const MIN_RETRY_BASE_DELAY_MS: u64 = 100;
 pub const MAX_RETRY_BASE_DELAY_MS: u64 = 10_000;
+/// 单次大模型请求超时的允许区间（秒）
+pub const MIN_LLM_REQUEST_TIMEOUT_SECONDS: u64 = 1;
+pub const MAX_LLM_REQUEST_TIMEOUT_SECONDS: u64 = 600;
 
 /// 降级链中的一环，屏蔽「主用配置」与「备用条目」之间的结构差异。
 /// 调用方只需按顺序遍历，不必关心某一环来自哪张表。
@@ -855,6 +919,23 @@ impl LlmChainLink {
 }
 
 impl AppRuntimeConfig {
+    /// 主用大模型是否已经配置。
+    pub fn llm_configured(&self) -> bool {
+        self.llm_config.is_some()
+    }
+
+    /// 主用大模型是否当前可用。
+    ///
+    /// 旧配置没有 `llm_enabled` 时默认视为启用；没配置主用服务、
+    /// 或者服务还没填完（缺地址或模型名）时都不可用。
+    pub fn llm_active(&self) -> bool {
+        self.llm_enabled.unwrap_or(true)
+            && self
+                .llm_config
+                .as_ref()
+                .is_some_and(|primary| primary.is_usable())
+    }
+
     /// 按稳定标识查找方案；未传标识时使用默认方案。
     pub fn job_profile(&self, profile_id: Option<&str>) -> Result<&JobProfile, String> {
         let profile_id = profile_id
@@ -868,10 +949,14 @@ impl AppRuntimeConfig {
     }
 
     /// 按调用顺序返回大模型降级链：主用服务在前，其后是处于启用状态的备用服务。
-    /// 未配置主用服务时返回空链，调用方据此报「请先配置大模型服务」。
+    /// 未配置或已停用主用服务时返回空链，调用方据此阻止模型调用。
     pub fn llm_chain(&self) -> Vec<LlmChainLink> {
-        // 全局的 AI 功能门禁都以「是否配置了主用服务」为准，
-        // 这里必须保持一致：没有主用服务时整条链不可用，而不是退而使用备用服务。
+        // 全局的 AI 功能门禁都以「主用服务是否可用」为准，
+        // 这里必须保持一致：没有主用服务或已停用时整条链都不可用，而不是退而使用备用服务。
+        if !self.llm_active() {
+            return Vec::new();
+        }
+
         let Some(primary) = self.llm_config.as_ref() else {
             return Vec::new();
         };
@@ -888,7 +973,8 @@ impl AppRuntimeConfig {
         chain.extend(
             self.llm_fallbacks
                 .iter()
-                .filter(|entry| entry.enabled)
+                // 填了一半的备用服务只是草稿，允许保存但不参与调用
+                .filter(|entry| entry.enabled && entry.is_usable())
                 .map(|entry| LlmChainLink {
                     id: entry.id.clone(),
                     label: entry.label.clone(),
@@ -1296,6 +1382,202 @@ fn default_humanize_delay_max_seconds() -> u64 {
 }
 
 // ================================
+// 周期投递配置
+//
+// 这里存的是启动弹窗的初值，不是正在跑的任务的参数：任务一旦入队就带着自己的
+// 计划快照，之后改这里不会影响它。放在顶层而不是方案卡里，理由和轮询节奏一样
+// ——它是运行节奏，不是求职策略。
+// ================================
+
+/// 一天的分钟数。窗口用「零点起的分钟数」表示，才装得下 09:30 这种半点边界
+pub const MINUTES_PER_DAY: u32 = 24 * 60;
+/// 单轮打招呼上限的允许区间上界
+pub const MAX_GREETS_PER_ROUND: u32 = 200;
+/// 单轮时长上限的允许区间上界（分钟）
+pub const MAX_ROUND_MINUTES: u64 = 240;
+/// 自动结束时长的允许区间上界（小时）
+pub const MAX_RUN_HOURS: u64 = 72;
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct PeriodicDeliveryConfig {
+    /// 两轮投递之间的间隔（分钟）
+    #[serde(default = "default_delivery_interval_minutes")]
+    pub interval_minutes: u64,
+
+    /// 是否只在指定时段投递。关掉后全天可投
+    #[serde(default)]
+    pub window_enabled: bool,
+
+    /// 投递时段，可以有多段：上午一段、下午一段，中间的午休就空出来了。
+    /// 每段以「零点起的分钟数」表示，左闭右开
+    #[serde(default = "default_delivery_windows")]
+    pub windows: Vec<DeliveryWindow>,
+
+    /// 单段时代的字段，只用于读入老配置，读完即并入 `windows` 并不再写回。
+    ///
+    /// 缺了这条迁移的表现不是报错而是静默重置：老用户升级后时段回到 09:00-18:00，
+    /// 而他原本设的可能是夜间投递
+    #[serde(default, skip_serializing)]
+    pub window_start_minute: Option<u32>,
+
+    #[serde(default, skip_serializing)]
+    pub window_end_minute: Option<u32>,
+
+    /// 启动后最多跑多少小时，0 表示不自动结束。
+    ///
+    /// 存成时长而不是绝对时刻：配置是「下次也这么跑」的模板，存死某个钟点
+    /// 隔天就过期了。提交任务时才换算成绝对的结束时刻
+    #[serde(default)]
+    pub max_run_hours: u64,
+
+    /// 单轮最多打招呼多少条，0 表示不限。
+    ///
+    /// 这是「一直在投递、回复轮不上」的正解：岗位列表几乎是无限的，
+    /// 一轮不设上界就可能跑几个小时，两轮之间的空闲期自然永远轮不到
+    #[serde(default = "default_max_greets_per_round")]
+    pub max_greets_per_round: u32,
+
+    /// 单轮最长跑多少分钟，0 表示不限
+    #[serde(default = "default_max_round_minutes")]
+    pub max_round_minutes: u64,
+}
+
+/// 配置文件里的一段投递时段。与 `rpa::schedule::DailyWindow` 同形，
+/// 但配置层不该反向依赖 RPA 模块，提交任务时再转换
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeliveryWindow {
+    pub start_minute: u32,
+    pub end_minute: u32,
+}
+
+impl PeriodicDeliveryConfig {
+    /// 把老配置的单段字段并进 `windows`。已经有多段数据时以多段为准
+    fn migrate_legacy_window(&mut self) {
+        let legacy = self.window_start_minute.zip(self.window_end_minute);
+        if let Some((start, end)) = legacy {
+            if self.windows.is_empty() {
+                self.windows = vec![DeliveryWindow {
+                    start_minute: start,
+                    end_minute: end,
+                }];
+            }
+        }
+        self.window_start_minute = None;
+        self.window_end_minute = None;
+        if self.windows.is_empty() {
+            self.windows = default_delivery_windows();
+        }
+    }
+}
+
+impl Default for PeriodicDeliveryConfig {
+    fn default() -> Self {
+        Self {
+            interval_minutes: default_delivery_interval_minutes(),
+            window_enabled: false,
+            windows: default_delivery_windows(),
+            window_start_minute: None,
+            window_end_minute: None,
+            max_run_hours: 0,
+            max_greets_per_round: default_max_greets_per_round(),
+            max_round_minutes: default_max_round_minutes(),
+        }
+    }
+}
+
+fn default_delivery_interval_minutes() -> u64 {
+    30
+}
+
+fn default_delivery_windows() -> Vec<DeliveryWindow> {
+    vec![DeliveryWindow {
+        start_minute: 9 * 60,
+        end_minute: 18 * 60,
+    }]
+}
+
+fn default_max_greets_per_round() -> u32 {
+    30
+}
+
+fn default_max_round_minutes() -> u64 {
+    60
+}
+
+// ================================
+// 拟人化
+//
+// 平台风控看的不是单次动作像不像人，而是长期模式：每条投递都隔 4 秒、每轮都正好
+// 30 条、每天投满同样的量——单看每一步都合法，连起来是一条没有呼吸的直线。
+//
+// 所以这里刻意不新开一套节奏参数，而是给既有的「单轮上限 / 投递间隔 / 轮询抖动」
+// 蒙上一层扰动：用户设的 30 条仍是那个量级，但今天可能 26 条、明天 33 条，中途
+// 还会停下来歇几分钟。用户调的是意图，拟人化调的是把意图落成动作的方式
+// ================================
+
+/// 拟人化强度。只决定扰动幅度，不引入新的数值参数——
+/// 具体的休息阈值、停顿长度、打字速度全部由当日人格从既有配置派生
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HumanizeIntensity {
+    /// 轻度：只在既有节奏上小幅抖动，几乎不牺牲产出
+    Light,
+    /// 标准：投几十条歇一会儿、偶尔跳过一个岗位，产出降一到两成
+    #[default]
+    Standard,
+    /// 谨慎：休息更频繁更久、跳过更多、动作更慢，产出明显下降
+    Cautious,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HumanizeConfig {
+    /// 总开关。关掉后所有节奏与输入行为与改造前完全一致
+    #[serde(default)]
+    pub enabled: bool,
+
+    #[serde(default)]
+    pub intensity: HumanizeIntensity,
+
+    /// 人格种子，0 表示还没生成过。
+    ///
+    /// 首次启用时随机生成一次就固定下来，之后每天再由它派生出当天的具体策略。
+    /// 每次启动都重新掷一次的话，「这台机器有自己的操作习惯」这件事就不成立了——
+    /// 而真人的手速、休息习惯是长期稳定、日间微调的
+    #[serde(default)]
+    pub persona_seed: u64,
+}
+
+impl HumanizeConfig {
+    /// 启用却还没有种子时补一个。
+    ///
+    /// 关闭状态下不生成：种子一旦落盘就代表一个确定的人格，用户只是没开功能，
+    /// 不该在配置文件里先留下一个将来会被沿用的身份
+    fn ensure_seed(&mut self) {
+        if !self.enabled {
+            return;
+        }
+        // 超界的种子只能来自手改配置或旧数据。留着它等于让 JSON 往返去改写它，
+        // 那时人格会在某次保存后毫无征兆地整个换掉
+        if self.persona_seed == 0 || self.persona_seed >= PERSONA_SEED_LIMIT {
+            self.persona_seed = new_persona_seed();
+        }
+    }
+}
+
+/// 人格种子的取值上界（不含）。
+///
+/// 卡在 2^53 是因为配置要经 JSON 往返到前端再存回来，而 JS 的 Number 装不下
+/// 超过 2^53 的整数——超出部分会被静默改写。种子一旦被改写，人格每次保存配置
+/// 就换一套，「稳定随机」这件事直接失效，而且没有任何报错
+const PERSONA_SEED_LIMIT: u64 = 1 << 53;
+
+/// 掷一个非零的人格种子。0 是「未生成」的哨兵值，必须避开
+fn new_persona_seed() -> u64 {
+    use rand::Rng;
+    rand::thread_rng().gen_range(1..PERSONA_SEED_LIMIT)
+}
+
+// ================================
 // 岗位分析配置
 //
 // 一次分析就是一次完整的大模型调用，成本比筛选高一个量级，所以触发时机做成单选：
@@ -1561,6 +1843,7 @@ mod tests {
         assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
         assert!(!config.onboarding_completed);
         assert!(config.llm_config.is_none());
+        assert!(config.llm_enabled.is_none());
     }
 
     #[test]
@@ -1575,8 +1858,12 @@ mod tests {
         assert_eq!(llm.model, "qwen3");
     }
 
+    /// 没填完的主用服务能存下来，但不会被拿去调用。
+    ///
+    /// 反过来做——拒绝保存——会把配置页锁死：模型名要拉列表才知道，
+    /// 拉列表得先存好密钥，密钥又跟这份配置一起落盘。
     #[test]
-    fn invalid_non_null_llm_config_is_rejected() {
+    fn incomplete_primary_llm_config_is_saved_but_stays_inactive() {
         for (base_url, model) in [
             ("", "qwen3"),
             ("   ", "qwen3"),
@@ -1590,8 +1877,11 @@ mod tests {
                 model: model.to_string(),
             });
 
-            assert!(validate_and_normalize(&mut config).is_err());
+            validate_and_normalize(&mut config).unwrap();
+
             assert!(config.llm_config.is_some());
+            assert!(!config.llm_active());
+            assert!(config.llm_chain().is_empty());
         }
     }
 
@@ -1604,6 +1894,7 @@ mod tests {
         let mut value = serde_yaml::to_value(default_app_config()).unwrap();
         let root = value.as_mapping_mut().unwrap();
         root.remove(serde_yaml::Value::String("reply_polling_config".into()));
+        root.remove(serde_yaml::Value::String("periodic_delivery_config".into()));
         root.get_mut(serde_yaml::Value::String("replay_config".into()))
             .and_then(serde_yaml::Value::as_mapping_mut)
             .unwrap()
@@ -1615,6 +1906,160 @@ mod tests {
         assert_eq!(config.replay_config.auto_reply_window_hours, 24);
         assert_eq!(config.reply_polling_config.interval_minutes, 5);
         assert_eq!(config.reply_polling_config.max_conversations_per_round, 10);
+        assert_eq!(
+            config.periodic_delivery_config,
+            PeriodicDeliveryConfig::default()
+        );
+        assert_eq!(config.periodic_delivery_config.interval_minutes, 30);
+        assert_eq!(config.periodic_delivery_config.max_greets_per_round, 30);
+    }
+
+    /// 拟人化默认关着，且关着的时候不该在配置文件里留下一个人格身份
+    #[test]
+    fn humanize_is_off_by_default_and_stays_seedless() {
+        let mut config = default_app_config();
+
+        validate_and_normalize(&mut config).unwrap();
+
+        assert!(!config.humanize_config.enabled);
+        assert_eq!(config.humanize_config.persona_seed, 0);
+        assert_eq!(config.humanize_config.intensity, HumanizeIntensity::Standard);
+    }
+
+    /// 开启时补一个种子，之后每次保存都必须原样保留——种子变了，人格就换了
+    #[test]
+    fn enabling_humanize_mints_a_seed_once_and_then_keeps_it() {
+        let mut config = default_app_config();
+        config.humanize_config.enabled = true;
+
+        validate_and_normalize(&mut config).unwrap();
+        let minted = config.humanize_config.persona_seed;
+
+        assert_ne!(minted, 0);
+        validate_and_normalize(&mut config).unwrap();
+        assert_eq!(config.humanize_config.persona_seed, minted);
+    }
+
+    /// 种子要经 JSON 往返到前端再存回来，超过 2^53 会被 JS 的 Number 静默改写。
+    /// 那意味着人格在某次保存配置后毫无征兆地整个换掉
+    #[test]
+    fn a_minted_seed_survives_a_json_round_trip_intact() {
+        for _ in 0..64 {
+            let mut config = default_app_config();
+            config.humanize_config.enabled = true;
+            validate_and_normalize(&mut config).unwrap();
+            let minted = config.humanize_config.persona_seed;
+
+            let encoded = serde_json::to_string(&config.humanize_config).unwrap();
+            let decoded: HumanizeConfig = serde_json::from_str(&encoded).unwrap();
+            // JS 侧的 Number 往返：超界的值会在这一步被改写
+            let through_js = encoded.parse::<f64>().ok();
+
+            assert_eq!(decoded.persona_seed, minted);
+            assert!(minted < (1u64 << 53), "种子超界：{minted}");
+            assert!(through_js.is_none() || minted as f64 as u64 == minted);
+        }
+    }
+
+    /// 手改配置或旧数据可能留下超界的种子，必须当场换掉而不是带着它跑
+    #[test]
+    fn an_out_of_range_seed_is_replaced_instead_of_kept() {
+        let mut config = default_app_config();
+        config.humanize_config.enabled = true;
+        config.humanize_config.persona_seed = u64::MAX;
+
+        validate_and_normalize(&mut config).unwrap();
+
+        assert!(config.humanize_config.persona_seed < (1u64 << 53));
+        assert_ne!(config.humanize_config.persona_seed, 0);
+    }
+
+    /// 旧配置整块没有 humanize_config，读出来必须是「关闭」而不是解析失败
+    #[test]
+    fn a_config_without_the_humanize_block_falls_back_to_disabled() {
+        let mut value = serde_yaml::to_value(default_app_config()).unwrap();
+        value
+            .as_mapping_mut()
+            .unwrap()
+            .remove(serde_yaml::Value::String("humanize_config".into()));
+
+        let config = parse_config_content(&serde_yaml::to_string(&value).unwrap()).unwrap();
+
+        assert_eq!(config.humanize_config, HumanizeConfig::default());
+        assert!(!config.humanize_config.enabled);
+    }
+
+    /// 老配置里投递时段是 `window_start_minute`/`window_end_minute` 两个标量。
+    /// 缺了这条迁移，表现不是报错而是静默重置：老用户升级后时段回到 09:00-18:00，
+    /// 而他原本设的可能是夜间投递，任务于是在完全不该跑的时间开投
+    #[test]
+    fn a_legacy_single_window_config_migrates_into_the_window_list() {
+        let mut config = default_app_config();
+        config.periodic_delivery_config.windows = Vec::new();
+        config.periodic_delivery_config.window_start_minute = Some(22 * 60);
+        config.periodic_delivery_config.window_end_minute = Some(6 * 60);
+
+        validate_and_normalize(&mut config).unwrap();
+
+        assert_eq!(
+            config.periodic_delivery_config.windows,
+            vec![DeliveryWindow {
+                start_minute: 22 * 60,
+                end_minute: 6 * 60,
+            }]
+        );
+        // 迁移完就把老字段清空，写回配置文件时不再出现
+        assert_eq!(config.periodic_delivery_config.window_start_minute, None);
+        assert_eq!(config.periodic_delivery_config.window_end_minute, None);
+    }
+
+    /// 已经有多段数据时不能被老字段覆盖，否则每次存盘都会退回单段
+    #[test]
+    fn an_existing_window_list_wins_over_the_legacy_fields() {
+        let mut config = default_app_config();
+        config.periodic_delivery_config.windows = vec![
+            DeliveryWindow { start_minute: 9 * 60, end_minute: 12 * 60 },
+            DeliveryWindow { start_minute: 14 * 60, end_minute: 18 * 60 },
+        ];
+        config.periodic_delivery_config.window_start_minute = Some(0);
+        config.periodic_delivery_config.window_end_minute = Some(60);
+
+        validate_and_normalize(&mut config).unwrap();
+
+        assert_eq!(config.periodic_delivery_config.windows.len(), 2);
+        assert_eq!(
+            config.periodic_delivery_config.windows[0].start_minute,
+            9 * 60
+        );
+    }
+
+    /// 时段列表被清空时兜回默认，而不是留一个「开了时段限制却一段都没有」的空壳
+    #[test]
+    fn an_empty_window_list_falls_back_to_the_default_window() {
+        let mut config = default_app_config();
+        config.periodic_delivery_config.windows = Vec::new();
+
+        validate_and_normalize(&mut config).unwrap();
+
+        assert_eq!(
+            config.periodic_delivery_config.windows,
+            default_delivery_windows()
+        );
+    }
+
+    /// 单轮上限的默认值不是随便填的：它是「一直在投递、回复轮不上」的正解。
+    /// 哪天被改回 0（不限），周期投递会退回到一轮跑几个小时、空闲期永远轮不到的状态，
+    /// 而配置读取、任务启动全都正常，症状只在挂了半天之后才显出来
+    #[test]
+    fn periodic_delivery_defaults_bound_a_single_round() {
+        let config = PeriodicDeliveryConfig::default();
+
+        assert!(config.max_greets_per_round > 0);
+        assert!(config.max_round_minutes > 0);
+        assert!(config.interval_minutes > 0);
+        // 时段与自动结束默认不启用：这两项是可选约束，不该在用户没设过时突然生效
+        assert!(!config.window_enabled);
+        assert_eq!(config.max_run_hours, 0);
     }
 
     #[test]
@@ -2337,6 +2782,20 @@ job_profiles: []
     }
 
     #[test]
+    fn llm_chain_is_empty_when_primary_is_disabled_but_kept() {
+        let mut config = default_app_config();
+        config.llm_config = Some(LlmConfig {
+            provider: LlmProviderPreset::DeepSeek,
+            base_url: "https://api.deepseek.com".to_string(),
+            model: "deepseek-chat".to_string(),
+        });
+        config.llm_enabled = Some(false);
+
+        assert!(config.llm_chain().is_empty());
+        assert!(config.llm_config.is_some());
+    }
+
+    #[test]
     fn chain_link_display_name_prefers_label_then_model() {
         let mut config = default_app_config();
         config.llm_config = Some(LlmConfig {
@@ -2361,6 +2820,7 @@ job_profiles: []
         config.llm_retry_config = LlmRetryConfig {
             network_retry_attempts: 99,
             retry_base_delay_ms: 1,
+            request_timeout_seconds: 9_999,
         };
 
         validate_and_normalize(&mut config).unwrap();
@@ -2372,6 +2832,10 @@ job_profiles: []
         assert_eq!(
             config.llm_retry_config.retry_base_delay_ms,
             MIN_RETRY_BASE_DELAY_MS
+        );
+        assert_eq!(
+            config.llm_retry_config.request_timeout_seconds,
+            MAX_LLM_REQUEST_TIMEOUT_SECONDS
         );
 
         config.llm_retry_config.retry_base_delay_ms = 999_999;
@@ -2400,20 +2864,35 @@ job_profiles: []
         assert_eq!(config.browser_config.max_parallel_tasks, MIN_PARALLEL_TASKS);
     }
 
+    /// 全空的行是「加了一行还没填」，直接丢弃；填了一半的是编辑到一半的草稿，
+    /// 要留住，但不能进降级链——否则运行时会拿着空模型名去发请求。
     #[test]
-    fn blank_fallback_rows_are_dropped_but_half_filled_rows_are_rejected() {
+    fn blank_fallback_rows_are_dropped_and_half_filled_rows_are_kept_out_of_the_chain() {
         let mut config = default_app_config();
+        config.llm_config = Some(LlmConfig {
+            provider: LlmProviderPreset::OpenAi,
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4o".to_string(),
+        });
         let mut blank = fallback_entry("backup-blank", "");
         blank.base_url = "   ".to_string();
-        config.llm_fallbacks = vec![blank, fallback_entry("backup-a", "qwen-max")];
+        config.llm_fallbacks = vec![
+            blank,
+            fallback_entry("backup-half", ""),
+            fallback_entry("backup-a", "qwen-max"),
+        ];
 
         validate_and_normalize(&mut config).unwrap();
-        assert_eq!(config.llm_fallbacks.len(), 1);
-        assert_eq!(config.llm_fallbacks[0].id, "backup-a");
 
-        config.llm_fallbacks = vec![fallback_entry("backup-a", "")];
-        let error = validate_and_normalize(&mut config).unwrap_err();
-        assert!(error.contains("模型名称不能为空"));
+        let ids: Vec<&str> = config
+            .llm_fallbacks
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["backup-half", "backup-a"]);
+
+        let chain_ids: Vec<String> = config.llm_chain().into_iter().map(|link| link.id).collect();
+        assert_eq!(chain_ids, vec![PRIMARY_LLM_ENTRY_ID, "backup-a"]);
     }
 
     #[test]

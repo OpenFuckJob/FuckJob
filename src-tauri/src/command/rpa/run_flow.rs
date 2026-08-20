@@ -3,7 +3,10 @@ use crate::{
     config::{load_app_config, resolve_job_profile},
     dao::{model::JobProfileSnapshot, profile_snapshot_dao},
     logger,
-    rpa::run_flow::{self, EnvCheckResult, FlowMode, PlatformKind, ReadinessReport},
+    rpa::{
+        run_flow::{self, EnvCheckResult, FlowMode, PlatformKind, ReadinessReport},
+        schedule::{self, PeriodicPlan},
+    },
     task::{JobTaskInfo, JobTaskOverview, JobTaskProfile, JOB_TASK_MANAGER},
 };
 
@@ -105,9 +108,9 @@ pub async fn preflight_job_task(
 pub async fn boss_flow(
     app_handle: tauri::AppHandle,
     mode: FlowMode,
-    interval_minutes: Option<u64>,
+    plan: Option<PeriodicPlan>,
 ) -> CommandResult<()> {
-    rpa_flow(app_handle, PlatformKind::Boss, mode, interval_minutes).await
+    rpa_flow(app_handle, PlatformKind::Boss, mode, plan).await
 }
 
 #[tauri::command]
@@ -115,7 +118,7 @@ pub async fn rpa_flow(
     app_handle: tauri::AppHandle,
     platform: PlatformKind,
     mode: FlowMode,
-    interval_minutes: Option<u64>,
+    plan: Option<PeriodicPlan>,
 ) -> CommandResult<()> {
     let _running_guard = match run_flow::try_start_job_task() {
         Ok(guard) => guard,
@@ -163,7 +166,7 @@ pub async fn rpa_flow(
             Ok(runtime) => runtime.block_on(run_flow::execute_rpa_flow(
                 platform,
                 mode,
-                interval_minutes,
+                plan,
                 &app_runtime_config,
             )),
             Err(e) => Err(anyhow::anyhow!("{e}")),
@@ -192,12 +195,19 @@ pub fn start_job_task(
     app_handle: tauri::AppHandle,
     platform: PlatformKind,
     mode: FlowMode,
-    interval_minutes: Option<u64>,
+    plan: Option<PeriodicPlan>,
     profile_id: Option<String>,
 ) -> CommandResult<JobTaskInfo> {
-    if mode == FlowMode::PeriodicJobHunting && interval_minutes.is_none_or(|minutes| minutes == 0) {
-        return CommandResult::err("周期性投递间隔必须大于 0 分钟");
-    }
+    // 计划在入队时就校验并规整一次，落进任务里的是最终形态。等到 worker 起来才发现
+    // 「结束时间已经过了」，用户看到的是任务一闪而过，什么都没发生
+    let plan = if mode == FlowMode::PeriodicJobHunting {
+        match schedule::resolve_plan(plan, chrono::Local::now()) {
+            Ok(plan) => Some(plan),
+            Err(error) => return CommandResult::err(error),
+        }
+    } else {
+        None
+    };
 
     let base_config = match crate::config::load_app_config_inner(app_handle) {
         Ok(config) => config,
@@ -251,7 +261,7 @@ pub fn start_job_task(
         return CommandResult::err(format!("任务准备未完成：{missing}"));
     }
 
-    match JOB_TASK_MANAGER.submit(platform, mode, interval_minutes, config, task_profile) {
+    match JOB_TASK_MANAGER.submit(platform, mode, plan, config, task_profile) {
         Ok(task) => CommandResult::ok(task),
         Err(error) => CommandResult::err(error),
     }

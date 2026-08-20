@@ -21,6 +21,7 @@ import {
   SearchOutlined,
 } from "@ant-design/icons";
 import { invoke } from "@tauri-apps/api/core";
+import { fetchJobDescriptionText } from "@/lib/job-description";
 import type { CommandResult } from "@/types/command";
 import type { JobDetail } from "@/types/job-detail";
 import {
@@ -64,14 +65,21 @@ export function isSelectableInterviewJob(job: JobDetail): boolean {
   return title.length > 0 && !PLACEHOLDER_JOB_TITLES.has(title) && !PLACEHOLDER_COMPANY_NAMES.has(company);
 }
 
-export function buildInterviewJobContext(job: JobDetail): string {
+/**
+ * 拼给模型的岗位上下文。
+ *
+ * `description` 由调用方从 [`fetchJobDescriptionText`] 取——抓下来的
+ * `job.detail` 混着反爬注入的样式代码和噪声词，原样喂进去既占额度又干扰判断。
+ * 这里保持纯函数，取数留在调用方
+ */
+export function buildInterviewJobContext(job: JobDetail, description: string): string {
   const metadata = [
     `岗位：${job.title.trim()}`,
     job.company_name.trim() ? `公司：${job.company_name.trim()}` : "",
     job.salary.trim() ? `薪资：${job.salary.trim()}` : "",
     job.location?.trim() ? `地点：${job.location.trim()}` : "",
   ].filter(Boolean);
-  const detail = job.detail.trim();
+  const detail = description.trim();
   return [...metadata, detail ? `JD：\n${detail}` : ""].filter(Boolean).join("\n").slice(0, 6000);
 }
 
@@ -86,6 +94,8 @@ export function MockInterviewSetup({ value, onChange, disabled }: MockInterviewS
   const [jobsLoading, setJobsLoading] = useState(false);
   const [jobsError, setJobsError] = useState("");
   const [customJobOpen, setCustomJobOpen] = useState(false);
+  // 清洗后的 JD，展示和拼上下文共用同一份，不再各读一次 job.detail
+  const [description, setDescription] = useState("");
   const patch = (next: Partial<MockInterviewSettings>) => onChange({ ...value, ...next });
 
   const loadJobs = () => {
@@ -118,19 +128,22 @@ export function MockInterviewSetup({ value, onChange, disabled }: MockInterviewS
   );
   const selectedJob = jobs.find((item) => item.id === value.selectedJobId);
 
-  const selectJob = (jobId?: string) => {
+  const selectJob = async (jobId?: string) => {
     if (!jobId) {
+      setDescription("");
       patch({ selectedJobId: undefined, jobTitle: "", companyName: "", jobContext: "" });
       return;
     }
     const job = jobs.find((item) => item.id === jobId);
     if (!job) return;
     setCustomJobOpen(false);
+    const detail = await fetchJobDescriptionText(job.id);
+    setDescription(detail);
     patch({
       selectedJobId: job.id,
       jobTitle: job.title.trim(),
       companyName: job.company_name.trim(),
-      jobContext: buildInterviewJobContext(job),
+      jobContext: buildInterviewJobContext(job, detail),
     });
   };
 
@@ -163,7 +176,7 @@ export function MockInterviewSetup({ value, onChange, disabled }: MockInterviewS
           placeholder="搜索公司或岗位名称"
           notFoundContent={jobsLoading ? "正在加载岗位…" : "暂无可用的真实岗位数据"}
           options={jobOptions}
-          onChange={selectJob}
+          onChange={(jobId) => void selectJob(jobId)}
           className="mi-job-select"
         />
         {jobsError && (
@@ -186,11 +199,11 @@ export function MockInterviewSetup({ value, onChange, disabled }: MockInterviewS
                 {selectedJob.salary && <Tag color="blue">{selectedJob.salary}</Tag>}
               </Space>
             </div>
-            {selectedJob.detail && (
+            {description && (
               <Collapse
                 ghost
                 size="small"
-                items={[{ key: "jd", label: "查看完整岗位描述", children: <div className="mi-job-detail">{selectedJob.detail}</div> }]}
+                items={[{ key: "jd", label: "查看完整岗位描述", children: <div className="mi-job-detail">{description}</div> }]}
               />
             )}
           </Card>

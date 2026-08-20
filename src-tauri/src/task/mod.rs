@@ -21,7 +21,10 @@ use uuid::Uuid;
 
 use crate::{
     config::AppRuntimeConfig,
-    rpa::run_flow::{self, FlowMode, PlatformKind},
+    rpa::{
+        run_flow::{self, FlowMode, PlatformKind},
+        schedule::PeriodicPlan,
+    },
 };
 
 const MAX_QUEUED_TASKS: usize = 32;
@@ -61,6 +64,10 @@ pub struct JobTaskInfo {
     pub profile_name: Option<String>,
     #[serde(default)]
     pub profile_snapshot_id: Option<String>,
+    /// 周期投递任务提交时固定下来的计划，其他模式为空。
+    /// 交给前端格式化而不是在这里拼字符串——启动弹窗本来就要预览同一份摘要
+    #[serde(default)]
+    pub plan: Option<PeriodicPlan>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -73,7 +80,7 @@ pub struct JobTaskOverview {
 
 struct TaskEntry {
     info: JobTaskInfo,
-    interval_minutes: Option<u64>,
+    plan: Option<PeriodicPlan>,
     config: Arc<AppRuntimeConfig>,
     cancelled: Arc<AtomicBool>,
 }
@@ -101,7 +108,7 @@ impl SchedulerState {
         &mut self,
         platform: PlatformKind,
         mode: FlowMode,
-        interval_minutes: Option<u64>,
+        plan: Option<PeriodicPlan>,
         config: Arc<AppRuntimeConfig>,
         profile: Option<JobTaskProfile>,
     ) -> Result<JobTaskInfo, String> {
@@ -155,12 +162,13 @@ impl SchedulerState {
                 .as_ref()
                 .and_then(|value| value.profile_name.clone()),
             profile_snapshot_id: profile.and_then(|value| value.profile_snapshot_id),
+            plan: plan.clone(),
         };
         self.tasks.insert(
             task_id.clone(),
             TaskEntry {
                 info: info.clone(),
-                interval_minutes,
+                plan,
                 config,
                 cancelled: Arc::new(AtomicBool::new(false)),
             },
@@ -195,7 +203,7 @@ impl SchedulerState {
             task_id,
             platform: entry.info.platform,
             mode: entry.info.mode,
-            interval_minutes: entry.interval_minutes,
+            plan: entry.plan.clone(),
             config: Arc::clone(&entry.config),
             cancelled: Arc::clone(&entry.cancelled),
         })
@@ -305,7 +313,7 @@ struct WorkerInput {
     task_id: String,
     platform: PlatformKind,
     mode: FlowMode,
-    interval_minutes: Option<u64>,
+    plan: Option<PeriodicPlan>,
     config: Arc<AppRuntimeConfig>,
     cancelled: Arc<AtomicBool>,
 }
@@ -333,14 +341,14 @@ impl TaskManager {
         &self,
         platform: PlatformKind,
         mode: FlowMode,
-        interval_minutes: Option<u64>,
+        plan: Option<PeriodicPlan>,
         config: AppRuntimeConfig,
         profile: Option<JobTaskProfile>,
     ) -> Result<JobTaskInfo, String> {
         let max_parallel_tasks = config.browser_config.max_parallel_tasks;
         let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
         state.max_parallel_tasks = normalize_parallelism(max_parallel_tasks);
-        let info = state.enqueue(platform, mode, interval_minutes, Arc::new(config), profile)?;
+        let info = state.enqueue(platform, mode, plan, Arc::new(config), profile)?;
         self.inner.wake_scheduler.notify_one();
         Ok(info)
     }
@@ -421,7 +429,7 @@ fn spawn_worker(inner: Arc<TaskManagerInner>, worker: WorkerInput) {
                     Ok(runtime) => runtime.block_on(run_flow::execute_rpa_flow(
                         worker.platform,
                         worker.mode,
-                        worker.interval_minutes,
+                        worker.plan.clone(),
                         &worker.config,
                     )),
                     Err(error) => Err(anyhow::anyhow!("创建任务运行时失败: {error}")),
@@ -546,7 +554,7 @@ mod tests {
             .enqueue(
                 PlatformKind::Boss,
                 FlowMode::PeriodicJobHunting,
-                Some(30),
+                Some(PeriodicPlan::every(30)),
                 Arc::new(default_app_config()),
                 None,
             )
@@ -556,7 +564,7 @@ mod tests {
             .enqueue(
                 PlatformKind::Boss,
                 FlowMode::PeriodicJobHunting,
-                Some(60),
+                Some(PeriodicPlan::every(60)),
                 Arc::new(default_app_config()),
                 None,
             )
@@ -603,7 +611,7 @@ mod tests {
             .enqueue(
                 PlatformKind::Boss,
                 FlowMode::PeriodicJobHunting,
-                Some(30),
+                Some(PeriodicPlan::every(30)),
                 Arc::new(default_app_config()),
                 None,
             )
@@ -622,7 +630,7 @@ mod tests {
             .enqueue(
                 PlatformKind::Boss,
                 FlowMode::PeriodicJobHunting,
-                Some(30),
+                Some(PeriodicPlan::every(30)),
                 Arc::new(default_app_config()),
                 None,
             )

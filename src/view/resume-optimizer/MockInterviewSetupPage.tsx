@@ -11,6 +11,7 @@ interface MockInterviewSetupPageProps {
   value: MockInterviewSettings;
   resumeReady: boolean;
   aiReady: boolean;
+  llmConfigured: boolean;
   /** 是否由岗位管理带着岗位跳转过来 */
   fromJob?: boolean;
   onChange: (settings: MockInterviewSettings) => void;
@@ -22,6 +23,7 @@ export function MockInterviewSetupPage(props: MockInterviewSetupPageProps) {
   const modules = createInterviewModules(props.value);
   const canStart = props.aiReady && props.resumeReady && !!props.value.jobTitle.trim() && !!props.value.jobContext.trim();
   const duration = DURATION_META[props.value.duration];
+  const aiHint = props.llmConfigured ? "大模型已停用" : "尚未配置AI模型";
 
   return (
     <div className="mi-page mi-setup-page">
@@ -41,9 +43,9 @@ export function MockInterviewSetupPage(props: MockInterviewSetupPageProps) {
         <Alert
           type="warning"
           showIcon
-          message="尚未配置AI模型"
-          description="完成模型配置后才能开始模拟面试。"
-          action={<Button type="primary" size="small" onClick={props.onConfigureAi}>去配置</Button>}
+          message={aiHint}
+          description={props.llmConfigured ? "配置会保留，启用后才能开始模拟面试。" : "完成模型配置后才能开始模拟面试。"}
+          action={<Button type="primary" size="small" onClick={props.onConfigureAi}>{props.llmConfigured ? "去启用" : "去配置"}</Button>}
         />
       )}
       {!props.resumeReady && (
