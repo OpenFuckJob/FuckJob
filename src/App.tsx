@@ -7,19 +7,20 @@ import { copyJobProfile, DEFAULT_REGEX_RULE_LIMIT, getAnalysisConfig, getDefault
 import type { JobDetail } from "@/types/job-detail";
 import { Onboarding } from "@/view/onboarding";
 import { ConfigPage } from "@/view/config";
-import ConversationDebugPage from "@/view/conversation-debug";
 import JobDataPage from "@/view/job-data";
 import JobOverviewPage from "@/view/job-overview";
+import PlaygroundPage from "@/view/playground";
 import ResumeOptimizerPage from "@/view/resume-optimizer";
 import WorkspacePage from "@/view/workspace";
 import { AutoUpdaterModal, UpdaterProvider } from "@/lib/updater";
 
-type AppTabKey = "workspace" | "job-overview" | "job-data" | "conversation-debug" | "resume-optimizer" | "config";
+type AppTabKey = "workspace" | "job-overview" | "job-data" | "playground" | "resume-optimizer" | "config";
 const tabs: Array<{ key: AppTabKey; label: string }> = [
   { key: "workspace", label: "工作台" },
   { key: "job-overview", label: "求职数据" },
   { key: "job-data", label: "岗位管理" },
   { key: "resume-optimizer", label: "模拟面试" },
+  { key: "playground", label: "测试模式" },
   { key: "config", label: "配置中心" },
 ];
 const updateAt = <T,>(items: T[], index: number, next: Partial<T>) => items.map((item, i) => i === index ? { ...item, ...next } : item);
@@ -107,6 +108,19 @@ function MainShell({ config, update, save, status, message, dirty, importConfig,
   // 拟人化同样是顶层配置，旧配置里整块缺失，不能直接走 merge
   const updateHumanize = (next: Partial<HumanizeConfig>) =>
     update((c) => ({ ...c, humanize_config: { ...getHumanizeConfig(c), ...next } }));
+  // 测试模式可以挑任意一个方案来跑，选中的不一定是配置页当前编辑的那个，
+  // 所以写回提示词时只能按 id 定位，不能复用 updateActiveProfile
+  const savePlaygroundPrompts = (id: string, prompts: { greet_prompt: string | null; reply_prompt: string | null; semantic_filter_intent: string | null }) =>
+    update((c) => ({
+      ...c,
+      job_profiles: getJobProfiles(c).map((profile) => profile.id === id ? {
+        ...profile,
+        greet_config: { ...profile.greet_config, reply_prompt: prompts.greet_prompt },
+        replay_config: { ...profile.replay_config, reply_prompt: prompts.reply_prompt },
+        job_filter_config: { ...profile.job_filter_config, semantic_filter_intent: prompts.semantic_filter_intent },
+      } : profile),
+      default_job_profile_id: c.default_job_profile_id || getDefaultJobProfile(c).id,
+    }));
   const updateProfiles = (nextProfiles: JobProfile[], defaultId = config.default_job_profile_id) => update((c) => ({
     ...c,
     job_profiles: nextProfiles,
@@ -167,7 +181,7 @@ function MainShell({ config, update, save, status, message, dirty, importConfig,
     removeRule={(i: number) => updateActiveProfile((p) => ({ ...p, job_filter_config: { ...p.job_filter_config, regex_rules: p.job_filter_config.regex_rules.filter((_, x) => x !== i) } }))}
     importConfig={importConfig} exportConfig={exportConfig} />;
 
-  const content = activeTab === "workspace" ? <WorkspacePage config={config} onNavigate={(tab) => void navigate(tab)} onOpenConfig={openConfig} onOpenConversation={openConversation} /> : activeTab === "job-overview" ? <JobOverviewPage onNavigate={(target) => target === "job-data" ? navigate("job-data") : openConfig(target)} onOpenConversation={openConversation} /> : activeTab === "job-data" ? <JobDataPage aiConfigured={llmActive} llmConfigured={llmConfigured} onConfigureAi={openLlm} focusJobId={focusJobId} onFocusHandled={clearFocusJob} highMatchScore={getAnalysisConfig(getDefaultJobProfile(config)).high_match_score} onStartInterview={startInterview} /> : activeTab === "conversation-debug" ? <ConversationDebugPage aiConfigured={llmActive} llmConfigured={llmConfigured} onConfigureAi={openLlm} /> : activeTab === "resume-optimizer" ? <ResumeOptimizerPage config={profileConfig} llmConfigured={llmConfigured} onOpenLlmConfig={openLlm} onUpdateResume={(resume_content) => updateProfileSection("resume_config", { resume_content })} pendingInterviewJob={interviewJob} onPendingInterviewHandled={clearInterviewJob} /> : configPage;
+  const content = activeTab === "workspace" ? <WorkspacePage config={config} onNavigate={(tab) => void navigate(tab)} onOpenConfig={openConfig} onOpenConversation={openConversation} /> : activeTab === "job-overview" ? <JobOverviewPage onNavigate={(target) => target === "job-data" ? navigate("job-data") : openConfig(target)} onOpenConversation={openConversation} /> : activeTab === "job-data" ? <JobDataPage aiConfigured={llmActive} llmConfigured={llmConfigured} onConfigureAi={openLlm} focusJobId={focusJobId} onFocusHandled={clearFocusJob} highMatchScore={getAnalysisConfig(getDefaultJobProfile(config)).high_match_score} onStartInterview={startInterview} /> : activeTab === "playground" ? <PlaygroundPage config={config} llmConfigured={llmConfigured} llmActive={llmActive} onOpenLlmConfig={openLlm} onSavePrompts={savePlaygroundPrompts} /> : activeTab === "resume-optimizer" ? <ResumeOptimizerPage config={profileConfig} llmConfigured={llmConfigured} onOpenLlmConfig={openLlm} onUpdateResume={(resume_content) => updateProfileSection("resume_config", { resume_content })} pendingInterviewJob={interviewJob} onPendingInterviewHandled={clearInterviewJob} /> : configPage;
   return (
     <main className="app-shell">
       <header className="app-header">
