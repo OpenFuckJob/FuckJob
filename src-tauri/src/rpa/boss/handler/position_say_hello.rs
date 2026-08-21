@@ -121,22 +121,25 @@ pub async fn position_say_hello_on_page(
             stats.scanned += 1;
             let greet_job =
                 match read_job_card(page, &job_card_area_ele, &processed_job_ids, &mut pacer) {
-                Ok(CardOutcome::Ready(greet_job)) => *greet_job,
-                Ok(CardOutcome::Skipped(reason)) => {
-                    stats.record_skip(reason);
-                    // 全静默会让用户以为程序卡死，这里按批次给出进度提示
-                    let skipped = stats.skipped_known() - round_base.skipped_known();
-                    if should_log_skip_progress(skipped) {
-                        logger::info(format!("已跳过 {} 条已浏览/已投递岗位，继续扫描", skipped))?;
+                    Ok(CardOutcome::Ready(greet_job)) => *greet_job,
+                    Ok(CardOutcome::Skipped(reason)) => {
+                        stats.record_skip(reason);
+                        // 全静默会让用户以为程序卡死，这里按批次给出进度提示
+                        let skipped = stats.skipped_known() - round_base.skipped_known();
+                        if should_log_skip_progress(skipped) {
+                            logger::info(format!(
+                                "已跳过 {} 条已浏览/已投递岗位，继续扫描",
+                                skipped
+                            ))?;
+                        }
+                        continue;
                     }
-                    continue;
-                }
-                Err(error) => {
-                    stats.read_failed += 1;
-                    logger::warning(card_failure_message(&error))?;
-                    continue;
-                }
-            };
+                    Err(error) => {
+                        stats.read_failed += 1;
+                        logger::warning(card_failure_message(&error))?;
+                        continue;
+                    }
+                };
 
             logger::info(format!(
                 "当前处理岗位:{} 公司:{}",
@@ -626,6 +629,8 @@ fn read_recruiter_active_time(
     page: &Page,
     job_card_ele: &Element,
 ) -> Result<Option<String>, anyhow::Error> {
+    // 只读取当前岗位卡片内的 badge。不能在整页上查 `.boss-active-time`，
+    // 否则当前卡片缺失时可能拿到其他岗位卡片的招聘者活跃度。
     for selector in [".boss-online-tag", ".boss-active-time"] {
         if let Some(text) = job_card_ele
             .element(selector)?
@@ -636,50 +641,50 @@ fn read_recruiter_active_time(
         }
     }
 
-    for selector in [
-        ".job-boss-info .boss-online-tag",
-        ".job-boss-info .boss-active-time",
-        ".boss-online-tag",
-        ".boss-active-time",
-    ] {
-        if let Some(text) = page
-            .ele(selector)?
-            .and_then(|element| element.text_content().ok())
+    if let Some(text) = job_card_ele
+        .text_content()
+        .ok()
+        .and_then(|text| extract_recruiter_active_text(&text))
+    {
+        return Ok(Some(text));
+    }
+
+    // 详情页只允许读取当前招聘者信息容器，缺失时返回未知。
+    // 不能扫 `.job-detail-body` 或 body 文本，岗位描述里的“在线办公”等词会造成误判。
+    for selector in recruiter_detail_scope_selectors() {
+        let Some(detail_boss_info) = page.ele(selector)? else {
+            continue;
+        };
+
+        for activity_selector in [".boss-online-tag", ".boss-active-time"] {
+            if let Some(text) = detail_boss_info
+                .element(activity_selector)?
+                .and_then(|element| element.text_content().ok())
+                .and_then(|text| extract_recruiter_active_text(&text))
+            {
+                return Ok(Some(text));
+            }
+        }
+
+        if let Some(text) = detail_boss_info
+            .text_content()
+            .ok()
             .and_then(|text| extract_recruiter_active_text(&text))
         {
             return Ok(Some(text));
         }
     }
 
-    for selector in [
-        ".boss-info",
-        ".boss-name",
-        ".job-boss-info",
-        ".job-detail-op",
-        ".job-detail-body",
-        ".job-detail-box",
-        ".job-detail",
-    ] {
-        if let Some(text) = match selector {
-            ".boss-info" | ".boss-name" => job_card_ele
-                .element(selector)?
-                .and_then(|element| element.text_content().ok()),
-            _ => page
-                .ele(selector)?
-                .and_then(|element| element.text_content().ok()),
-        }
-        .and_then(|text| extract_recruiter_active_text(&text))
-        {
-            return Ok(Some(text));
-        }
-    }
+    Ok(None)
+}
 
-    let combined = format!(
-        "{} {}",
-        job_card_ele.text_content().unwrap_or_default(),
-        page_text_snippet(page)
-    );
-    Ok(extract_recruiter_active_text(&combined))
+fn recruiter_detail_scope_selectors() -> &'static [&'static str] {
+    &[
+        ".job-detail-box .job-boss-info",
+        ".job-detail-container .job-boss-info",
+        ".job-detail-op .job-boss-info",
+        ".job-boss-info",
+    ]
 }
 
 fn extract_recruiter_active_text(text: &str) -> Option<String> {
@@ -1878,7 +1883,9 @@ mod tests {
     fn the_humanized_skip_happens_before_the_card_is_opened() {
         let source = include_str!("position_say_hello.rs");
 
-        let skim = source.find("pacer.should_skim()").expect("跳过判断已被移除");
+        let skim = source
+            .find("pacer.should_skim()")
+            .expect("跳过判断已被移除");
         let open = source
             .find("human_input::click(page, &job_card_ele)")
             .expect("卡片点击已被改写");
@@ -2017,6 +2024,21 @@ mod tests {
             .as_deref(),
             Some("刚刚活跃")
         );
+    }
+
+    #[test]
+    fn recruiter_active_scope_never_uses_global_badges_or_job_body() {
+        let selectors = recruiter_detail_scope_selectors();
+
+        assert!(selectors
+            .iter()
+            .all(|selector| selector.contains(".job-boss-info")));
+        assert!(!selectors.contains(&".boss-online-tag"));
+        assert!(!selectors.contains(&".boss-active-time"));
+        assert!(!selectors.iter().any(|selector| selector.contains("body")));
+        assert!(!selectors
+            .iter()
+            .any(|selector| selector.contains(".job-detail-body")));
     }
 
     #[test]
