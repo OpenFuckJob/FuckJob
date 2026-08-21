@@ -119,13 +119,21 @@ pub async fn position_say_hello_on_page(
                 break 'outer reason;
             }
             stats.scanned += 1;
-            let greet_job =
-                match read_job_card(page, &job_card_area_ele, &processed_job_ids, &mut pacer) {
+            let greet_job = match read_job_card(
+                page,
+                &job_card_area_ele,
+                &processed_job_ids,
+                &app_runtime_config.platform_filter_config.boss,
+                &mut pacer,
+            ) {
                     Ok(CardOutcome::Ready(greet_job)) => *greet_job,
                     Ok(CardOutcome::Skipped(reason)) => {
                         stats.record_skip(reason);
                         // 全静默会让用户以为程序卡死，这里按批次给出进度提示
                         let skipped = stats.skipped_known() - round_base.skipped_known();
+                        if reason == SkipReason::Headhunter {
+                            logger::info("检测到猎头岗位，已按配置跳过".to_string())?;
+                        }
                         if should_log_skip_progress(skipped) {
                             logger::info(format!(
                                 "已跳过 {} 条已浏览/已投递岗位，继续扫描",
@@ -139,7 +147,7 @@ pub async fn position_say_hello_on_page(
                         logger::warning(card_failure_message(&error))?;
                         continue;
                     }
-                };
+            };
 
             logger::info(format!(
                 "当前处理岗位:{} 公司:{}",
@@ -312,6 +320,8 @@ enum SkipReason {
     AlreadyViewed,
     /// 岗位 ID 已存在于本地库，之前已投递
     AlreadyProcessed,
+    /// 卡片带猎头标识，按配置跳过
+    Headhunter,
     /// 拟人化随机跳过：扫一眼标题就划过去了，没点开
     Humanized,
 }
@@ -338,6 +348,8 @@ struct RoundStats {
     skipped_ai: u32,
     /// 因招聘者活跃度过低或无法识别而跳过
     skipped_inactive: u32,
+    /// 因 BOSS 猎头岗位过滤而跳过
+    skipped_headhunter: u32,
     /// 被拟人化随机跳过（「只看不投」）
     skipped_humanize: u32,
     /// 卡片读取失败
@@ -353,6 +365,7 @@ impl RoundStats {
         match reason {
             SkipReason::AlreadyViewed => self.skipped_viewed += 1,
             SkipReason::AlreadyProcessed => self.skipped_processed += 1,
+            SkipReason::Headhunter => self.skipped_headhunter += 1,
             SkipReason::Humanized => self.skipped_humanize += 1,
         }
     }
@@ -378,6 +391,7 @@ impl RoundStats {
             skipped_rule: self.skipped_rule.saturating_sub(base.skipped_rule),
             skipped_ai: self.skipped_ai.saturating_sub(base.skipped_ai),
             skipped_inactive: self.skipped_inactive.saturating_sub(base.skipped_inactive),
+            skipped_headhunter: self.skipped_headhunter.saturating_sub(base.skipped_headhunter),
             skipped_humanize: self.skipped_humanize.saturating_sub(base.skipped_humanize),
             read_failed: self.read_failed.saturating_sub(base.read_failed),
             greet_success: self.greet_success.saturating_sub(base.greet_success),
@@ -387,11 +401,12 @@ impl RoundStats {
 
     fn summary(&self) -> String {
         format!(
-            "共扫描 {} 条岗位，已浏览跳过 {} 条，已投递跳过 {} 条，活跃度跳过 {} 条，规则过滤跳过 {} 条，AI 复核跳过 {} 条，拟人化跳过 {} 条，读取失败 {} 条，打招呼成功 {} 条，打招呼失败 {} 条",
+            "共扫描 {} 条岗位，已浏览跳过 {} 条，已投递跳过 {} 条，活跃度跳过 {} 条，猎头岗位跳过 {} 条，规则过滤跳过 {} 条，AI 复核跳过 {} 条，拟人化跳过 {} 条，读取失败 {} 条，打招呼成功 {} 条，打招呼失败 {} 条",
             self.scanned,
             self.skipped_viewed,
             self.skipped_processed,
             self.skipped_inactive,
+            self.skipped_headhunter,
             self.skipped_rule,
             self.skipped_ai,
             self.skipped_humanize,
@@ -406,10 +421,11 @@ impl RoundStats {
     /// 否则「共扫描 90 条岗位」会被误读成真的看过 90 个不同岗位。
     fn total_summary(&self) -> String {
         format!(
-            "打招呼成功 {} 条，失败 {} 条；活跃度跳过 {} 条，规则过滤跳过 {} 条，AI 复核跳过 {} 条，拟人化跳过 {} 条，读取失败 {} 条；累计扫描岗位卡片 {} 次（含滚动后的重复扫描），其中因已浏览或已投递而跳过 {} 次",
+            "打招呼成功 {} 条，失败 {} 条；活跃度跳过 {} 条，猎头岗位跳过 {} 条，规则过滤跳过 {} 条，AI 复核跳过 {} 条，拟人化跳过 {} 条，读取失败 {} 条；累计扫描岗位卡片 {} 次（含滚动后的重复扫描），其中因已浏览或已投递而跳过 {} 次",
             self.greet_success,
             self.greet_failed,
             self.skipped_inactive,
+            self.skipped_headhunter,
             self.skipped_rule,
             self.skipped_ai,
             self.skipped_humanize,
@@ -549,6 +565,7 @@ fn read_job_card(
     page: &Page,
     job_card_area_ele: &Element,
     processed_job_ids: &HashSet<String>,
+    boss_filter_config: &BossFilterConfig,
     pacer: &mut GreetPacer,
 ) -> Result<CardOutcome, anyhow::Error> {
     if job_card_area_ele.attr("class")?.contains("is-seen") {
@@ -571,6 +588,10 @@ fn read_job_card(
         if processed_job_ids.contains(id.as_str()) {
             return Ok(CardOutcome::Skipped(SkipReason::AlreadyProcessed));
         }
+    }
+
+    if boss_filter_config.exclude_headhunter_jobs && is_headhunter_job_card(&job_card_ele)? {
+        return Ok(CardOutcome::Skipped(SkipReason::Headhunter));
     }
 
     // 「每个岗位都点开看」是人做不到的事：真人扫列表时就会凭标题划过去一些。
@@ -623,6 +644,20 @@ fn read_job_card(
         recruiter_active_time,
         detail_url: job_detail_url,
     })))
+}
+
+fn is_headhunter_job_card(job_card_ele: &Element) -> Result<bool, anyhow::Error> {
+    for tag_icon in job_card_ele.elements(".job-tag-icon")? {
+        if is_headhunter_tag_alt(&tag_icon.attr("alt").unwrap_or_default()) {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+fn is_headhunter_tag_alt(value: &str) -> bool {
+    value.trim() == "猎头"
 }
 
 fn read_recruiter_active_time(
@@ -1864,6 +1899,7 @@ mod tests {
             skipped_rule: 1,
             skipped_ai: 1,
             skipped_inactive: 2,
+            skipped_headhunter: 3,
             skipped_humanize: 2,
             read_failed: 0,
             greet_success: 1,
@@ -1876,6 +1912,7 @@ mod tests {
         assert!(summary.contains("已浏览跳过 12 条"));
         assert!(summary.contains("已投递跳过 15 条"));
         assert!(summary.contains("活跃度跳过 2 条"));
+        assert!(summary.contains("猎头岗位跳过 3 条"));
         assert!(summary.contains("规则过滤跳过 1 条"));
         assert!(summary.contains("AI 复核跳过 1 条"));
         assert!(summary.contains("拟人化跳过 2 条"));
@@ -1957,6 +1994,7 @@ mod tests {
         let config = BossFilterConfig {
             active_filter_enabled: true,
             active_threshold: BossRecruiterActiveThreshold::ThisWeek,
+            ..BossFilterConfig::default()
         };
 
         assert!(inactive_recruiter_skip_reason(&Some("在线".to_string()), &config).is_none());
@@ -1974,6 +2012,7 @@ mod tests {
         let config = BossFilterConfig {
             active_filter_enabled: true,
             active_threshold: BossRecruiterActiveThreshold::Online,
+            ..BossFilterConfig::default()
         };
 
         assert!(inactive_recruiter_skip_reason(&Some("在线".to_string()), &config).is_none());
@@ -1990,14 +2029,17 @@ mod tests {
         let seven_days = BossFilterConfig {
             active_filter_enabled: true,
             active_threshold: BossRecruiterActiveThreshold::SevenDays,
+            ..BossFilterConfig::default()
         };
         let two_weeks = BossFilterConfig {
             active_filter_enabled: true,
             active_threshold: BossRecruiterActiveThreshold::TwoWeeks,
+            ..BossFilterConfig::default()
         };
         let this_month = BossFilterConfig {
             active_filter_enabled: true,
             active_threshold: BossRecruiterActiveThreshold::ThisMonth,
+            ..BossFilterConfig::default()
         };
 
         assert!(inactive_recruiter_skip_reason(&Some("7天前活跃".to_string()), &seven_days).is_none());
@@ -2016,6 +2058,7 @@ mod tests {
         let config = BossFilterConfig {
             active_filter_enabled: true,
             active_threshold: BossRecruiterActiveThreshold::ThisMonth,
+            ..BossFilterConfig::default()
         };
 
         assert!(inactive_recruiter_skip_reason(&Some("2周内活跃".to_string()), &config).is_none());
@@ -2035,6 +2078,7 @@ mod tests {
         let config = BossFilterConfig {
             active_filter_enabled: true,
             active_threshold: BossRecruiterActiveThreshold::TwoMonths,
+            ..BossFilterConfig::default()
         };
 
         assert!(inactive_recruiter_skip_reason(&Some("一个月前活跃".to_string()), &config).is_none());
@@ -2049,6 +2093,7 @@ mod tests {
         let config = BossFilterConfig {
             active_filter_enabled: true,
             active_threshold: BossRecruiterActiveThreshold::FiveMonths,
+            ..BossFilterConfig::default()
         };
 
         assert!(inactive_recruiter_skip_reason(&Some("5月内活跃".to_string()), &config).is_none());
@@ -2063,6 +2108,7 @@ mod tests {
         let config = BossFilterConfig {
             active_filter_enabled: true,
             active_threshold: BossRecruiterActiveThreshold::HalfYear,
+            ..BossFilterConfig::default()
         };
 
         assert!(inactive_recruiter_skip_reason(&Some("近半年活跃".to_string()), &config).is_none());
@@ -2074,6 +2120,7 @@ mod tests {
         let config = BossFilterConfig {
             active_filter_enabled: false,
             active_threshold: BossRecruiterActiveThreshold::ThisWeek,
+            ..BossFilterConfig::default()
         };
 
         assert!(inactive_recruiter_skip_reason(&None, &config).is_none());
@@ -2140,11 +2187,22 @@ mod tests {
         stats.record_skip(SkipReason::AlreadyViewed);
         stats.record_skip(SkipReason::AlreadyProcessed);
         stats.record_skip(SkipReason::AlreadyProcessed);
+        stats.record_skip(SkipReason::Headhunter);
 
         assert_eq!(stats.skipped_viewed, 1);
         assert_eq!(stats.skipped_processed, 2);
+        assert_eq!(stats.skipped_headhunter, 1);
         assert_eq!(stats.skipped_known(), 3);
         assert_eq!(stats.engaged(), 0);
+    }
+
+    #[test]
+    fn headhunter_job_tag_requires_exact_alt_text() {
+        assert!(is_headhunter_tag_alt("猎头"));
+        assert!(is_headhunter_tag_alt(" 猎头 "));
+        assert!(!is_headhunter_tag_alt(""));
+        assert!(!is_headhunter_tag_alt("猎头岗位"));
+        assert!(!is_headhunter_tag_alt("急聘"));
     }
 
     #[test]

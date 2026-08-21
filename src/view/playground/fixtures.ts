@@ -15,7 +15,7 @@ export function makeProfile(overrides: Partial<JobProfile> = {}): JobProfile {
       semantic_filter_intent: "只要后端岗", regex_rules: [],
     },
     platform_filter_config: {
-      boss: { active_filter_enabled: true, active_threshold: "this_week" },
+      boss: { active_filter_enabled: true, active_threshold: "this_week", exclude_headhunter_jobs: false },
       liepin: { dq: null, salary_code: null, pub_time: null, work_year_code: null, comp_tag: [] },
     },
     resume_config: { inject_llm_context: false, resume_path: null, resume_content: null },
