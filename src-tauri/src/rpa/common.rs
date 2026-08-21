@@ -16,6 +16,8 @@ pub struct RpaJob {
     pub detail: String,
     pub salary: String,
     pub location: Option<String>,
+    #[serde(default)]
+    pub recruiter_active_time: Option<String>,
     pub detail_url: String,
 }
 

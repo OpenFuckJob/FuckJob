@@ -307,6 +307,7 @@ impl AgentTask for JobMatchTask<'_> {
             "job": {
                 "title": self.job.title,
                 "company": self.job.company_name,
+                "recruiter_active_time": self.job.recruiter_active_time,
                 "description": clip(&self.job.detail, LONG_TEXT_LIMIT),
             },
             "resume": resume_text(self.config),
@@ -816,6 +817,7 @@ mod tests {
             detail: "JD".to_string(),
             salary: "20-30k".to_string(),
             location: None,
+            recruiter_active_time: None,
             detail_url: String::new(),
         };
         let task = JobMatchTask::new(&config, &job);

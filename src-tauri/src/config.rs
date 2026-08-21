@@ -908,7 +908,56 @@ impl AppRuntimeConfig {
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
 pub struct PlatformFilterConfig {
     #[serde(default)]
+    pub boss: BossFilterConfig,
+    #[serde(default)]
     pub liepin: LiepinFilterConfig,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct BossFilterConfig {
+    #[serde(default = "default_boss_active_filter_enabled")]
+    pub active_filter_enabled: bool,
+    #[serde(default)]
+    pub active_threshold: BossRecruiterActiveThreshold,
+}
+
+impl Default for BossFilterConfig {
+    fn default() -> Self {
+        Self {
+            active_filter_enabled: default_boss_active_filter_enabled(),
+            active_threshold: BossRecruiterActiveThreshold::default(),
+        }
+    }
+}
+
+fn default_boss_active_filter_enabled() -> bool {
+    true
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BossRecruiterActiveThreshold {
+    Online,
+    JustActive,
+    ThreeDays,
+    ThisWeek,
+    SevenDays,
+    SevenDaysText,
+    TwoWeeks,
+    ThisMonth,
+    TwoMonths,
+    ThreeMonths,
+    FourMonths,
+    FiveMonths,
+    HalfYear,
+    HalfYearAgo,
+    Disabled,
+}
+
+impl Default for BossRecruiterActiveThreshold {
+    fn default() -> Self {
+        Self::ThisWeek
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
@@ -1452,9 +1501,7 @@ pub struct BrowserConfig {
 }
 
 fn normalize_analysis_config(analysis: &mut AnalysisConfig) {
-    analysis.high_match_score = analysis
-        .high_match_score
-        .clamp(MIN_HIGH_MATCH_SCORE, 100);
+    analysis.high_match_score = analysis.high_match_score.clamp(MIN_HIGH_MATCH_SCORE, 100);
     analysis.max_per_task = analysis.max_per_task.min(MAX_ANALYSIS_PER_TASK);
 }
 
@@ -1803,7 +1850,10 @@ llm_config:
 
         validate_and_normalize(&mut config).unwrap();
 
-        assert_eq!(config.analysis_config.high_match_score, MIN_HIGH_MATCH_SCORE);
+        assert_eq!(
+            config.analysis_config.high_match_score,
+            MIN_HIGH_MATCH_SCORE
+        );
         assert_eq!(config.analysis_config.max_per_task, MAX_ANALYSIS_PER_TASK);
         assert_eq!(config.job_profiles[0].analysis_config.high_match_score, 100);
     }

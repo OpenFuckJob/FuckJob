@@ -3,8 +3,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::{
-    auto_analysis,
-    browser,
+    auto_analysis, browser,
     config::{AnalysisTrigger, AppRuntimeConfig, ReplayResourceType, ReplyResource},
     dao::{job_detail_dao, model::JobDetail},
     logger,
@@ -505,8 +504,17 @@ fn candidate_to_rpa_job(candidate: LiepinJobCandidate) -> Option<RpaJob> {
         detail: candidate.card_text.clone(),
         salary: decode_salary(&parse_salary_from_link_text(&candidate.link_text)),
         location: parse_location_from_link_text(&candidate.link_text),
+        recruiter_active_time: parse_recruiter_active_time_from_card_text(&candidate.card_text),
         detail_url,
     })
+}
+
+fn parse_recruiter_active_time_from_card_text(card_text: &str) -> Option<String> {
+    card_text
+        .split_whitespace()
+        .rev()
+        .find(|value| value.contains("在线") || value.contains("活跃"))
+        .map(str::to_string)
 }
 
 fn parse_title_from_link_text(link_text: &str) -> String {

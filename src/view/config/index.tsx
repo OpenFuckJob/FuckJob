@@ -29,6 +29,7 @@ import {
   MatchTarget,
   RuleMode,
   JobFilterConfig,
+  PlatformFilterConfig,
   GreetConfig,
   GreetResource,
   ReplayConfig,
@@ -210,6 +211,128 @@ const normalizeMultiSelectCodes = (values: number[]) => {
   return Array.from(new Set(values.filter((value) => value !== 0)));
 };
 
+const bossActiveThresholdOptions: Array<{
+  value: PlatformFilterConfig["boss"]["active_threshold"];
+  label: string;
+}> = [
+  { value: "online", label: "在线" },
+  { value: "just_active", label: "刚刚活跃" },
+  { value: "three_days", label: "3日内活跃" },
+  { value: "this_week", label: "本周活跃" },
+  { value: "seven_days", label: "7日内活跃" },
+  { value: "seven_days_text", label: "7天内活跃" },
+  { value: "two_weeks", label: "2周内活跃" },
+  { value: "this_month", label: "本月活跃" },
+  { value: "two_months", label: "2月内活跃" },
+  { value: "three_months", label: "3月内活跃" },
+  { value: "four_months", label: "4月内活跃" },
+  { value: "five_months", label: "5月内活跃" },
+  { value: "half_year", label: "近半年活跃" },
+  { value: "half_year_ago", label: "半年前活跃" },
+  { value: "disabled", label: "不筛选" },
+];
+
+interface BossActiveThresholdScaleProps {
+  value: PlatformFilterConfig["boss"]["active_threshold"];
+  onChange: (value: PlatformFilterConfig["boss"]["active_threshold"]) => void;
+}
+
+function BossActiveThresholdScale({
+  value,
+  onChange,
+}: BossActiveThresholdScaleProps) {
+  const selectedIndex = Math.max(
+    0,
+    bossActiveThresholdOptions.findIndex((option) => option.value === value),
+  );
+
+  return (
+    <div className="rounded-lg border border-sky-100 bg-white/80 px-4 py-4">
+      <div className="mb-3 flex items-center justify-between gap-3 text-xs text-slate-500">
+        <span>更活跃</span>
+        <span>更不活跃 / 不筛选</span>
+      </div>
+      <div className="overflow-x-auto pb-1">
+        <div className="relative min-w-max px-2 pt-1">
+          <div className="absolute left-8 right-8 top-[13px] h-1 rounded-full bg-slate-200" />
+          <div
+            className="absolute left-8 top-[13px] h-1 rounded-full bg-blue-500 transition-all"
+            style={{
+              width:
+                bossActiveThresholdOptions.length > 1
+                  ? `calc((100% - 4rem) * ${selectedIndex / (bossActiveThresholdOptions.length - 1)})`
+                  : 0,
+            }}
+          />
+          <div className="relative z-10 flex items-start">
+            {bossActiveThresholdOptions.map((option, index) => {
+              const selected = option.value === value;
+              const beforeSelected = index <= selectedIndex;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  className="group flex w-28 shrink-0 flex-col items-center gap-2 border-0 bg-transparent p-0 text-center outline-none"
+                  onClick={() => onChange(option.value)}
+                >
+                  <span
+                    className={[
+                      "grid h-6 w-6 place-items-center rounded-full border-2 bg-white transition",
+                      selected
+                        ? "border-blue-500 shadow-[0_0_0_5px_rgba(59,130,246,0.14)]"
+                        : beforeSelected
+                          ? "border-blue-400"
+                          : "border-slate-300 group-hover:border-blue-300",
+                    ].join(" ")}
+                  >
+                    <span
+                      className={[
+                        "h-2.5 w-2.5 rounded-full transition",
+                        selected
+                          ? "bg-blue-600"
+                          : beforeSelected
+                            ? "bg-blue-300"
+                            : "bg-slate-200 group-hover:bg-blue-200",
+                      ].join(" ")}
+                    />
+                  </span>
+                  <span
+                    className={[
+                      "min-h-10 px-1 text-xs font-medium leading-5 transition",
+                      selected
+                        ? "text-blue-600"
+                        : beforeSelected
+                          ? "text-slate-700"
+                          : "text-slate-500 group-hover:text-slate-700",
+                    ].join(" ")}
+                  >
+                    {option.label}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+      <div className="mt-3 text-xs leading-5 text-slate-500">
+        {value === "disabled" ? (
+          "当前不按 Boss 活跃度过滤岗位。"
+        ) : (
+          <>
+            当前阈值：只处理活跃度不低于
+            <Text className="mx-1" strong>
+              {bossActiveThresholdOptions[selectedIndex]?.label ?? "本周活跃"}
+            </Text>
+            的岗位，右侧更不活跃的岗位会跳过。
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 interface PromptVariableGuideProps {
   items: typeof basePromptVariableItems;
 }
@@ -252,6 +375,7 @@ export interface ConfigPageProps {
   updateLlmRetryConfig: (next: AppRuntimeConfig["llm_retry_config"]) => void;
   persistConfig: () => Promise<boolean>;
   updateJobFilter: (next: Partial<JobFilterConfig>) => void;
+  updatePlatformFilter: (next: Partial<PlatformFilterConfig>) => void;
   updateGreet: (next: Partial<GreetConfig>) => void;
   updateGreetDefaultResource: (
     resourceIndex: number,
@@ -926,6 +1050,50 @@ export function ConfigPage(props: ConfigPageProps) {
                 </Form.Item>
               </Col>
             </Row>
+
+            <Card size="small" className="mt-4 border-sky-200! bg-sky-50/50!">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <Text strong>BOSS 活跃度过滤</Text>
+                  <div className="mt-1 text-xs leading-5 text-slate-500">
+                    跳过长时间不活跃的招聘者，优先处理更可能回复的岗位。
+                  </div>
+                </div>
+                <Switch
+                  checked={props.config.platform_filter_config.boss.active_filter_enabled}
+                  onChange={(checked) =>
+                    props.updatePlatformFilter({
+                      boss: {
+                        ...props.config.platform_filter_config.boss,
+                        active_filter_enabled: checked,
+                      },
+                    })
+                  }
+                />
+              </div>
+              {props.config.platform_filter_config.boss.active_filter_enabled && (
+                <Row gutter={[16, 12]} className="mt-4">
+                  <Col xs={24}>
+                    <Form.Item
+                      label="最低活跃要求"
+                      className="mb-0!"
+                    >
+                      <BossActiveThresholdScale
+                        value={props.config.platform_filter_config.boss.active_threshold}
+                        onChange={(active_threshold) =>
+                          props.updatePlatformFilter({
+                            boss: {
+                              ...props.config.platform_filter_config.boss,
+                              active_threshold,
+                            },
+                          })
+                        }
+                      />
+                    </Form.Item>
+                  </Col>
+                </Row>
+              )}
+            </Card>
 
             <Card size="small" className="mt-4 border-violet-200! bg-violet-50/50!">
               <div className="flex items-start justify-between gap-4">
