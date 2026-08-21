@@ -1013,6 +1013,8 @@ pub struct BossFilterConfig {
     pub active_filter_enabled: bool,
     #[serde(default)]
     pub active_threshold: BossRecruiterActiveThreshold,
+    #[serde(default)]
+    pub exclude_headhunter_jobs: bool,
 }
 
 impl Default for BossFilterConfig {
@@ -1020,6 +1022,7 @@ impl Default for BossFilterConfig {
         Self {
             active_filter_enabled: default_boss_active_filter_enabled(),
             active_threshold: BossRecruiterActiveThreshold::default(),
+            exclude_headhunter_jobs: false,
         }
     }
 }

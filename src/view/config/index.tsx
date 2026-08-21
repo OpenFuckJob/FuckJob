@@ -1199,6 +1199,28 @@ export function ConfigPage(props: ConfigPageProps) {
               )}
             </Card>
 
+            <Card size="small" className="mt-4 border-amber-200! bg-amber-50/50!">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <Text strong>BOSS 猎头岗位过滤</Text>
+                  <div className="mt-1 text-xs leading-5 text-slate-500">
+                    跳过带猎头标识的岗位，减少对不适合应届生岗位的投递。
+                  </div>
+                </div>
+                <Switch
+                  checked={props.config.platform_filter_config.boss.exclude_headhunter_jobs}
+                  onChange={(checked) =>
+                    props.updatePlatformFilter({
+                      boss: {
+                        ...props.config.platform_filter_config.boss,
+                        exclude_headhunter_jobs: checked,
+                      },
+                    })
+                  }
+                />
+              </div>
+            </Card>
+
             <Card
               size="small"
               className="mt-4 border-violet-200! bg-violet-50/50!"

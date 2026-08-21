@@ -73,6 +73,7 @@ export type BossRecruiterActiveThreshold =
 export interface BossFilterConfig {
   active_filter_enabled: boolean;
   active_threshold: BossRecruiterActiveThreshold;
+  exclude_headhunter_jobs: boolean;
 }
 
 export interface PlatformFilterConfig {
@@ -84,6 +85,7 @@ export const DEFAULT_PLATFORM_FILTER_CONFIG: PlatformFilterConfig = {
   boss: {
     active_filter_enabled: true,
     active_threshold: "this_week",
+    exclude_headhunter_jobs: false,
   },
   liepin: {
     dq: null,

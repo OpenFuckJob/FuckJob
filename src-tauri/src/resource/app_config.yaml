@@ -127,6 +127,7 @@ job_profiles:
       boss:
         active_filter_enabled: true
         active_threshold: this_week
+        exclude_headhunter_jobs: false
       liepin:
         dq: null
         salary_code: null

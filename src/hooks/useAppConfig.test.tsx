@@ -19,7 +19,7 @@ const config: AppRuntimeConfig = {
   llm_fallbacks: [],
   llm_retry_config: { network_retry_attempts: 2, retry_base_delay_ms: 500, request_timeout_seconds: 120 },
   job_filter_config: { query: null, city: null, job_type: 0, salary: 0, experience: [], dgree: [], industry: [], scale: [], stage: [], keywords: [], exclude_keywords: [], company_keywords: [], company_exclude_keywords: [], enable_semantic_filter: false, semantic_filter_intent: null, regex_rules: [] },
-  platform_filter_config: { boss: { active_filter_enabled: true, active_threshold: "this_week" }, liepin: { dq: null, salary_code: null, pub_time: null, work_year_code: null, comp_tag: [] } },
+  platform_filter_config: { boss: { active_filter_enabled: true, active_threshold: "this_week", exclude_headhunter_jobs: false }, liepin: { dq: null, salary_code: null, pub_time: null, work_year_code: null, comp_tag: [] } },
   greet_config: { enable_llm: false, reply_prompt: null, default_template: [] },
   replay_config: { enable_template_reply: false, templates: [], enable_llm: false, reply_prompt: null, background_context: null, enable_auto_send_resume: true, max_auto_replies: 5, max_reply_chars: 200, dry_run: false },
   browser_config: { user_data_dir: "profile", chrome_exe_path: null, max_parallel_tasks: 2 },
