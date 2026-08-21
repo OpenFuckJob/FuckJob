@@ -857,15 +857,7 @@ fn classify_recruiter_active_text(text: &str) -> RecruiterActiveRank {
                 .unwrap_or_default(),
         )
         .unwrap_or(31);
-        return if days <= 3 {
-            RecruiterActiveRank::ThreeDays
-        } else if days < 7 {
-            RecruiterActiveRank::ThisWeek
-        } else if days <= 31 {
-            RecruiterActiveRank::ThisMonth
-        } else {
-            RecruiterActiveRank::Older
-        };
+        return classify_day_amount(days);
     }
     if normalized.contains("周前") || normalized.contains("星期前") {
         return RecruiterActiveRank::Older;
@@ -900,18 +892,22 @@ fn classify_relative_active_text(text: &str) -> Option<RecruiterActiveRank> {
 
     match (unit, direction) {
         ("分钟" | "小时", _) => Some(RecruiterActiveRank::JustActive),
-        ("天" | "日", "内") if amount <= 3 => Some(RecruiterActiveRank::ThreeDays),
-        ("天" | "日", "内") if amount <= 7 => Some(RecruiterActiveRank::ThisWeek),
-        ("天" | "日", "内") if amount <= 14 => Some(RecruiterActiveRank::TwoWeeks),
-        ("天" | "日", "内") if amount <= 31 => Some(RecruiterActiveRank::ThisMonth),
-        ("天" | "日", "前") if amount <= 3 => Some(RecruiterActiveRank::ThreeDays),
-        ("天" | "日", "前") if amount < 7 => Some(RecruiterActiveRank::ThisWeek),
-        ("天" | "日", "前") if amount <= 31 => Some(RecruiterActiveRank::ThisMonth),
+        ("天" | "日", "内" | "前") => Some(classify_day_amount(amount)),
         ("周" | "星期", "内" | "前") => Some(classify_week_amount(amount)),
         ("个月" | "月", "内" | "前") => Some(classify_month_amount(amount)),
         ("年", "内") if amount_text.contains('半') => Some(RecruiterActiveRank::HalfYear),
         ("年", "前") if amount_text.contains('半') => Some(RecruiterActiveRank::HalfYear),
         _ => Some(RecruiterActiveRank::Older),
+    }
+}
+
+fn classify_day_amount(amount: u32) -> RecruiterActiveRank {
+    match amount {
+        0..=3 => RecruiterActiveRank::ThreeDays,
+        4..=7 => RecruiterActiveRank::ThisWeek,
+        8..=14 => RecruiterActiveRank::TwoWeeks,
+        15..=31 => RecruiterActiveRank::ThisMonth,
+        _ => RecruiterActiveRank::Older,
     }
 }
 
@@ -952,6 +948,34 @@ fn parse_chinese_or_ascii_number(value: &str) -> Option<u32> {
     if let Ok(number) = value.parse::<u32>() {
         return Some(number);
     }
+    if let Some(number) = parse_simple_chinese_number(value) {
+        return Some(number);
+    }
+    None
+}
+
+fn parse_simple_chinese_number(value: &str) -> Option<u32> {
+    fn digit(value: &str) -> Option<u32> {
+        match value {
+            "" => Some(0),
+            "一" | "1" => Some(1),
+            "二" | "两" | "2" => Some(2),
+            "三" | "3" => Some(3),
+            "四" | "4" => Some(4),
+            "五" | "5" => Some(5),
+            "六" | "6" => Some(6),
+            "七" | "7" => Some(7),
+            "八" | "8" => Some(8),
+            "九" | "9" => Some(9),
+            _ => None,
+        }
+    }
+
+    if let Some((tens, ones)) = value.split_once('十') {
+        let tens = if tens.is_empty() { 1 } else { digit(tens)? };
+        return Some(tens * 10 + digit(ones)?);
+    }
+
     match value {
         "一" | "1" => Some(1),
         "二" | "两" | "2" => Some(2),
@@ -1938,7 +1962,7 @@ mod tests {
         assert!(inactive_recruiter_skip_reason(&Some("在线".to_string()), &config).is_none());
         assert!(inactive_recruiter_skip_reason(&Some("刚刚活跃".to_string()), &config).is_none());
         assert!(inactive_recruiter_skip_reason(&Some("本周活跃".to_string()), &config).is_none());
-        assert!(inactive_recruiter_skip_reason(&Some("7天前活跃".to_string()), &config).is_some());
+        assert!(inactive_recruiter_skip_reason(&Some("7天前活跃".to_string()), &config).is_none());
         assert!(inactive_recruiter_skip_reason(&Some("2周内活跃".to_string()), &config).is_some());
         assert!(inactive_recruiter_skip_reason(&Some("半月前活跃".to_string()), &config).is_some());
         assert!(inactive_recruiter_skip_reason(&Some("近半年活跃".to_string()), &config).is_some());
@@ -1959,6 +1983,32 @@ mod tests {
         assert!(
             inactive_recruiter_skip_reason(&Some("1小时前活跃".to_string()), &config).is_some()
         );
+    }
+
+    #[test]
+    fn active_filter_classifies_days_ago_with_elapsed_days() {
+        let seven_days = BossFilterConfig {
+            active_filter_enabled: true,
+            active_threshold: BossRecruiterActiveThreshold::SevenDays,
+        };
+        let two_weeks = BossFilterConfig {
+            active_filter_enabled: true,
+            active_threshold: BossRecruiterActiveThreshold::TwoWeeks,
+        };
+        let this_month = BossFilterConfig {
+            active_filter_enabled: true,
+            active_threshold: BossRecruiterActiveThreshold::ThisMonth,
+        };
+
+        assert!(inactive_recruiter_skip_reason(&Some("7天前活跃".to_string()), &seven_days).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("七日前活跃".to_string()), &seven_days).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("8天前活跃".to_string()), &seven_days).is_some());
+        assert!(inactive_recruiter_skip_reason(&Some("8天前活跃".to_string()), &two_weeks).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("十四天前活跃".to_string()), &two_weeks).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("15天前活跃".to_string()), &two_weeks).is_some());
+        assert!(inactive_recruiter_skip_reason(&Some("31天前活跃".to_string()), &this_month).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("三十一日前活跃".to_string()), &this_month).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("32天前活跃".to_string()), &this_month).is_some());
     }
 
     #[test]
