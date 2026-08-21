@@ -8,6 +8,7 @@ pub mod llm;
 pub mod llm_provider;
 pub mod manual_review;
 pub mod mock_interview;
+pub mod playground;
 pub mod resume_templates;
 pub mod rpa;
 pub mod user_resumes;
