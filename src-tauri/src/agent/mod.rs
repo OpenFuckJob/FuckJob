@@ -12,10 +12,15 @@
 //! 通不通，走降级链会让备用服务的成功掩盖主用服务的故障。理由写在那边的代码里。
 //!
 //! 内置提示词统一放在 [`prompts`]，用户可编辑的打招呼与回复提示词仍在配置文件里。
+//!
+//! [`trace`] 在这条唯一入口上旁路记录每轮的提示词、原始输出与判定，供测试模式调提示词用——
+//! 日志为了不泄露简历原文只留原因和长度，缺的正是调提示词最需要的那部分。
+//! 代价是这些内容确实敏感，所以轨迹只驻内存、随进程退出即丢，除非用户显式导出，否则不落盘。
 
 pub mod output;
 pub mod prompts;
 pub mod run;
 pub mod tasks;
+pub mod trace;
 
 pub use run::{run, AgentOutcome, AgentRunner, AgentStop, AgentTask};

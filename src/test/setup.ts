@@ -15,3 +15,19 @@ if (!window.matchMedia) {
       dispatchEvent: () => false,
     }) as unknown as MediaQueryList;
 }
+
+// 同理，jsdom 没有 ResizeObserver。antd 的 Tabs / Segmented 这类会测量自身尺寸的
+// 组件挂载时就要用它，缺了它整棵树都渲染不出来。
+if (!window.ResizeObserver) {
+  window.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+}
+
+// jsdom 的元素没有 scrollIntoView。聊天类界面挂载后就会滚到底部，
+// 让它成为空操作，比在组件里到处写「测试环境跳过」干净得多。
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}

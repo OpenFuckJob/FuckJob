@@ -12,7 +12,12 @@ use crate::{
 /// 禁用项和空内容不会发送。LLM 那一条**生成失败**时只跳过它、不影响后续固定内容——
 /// 那属于服务不可用，固定的自我介绍照发是合理的。
 /// 但模型判断「不该投」是另一回事，那要整轮取消，由调用方在这之前拦掉。
-fn compose_greet_resources(greet: &GreetConfig, generated: Option<String>) -> Vec<ReplyResource> {
+// 可见性放开到 crate：测试模式要把打招呼链路拆成「决策 / 组装 / 体检」三步单独展示，
+// 只有复用这一个函数，调试页看到的序列才和真实运行完全一致
+pub(crate) fn compose_greet_resources(
+    greet: &GreetConfig,
+    generated: Option<String>,
+) -> Vec<ReplyResource> {
     let generated = generated.filter(|text| !text.trim().is_empty());
 
     greet

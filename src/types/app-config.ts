@@ -13,6 +13,7 @@ export type ConfigGroup =
   | "reply"
   | "analysis"
   | "browser"
+  | "playground"
   | "resume"
   | "rules"
   | "data"

@@ -35,8 +35,11 @@ fn default_greet_config() -> GreetConfig {
     }
 }
 
-pub fn default_app_config() -> AppRuntimeConfig {
-    let job_filter_config = JobFilterConfig {
+// 下面两个和 `default_greet_config` 一样，既供 `default_app_config` 组装，
+// 也作为 serde 的缺省来源：配置文件里整段缺失时得有个兜底，
+// 否则少一个键就会让整份配置反序列化失败、用户直接进不去应用
+fn default_job_filter_config() -> JobFilterConfig {
+    JobFilterConfig {
         query: Some("Rust 工程师".to_string()),
         city: None,
         job_type: 0,
@@ -53,10 +56,11 @@ pub fn default_app_config() -> AppRuntimeConfig {
         enable_semantic_filter: false,
         semantic_filter_intent: None,
         regex_rules: Vec::new(),
-    };
-    let platform_filter_config = PlatformFilterConfig::default();
-    let greet_config = default_greet_config();
-    let replay_config = ReplayConfig {
+    }
+}
+
+fn default_replay_config() -> ReplayConfig {
+    ReplayConfig {
         enable_template_reply: false,
         templates: Vec::new(),
         enable_llm: false,
@@ -67,12 +71,33 @@ pub fn default_app_config() -> AppRuntimeConfig {
         auto_reply_window_hours: default_auto_reply_window_hours(),
         max_reply_chars: default_max_reply_chars(),
         dry_run: false,
-    };
-    let resume_config = ResumeConfig {
+    }
+}
+
+fn default_resume_config() -> ResumeConfig {
+    ResumeConfig {
         inject_llm_context: false,
         resume_path: None,
         resume_content: None,
-    };
+    }
+}
+
+/// 用户数据目录留空由 `ensure_browser_user_data_dir` 在加载时按平台补全，
+/// 这里不碰文件系统：解析配置是纯函数，测试才不必先搭一套目录
+fn default_browser_config() -> BrowserConfig {
+    BrowserConfig {
+        user_data_dir: String::new(),
+        chrome_exe_path: None,
+        max_parallel_tasks: default_max_parallel_tasks(),
+    }
+}
+
+pub fn default_app_config() -> AppRuntimeConfig {
+    let job_filter_config = default_job_filter_config();
+    let platform_filter_config = PlatformFilterConfig::default();
+    let greet_config = default_greet_config();
+    let replay_config = default_replay_config();
+    let resume_config = default_resume_config();
     let default_profile = JobProfile {
         id: DEFAULT_JOB_PROFILE_ID.to_string(),
         name: DEFAULT_JOB_PROFILE_NAME.to_string(),
@@ -104,11 +129,7 @@ pub fn default_app_config() -> AppRuntimeConfig {
         reply_polling_config: ReplyPollingConfig::default(),
         periodic_delivery_config: PeriodicDeliveryConfig::default(),
         humanize_config: HumanizeConfig::default(),
-        browser_config: BrowserConfig {
-            user_data_dir: "".to_string(),
-            chrome_exe_path: None,
-            max_parallel_tasks: default_max_parallel_tasks(),
-        },
+        browser_config: default_browser_config(),
         resume_config,
     }
 }
@@ -234,52 +255,52 @@ fn read_config_file(path: &Path) -> Result<AppRuntimeConfig, AppError> {
     })
 }
 
+/// 把配置文件的内容解析成运行配置。
+///
+/// **整份反序列化，不要退回逐字段搬运。** 这里原本是一长串
+/// `if let Some(x) = value.get("x") { config.x = ... }`，于是每新增一个配置段
+/// 都必须记得回来补一行。漏了不会报错、编译通过、测试也全绿，
+/// 只有用户改完设置重启后发现又回到了默认值——分析口径、回复轮询节奏、
+/// 周期投递参数、拟人化四段就是这么整段丢掉的，而且丢了很久没人发现。
+///
+/// 现在新增字段默认就能存活，只有下面三处真正的版本迁移需要额外照顾。
+/// `config_roundtrip_survives_every_section` 那条测试守着这个性质：
+/// 以后再加配置段，忘了处理会当场变红，而不是等用户来报。
 pub(crate) fn parse_config_content(content: &str) -> Result<AppRuntimeConfig, String> {
     let value: serde_yaml::Value =
         serde_yaml::from_str(content).map_err(|error| error.to_string())?;
-    let mut config = default_app_config();
-    config.schema_version = value
+
+    let schema_version: u32 = value
         .get("schema_version")
         .map(|version| serde_yaml::from_value(version.clone()))
         .transpose()
         .map_err(|error| error.to_string())?
         .unwrap_or(0);
-    config.onboarding_completed = value
-        .get("onboarding_completed")
-        .map(|completed| serde_yaml::from_value(completed.clone()))
-        .transpose()
-        .map_err(|error| error.to_string())?
-        .unwrap_or(false);
 
-    if let Some(llm_config) = value.get("llm_config") {
-        config.llm_config = parse_llm_config(llm_config, config.schema_version == 0)?;
+    // 迁移点一：v0 的 llm_config 是另一套结构（密钥还是明文），
+    // 交给标准反序列化会连累整份配置一起失败，所以先摘出去单独走迁移
+    let raw_llm_config = value.get("llm_config").cloned();
+    // 后面两处迁移要判断「键在不在」，而不是「值是什么」，得趁反序列化前问清楚
+    let raw_greet_config = value.get("greet_config").cloned();
+    let has_job_profiles = value.get("job_profiles").is_some();
+
+    let mut without_llm_config = value;
+    if let Some(mapping) = without_llm_config.as_mapping_mut() {
+        mapping.remove(serde_yaml::Value::String("llm_config".to_string()));
     }
-    if let Some(llm_enabled) = value.get("llm_enabled") {
-        config.llm_enabled =
-            serde_yaml::from_value(llm_enabled.clone()).map_err(|error| error.to_string())?;
+
+    let mut config: AppRuntimeConfig =
+        serde_yaml::from_value(without_llm_config).map_err(|error| error.to_string())?;
+    config.schema_version = schema_version;
+
+    if let Some(raw_llm_config) = raw_llm_config {
+        config.llm_config = parse_llm_config(&raw_llm_config, schema_version == 0)?;
     }
-    if let Some(llm_fallbacks) = value.get("llm_fallbacks") {
-        config.llm_fallbacks =
-            serde_yaml::from_value(llm_fallbacks.clone()).map_err(|error| error.to_string())?;
-    }
-    if let Some(llm_retry_config) = value.get("llm_retry_config") {
-        config.llm_retry_config =
-            serde_yaml::from_value(llm_retry_config.clone()).map_err(|error| error.to_string())?;
-    }
-    if let Some(job_filter_config) = value.get("job_filter_config") {
-        config.job_filter_config =
-            serde_yaml::from_value(job_filter_config.clone()).map_err(|error| error.to_string())?;
-    }
-    if let Some(platform_filter_config) = value.get("platform_filter_config") {
-        config.platform_filter_config = serde_yaml::from_value(platform_filter_config.clone())
-            .map_err(|error| error.to_string())?;
-    }
-    if let Some(greet_config) = value.get("greet_config") {
-        config.greet_config =
-            serde_yaml::from_value(greet_config.clone()).map_err(|error| error.to_string())?;
-        // 兼容旧配置：早期版本没有 enable_llm 键，只要配过提示词就视为已启用 LLM 打招呼，
+
+    if let Some(raw_greet_config) = raw_greet_config {
+        // 迁移点二：早期版本没有 enable_llm 键，只要配过提示词就视为已启用 LLM 打招呼，
         // 避免升级后功能被静默关闭。用户显式写了 enable_llm 时以用户设置为准。
-        if greet_config.get("enable_llm").is_none()
+        if raw_greet_config.get("enable_llm").is_none()
             && config
                 .greet_config
                 .reply_prompt
@@ -289,40 +310,20 @@ pub(crate) fn parse_config_content(content: &str) -> Result<AppRuntimeConfig, St
             config.greet_config.enable_llm = true;
         }
 
-        if config.schema_version < 2 {
+        if schema_version < 2 {
             migrate_greet_send_sequence(&mut config.greet_config);
         }
     }
-    if let Some(replay_config) = value.get("replay_config") {
-        config.replay_config =
-            serde_yaml::from_value(replay_config.clone()).map_err(|error| error.to_string())?;
-    }
-    if let Some(browser_config) = value.get("browser_config") {
-        config.browser_config =
-            serde_yaml::from_value(browser_config.clone()).map_err(|error| error.to_string())?;
-    }
-    if let Some(resume_config) = value.get("resume_config") {
-        config.resume_config =
-            serde_yaml::from_value(resume_config.clone()).map_err(|error| error.to_string())?;
-    }
-    if let Some(job_profiles) = value.get("job_profiles") {
-        config.job_profiles =
-            serde_yaml::from_value(job_profiles.clone()).map_err(|error| error.to_string())?;
-    } else {
-        // v0-v2 的五块求职配置就是唯一的求职方案。迁移时完整复制，避免升级丢失
-        // 平台筛选、简历或话术；之后仍保留顶层字段作为旧调用方的执行镜像。
+
+    if !has_job_profiles {
+        // 迁移点三：v0-v2 的五块求职配置就是唯一的求职方案。迁移时完整复制，
+        // 避免升级丢失平台筛选、简历或话术；之后仍保留顶层字段作为旧调用方的执行镜像。
         config.job_profiles = vec![JobProfile::from_runtime_mirror(
             DEFAULT_JOB_PROFILE_ID,
             DEFAULT_JOB_PROFILE_NAME,
             &config,
         )];
     }
-    config.default_job_profile_id = value
-        .get("default_job_profile_id")
-        .map(|profile_id| serde_yaml::from_value(profile_id.clone()))
-        .transpose()
-        .map_err(|error| error.to_string())?
-        .unwrap_or_else(|| DEFAULT_JOB_PROFILE_ID.to_string());
 
     validate_and_normalize(&mut config)?;
     Ok(config)
@@ -410,7 +411,9 @@ pub fn validate_and_normalize(config: &mut AppRuntimeConfig) -> Result<(), Strin
 
     normalize_llm_retry_config(&mut config.llm_retry_config);
     normalize_llm_fallbacks(&mut config.llm_fallbacks)?;
-    normalize_analysis_config(&mut config.analysis_config);
+    // 顶层 analysis_config 不在这里规整：它是默认方案的镜像，
+    // 值由下面的 normalize_job_profiles 从方案卡回写（方案卡各自已 clamp 过）。
+    // 在这里再 clamp 一次的结果总会被覆盖，留着只会让人以为顶层是独立数据
     config.periodic_delivery_config.migrate_legacy_window();
     config.humanize_config.ensure_seed();
     normalize_job_profiles(config)?;
@@ -612,6 +615,7 @@ pub struct AppRuntimeConfig {
     pub active_job_profile: Option<ActiveJobProfile>,
 
     /// 岗位筛选配置
+    #[serde(default = "default_job_filter_config")]
     pub job_filter_config: JobFilterConfig,
 
     /// 平台专属搜索筛选配置
@@ -619,9 +623,11 @@ pub struct AppRuntimeConfig {
     pub platform_filter_config: PlatformFilterConfig,
 
     /// 主动打招呼配置
+    #[serde(default = "default_greet_config")]
     pub greet_config: GreetConfig,
 
     /// 自动回复配置
+    #[serde(default = "default_replay_config")]
     pub replay_config: ReplayConfig,
 
     /// 岗位自动分析配置
@@ -641,9 +647,11 @@ pub struct AppRuntimeConfig {
     pub humanize_config: HumanizeConfig,
 
     /// 浏览器运行配置
+    #[serde(default = "default_browser_config")]
     pub browser_config: BrowserConfig,
 
     /// 简历配置
+    #[serde(default = "default_resume_config")]
     pub resume_config: ResumeConfig,
 }
 
@@ -1843,11 +1851,17 @@ fn normalize_job_profiles(config: &mut AppRuntimeConfig) -> Result<(), String> {
         return Err("默认求职方案不能是已归档方案".to_string());
     }
 
+    // 顶层是默认方案的执行镜像，**每一块都要同步**。这里原先漏了 analysis_config：
+    // 加方案卡字段时改了 from_runtime_mirror 和 resolve_job_profile，唯独忘了这一处，
+    // 于是顶层镜像里躺着一份永远不会更新的分析策略。
+    // `top_level_mirror_matches_the_default_profile` 用整体比对守着这件事，
+    // 以后再加配置块漏了同步会当场变红。
     config.job_filter_config = default_profile.job_filter_config.clone();
     config.platform_filter_config = default_profile.platform_filter_config.clone();
     config.resume_config = default_profile.resume_config.clone();
     config.greet_config = default_profile.greet_config.clone();
     config.replay_config = default_profile.replay_config.clone();
+    config.analysis_config = default_profile.analysis_config.clone();
     Ok(())
 }
 
@@ -1874,6 +1888,122 @@ pub struct ResumeConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 存进去再读出来必须原样还在——**这条测试是防「设置重启后回到默认值」的总闸**。
+    ///
+    /// 它不点名任何具体字段，而是拿整份配置比对：以后新增配置段，只要解析路径
+    /// 漏掉了它，这里就会当场变红。此前 `parse_config_content` 是逐字段手工搬运的，
+    /// 新增的分析口径、回复轮询、周期投递、拟人化四段谁都没记得去补，
+    /// 于是用户改完设置一重启就全没了，而所有测试当时都是绿的。
+    ///
+    /// 断言整体相等而不是逐项列举，正是为了不让这条测试也需要「记得维护」。
+    #[test]
+    fn config_roundtrip_survives_every_section() {
+        let mut config = default_app_config();
+
+        // 每一段都调成非默认值，默认值相等会让漏读字段看起来也「通过」
+        config.onboarding_completed = true;
+        config.analysis_config.high_match_score = 88;
+        config.analysis_config.max_per_task = 42;
+        config.analysis_config.skip_analyzed = false;
+        config.reply_polling_config.interval_minutes = 7;
+        config.reply_polling_config.jitter_seconds = 123;
+        config.reply_polling_config.active_hours_enabled = false;
+        config.periodic_delivery_config.interval_minutes = 45;
+        config.periodic_delivery_config.window_enabled = true;
+        config.humanize_config.enabled = true;
+        config.humanize_config.persona_seed = 4_644_236_598_824_193;
+        config.humanize_config.intensity = HumanizeIntensity::Cautious;
+        config.job_filter_config.query = Some("Rust 后端".to_string());
+        config.greet_config.enable_llm = true;
+        config.greet_config.reply_prompt = Some("打招呼提示词".to_string());
+        config.replay_config.enable_llm = true;
+        config.replay_config.max_reply_chars = 321;
+        config.resume_config.inject_llm_context = true;
+        config.browser_config.max_parallel_tasks = 2;
+
+        // 走真实的落盘路径：先规整，再序列化，再解析回来
+        validate_and_normalize(&mut config).expect("基准配置本身必须是合法的");
+        let yaml = serde_yaml::to_string(&config).expect("序列化配置");
+        let parsed = parse_config_content(&yaml).expect("解析刚写出去的配置");
+
+        assert_eq!(
+            parsed, config,
+            "存进去又读出来的配置和原来不一样，说明解析路径漏掉了某个配置段"
+        );
+    }
+
+    /// 顶层那几块是默认方案卡的执行镜像，规整之后两边必须逐块一致。
+    ///
+    /// 同一份配置在代码里有三处反向搬运：`from_runtime_mirror`（顶层→方案卡）、
+    /// `resolve_job_profile`（方案卡→顶层）、`normalize_job_profiles`（默认方案→顶层）。
+    /// 加一块新配置就要记得改三处，而 analysis_config 当初只改了前两处——
+    /// 顶层因此长期躺着一份永不更新的分析策略。
+    ///
+    /// 这条测试**不列举任何配置块**：它把规整后的顶层重新投影成一张方案卡，
+    /// 与默认方案整体比对。以后新增配置块只要漏了同步，这里立刻失败。
+    #[test]
+    fn top_level_mirror_matches_the_default_profile() {
+        let mut config = default_app_config();
+        let default_id = config.default_job_profile_id.clone();
+        {
+            let profile = config
+                .job_profiles
+                .iter_mut()
+                .find(|profile| profile.id == default_id)
+                .expect("出厂配置必须有默认方案");
+            // 每一块都调成非默认值，否则「漏同步」和「本来就相等」区分不开
+            profile.job_filter_config.query = Some("Rust 后端".to_string());
+            profile.platform_filter_config.liepin.dq = Some("020".to_string());
+            profile.resume_config.inject_llm_context = true;
+            profile.greet_config.enable_llm = true;
+            profile.greet_config.reply_prompt = Some("打招呼提示词".to_string());
+            profile.replay_config.max_reply_chars = 321;
+            profile.analysis_config.high_match_score = 88;
+        }
+
+        validate_and_normalize(&mut config).expect("规整必须通过");
+
+        let default_profile = config
+            .job_profiles
+            .iter()
+            .find(|profile| profile.id == default_id)
+            .expect("默认方案还在")
+            .clone();
+        let mirrored =
+            JobProfile::from_runtime_mirror(&default_profile.id, &default_profile.name, &config);
+        let mut expected = default_profile;
+        // from_runtime_mirror 只投影配置块，这两个字段本来就不参与镜像
+        expected.description = None;
+        expected.archived = false;
+
+        assert_eq!(
+            mirrored, expected,
+            "顶层镜像和默认方案卡不一致，说明 normalize_job_profiles 漏同步了某一块配置"
+        );
+    }
+
+    /// 整段缺失时不能让整份配置反序列化失败——那等于用户直接进不去应用。
+    /// 逐字段搬运的老写法天生容错，换成整体反序列化后这个性质要靠
+    /// `#[serde(default = ...)]` 显式保住，所以专门测一条
+    #[test]
+    fn a_config_file_missing_whole_sections_still_loads_with_defaults() {
+        let parsed = parse_config_content(
+            "schema_version: 3\nonboarding_completed: true\n",
+        )
+        .expect("缺整段的配置文件必须仍能加载");
+
+        assert!(parsed.onboarding_completed);
+        assert_eq!(
+            parsed.job_filter_config.query,
+            default_job_filter_config().query
+        );
+        assert_eq!(
+            parsed.replay_config.max_reply_chars,
+            default_replay_config().max_reply_chars
+        );
+        assert!(!parsed.job_profiles.is_empty(), "必须补出默认方案卡");
+    }
 
     fn configured_llm() -> LlmConfig {
         LlmConfig {
@@ -2285,22 +2415,28 @@ llm_config:
         );
     }
 
-    /// 分数线和限额都必须落在可用区间内，避免手改配置文件把统计口径改坏
+    /// 分数线和限额都必须落在可用区间内，避免手改配置文件把统计口径改坏。
+    ///
+    /// 权威值在方案卡上，顶层只是默认方案的镜像，所以越界值在方案卡上被夹住之后，
+    /// 顶层拿到的是夹住之后的结果——而不是顶层自己那份越界值各夹各的
     #[test]
     fn analysis_config_is_clamped_to_a_usable_range() {
         let mut config = default_app_config();
+        // 顶层这两个越界值都该被默认方案的镜像盖掉，不该幸存下来
         config.analysis_config.high_match_score = 5;
         config.analysis_config.max_per_task = 9_999;
         config.job_profiles[0].analysis_config.high_match_score = 200;
+        config.job_profiles[0].analysis_config.max_per_task = 9_999;
 
         validate_and_normalize(&mut config).unwrap();
 
-        assert_eq!(
-            config.analysis_config.high_match_score,
-            MIN_HIGH_MATCH_SCORE
-        );
-        assert_eq!(config.analysis_config.max_per_task, MAX_ANALYSIS_PER_TASK);
         assert_eq!(config.job_profiles[0].analysis_config.high_match_score, 100);
+        assert_eq!(
+            config.job_profiles[0].analysis_config.max_per_task,
+            MAX_ANALYSIS_PER_TASK
+        );
+        assert_eq!(config.analysis_config.high_match_score, 100);
+        assert_eq!(config.analysis_config.max_per_task, MAX_ANALYSIS_PER_TASK);
     }
 
     #[test]

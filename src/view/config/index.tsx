@@ -112,8 +112,9 @@ import {
   SolutionOutlined,
   ClockCircleOutlined,
   FontSizeOutlined,
+  ExperimentOutlined,
 } from "@ant-design/icons";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { commandErrorMessage, type CommandResult } from "@/types/command";
@@ -378,6 +379,8 @@ export interface ConfigPageProps {
   message: string;
   dirty?: boolean;
   initialGroup?: ConfigGroup;
+  /** 「系统能力 · 测试模式」那一页的内容，由 App 注入 */
+  playgroundSlot?: ReactNode;
   onOpenLlmConfig: () => void;
   updateLlm: (next: AppRuntimeConfig["llm_config"]) => void;
   persistLlm: (next: AppRuntimeConfig["llm_config"]) => Promise<boolean>;
@@ -470,6 +473,7 @@ const ANALYSIS_TRIGGER_OPTIONS: Array<{
 const configGroupKeys = [
   "browser",
   "llm",
+  "playground",
   "job",
   "resume",
   "greet",
@@ -499,6 +503,7 @@ const menuItems = [
     children: [
       { key: "llm", icon: <RobotOutlined />, label: "大模型" },
       { key: "browser", icon: <GlobalOutlined />, label: "浏览器环境" },
+      { key: "playground", icon: <ExperimentOutlined />, label: "测试模式" },
     ],
   },
   {
@@ -918,6 +923,9 @@ export function ConfigPage(props: ConfigPageProps) {
             dirty={props.dirty}
           />
         );
+      // 测试模式不走这里：它常驻挂载在内容区，见下方的 playgroundSlot
+      case "playground":
+        return null;
       case "data":
         return <DataManagementPanel />;
       case "job":
@@ -2613,7 +2621,17 @@ export function ConfigPage(props: ConfigPageProps) {
               </div>
             )}
             <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-6 py-6 md:px-10 md:py-8">
-              {renderContent()}
+              {/*
+                测试模式整块由 App 注入，且切到别的分组时只是藏起来、不卸载：
+                那里攒着手输的 JD、造了一半的对话和刚跑出来的结果，
+                去大模型页改个模型名回来就得从头填一遍，谁都不会愿意用第二次
+              */}
+              {props.playgroundSlot && (
+                <div className={activeGroup === "playground" ? undefined : "hidden"}>
+                  {props.playgroundSlot}
+                </div>
+              )}
+              {activeGroup !== "playground" && renderContent()}
             </div>
           </div>
         </Form>
