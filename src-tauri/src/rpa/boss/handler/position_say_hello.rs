@@ -2,9 +2,11 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use crate::{
-    auto_analysis,
-    browser,
-    config::{AnalysisTrigger, AppRuntimeConfig, JobFilterConfig, ReplyResource},
+    auto_analysis, browser,
+    config::{
+        AnalysisTrigger, AppRuntimeConfig, BossFilterConfig, BossRecruiterActiveThreshold,
+        JobFilterConfig, ReplyResource,
+    },
     dao::{job_detail_dao, model::JobDetail},
     logger,
     rpa::{
@@ -119,27 +121,39 @@ pub async fn position_say_hello_on_page(
             stats.scanned += 1;
             let greet_job =
                 match read_job_card(page, &job_card_area_ele, &processed_job_ids, &mut pacer) {
-                Ok(CardOutcome::Ready(greet_job)) => *greet_job,
-                Ok(CardOutcome::Skipped(reason)) => {
-                    stats.record_skip(reason);
-                    // 全静默会让用户以为程序卡死，这里按批次给出进度提示
-                    let skipped = stats.skipped_known() - round_base.skipped_known();
-                    if should_log_skip_progress(skipped) {
-                        logger::info(format!("已跳过 {} 条已浏览/已投递岗位，继续扫描", skipped))?;
+                    Ok(CardOutcome::Ready(greet_job)) => *greet_job,
+                    Ok(CardOutcome::Skipped(reason)) => {
+                        stats.record_skip(reason);
+                        // 全静默会让用户以为程序卡死，这里按批次给出进度提示
+                        let skipped = stats.skipped_known() - round_base.skipped_known();
+                        if should_log_skip_progress(skipped) {
+                            logger::info(format!(
+                                "已跳过 {} 条已浏览/已投递岗位，继续扫描",
+                                skipped
+                            ))?;
+                        }
+                        continue;
                     }
-                    continue;
-                }
-                Err(error) => {
-                    stats.read_failed += 1;
-                    logger::warning(card_failure_message(&error))?;
-                    continue;
-                }
-            };
+                    Err(error) => {
+                        stats.read_failed += 1;
+                        logger::warning(card_failure_message(&error))?;
+                        continue;
+                    }
+                };
 
             logger::info(format!(
                 "当前处理岗位:{} 公司:{}",
                 greet_job.title, greet_job.company_name
             ))?;
+
+            if let Some(reason) = inactive_recruiter_skip_reason(
+                &greet_job.recruiter_active_time,
+                &app_runtime_config.platform_filter_config.boss,
+            ) {
+                stats.skipped_inactive += 1;
+                logger::info(format!("岗位招聘者活跃度不满足要求，跳过：{reason}"))?;
+                continue;
+            }
 
             let filter_decision = verify::filter_decision(&greet_job, &app_runtime_config);
             if !filter_decision.matched {
@@ -170,11 +184,7 @@ pub async fn position_say_hello_on_page(
             }
             // 「筛选通过即分析」不关心后面招呼发没发出去，所以在进入打招呼之前就登记
             auto_analysis::schedule(
-                &build_job_detail(
-                    &greet_job.platform_job_id,
-                    &greet_job,
-                    &app_runtime_config,
-                ),
+                &build_job_detail(&greet_job.platform_job_id, &greet_job, &app_runtime_config),
                 AnalysisTrigger::FilterPassed,
                 &app_runtime_config,
             );
@@ -326,6 +336,8 @@ struct RoundStats {
     skipped_rule: u32,
     /// 因 AI 语义复核未通过或失败而跳过
     skipped_ai: u32,
+    /// 因招聘者活跃度过低或无法识别而跳过
+    skipped_inactive: u32,
     /// 被拟人化随机跳过（「只看不投」）
     skipped_humanize: u32,
     /// 卡片读取失败
@@ -365,6 +377,7 @@ impl RoundStats {
                 .saturating_sub(base.skipped_processed),
             skipped_rule: self.skipped_rule.saturating_sub(base.skipped_rule),
             skipped_ai: self.skipped_ai.saturating_sub(base.skipped_ai),
+            skipped_inactive: self.skipped_inactive.saturating_sub(base.skipped_inactive),
             skipped_humanize: self.skipped_humanize.saturating_sub(base.skipped_humanize),
             read_failed: self.read_failed.saturating_sub(base.read_failed),
             greet_success: self.greet_success.saturating_sub(base.greet_success),
@@ -374,10 +387,11 @@ impl RoundStats {
 
     fn summary(&self) -> String {
         format!(
-            "共扫描 {} 条岗位，已浏览跳过 {} 条，已投递跳过 {} 条，规则过滤跳过 {} 条，AI 复核跳过 {} 条，拟人化跳过 {} 条，读取失败 {} 条，打招呼成功 {} 条，打招呼失败 {} 条",
+            "共扫描 {} 条岗位，已浏览跳过 {} 条，已投递跳过 {} 条，活跃度跳过 {} 条，规则过滤跳过 {} 条，AI 复核跳过 {} 条，拟人化跳过 {} 条，读取失败 {} 条，打招呼成功 {} 条，打招呼失败 {} 条",
             self.scanned,
             self.skipped_viewed,
             self.skipped_processed,
+            self.skipped_inactive,
             self.skipped_rule,
             self.skipped_ai,
             self.skipped_humanize,
@@ -392,9 +406,10 @@ impl RoundStats {
     /// 否则「共扫描 90 条岗位」会被误读成真的看过 90 个不同岗位。
     fn total_summary(&self) -> String {
         format!(
-            "打招呼成功 {} 条，失败 {} 条；规则过滤跳过 {} 条，AI 复核跳过 {} 条，拟人化跳过 {} 条，读取失败 {} 条；累计扫描岗位卡片 {} 次（含滚动后的重复扫描），其中因已浏览或已投递而跳过 {} 次",
+            "打招呼成功 {} 条，失败 {} 条；活跃度跳过 {} 条，规则过滤跳过 {} 条，AI 复核跳过 {} 条，拟人化跳过 {} 条，读取失败 {} 条；累计扫描岗位卡片 {} 次（含滚动后的重复扫描），其中因已浏览或已投递而跳过 {} 次",
             self.greet_success,
             self.greet_failed,
+            self.skipped_inactive,
             self.skipped_rule,
             self.skipped_ai,
             self.skipped_humanize,
@@ -590,6 +605,7 @@ fn read_job_card(
         .element(".company-location")?
         .ok_or_else(|| anyhow::anyhow!("未找到公司地址"))?
         .text_content()?;
+    let recruiter_active_time = read_recruiter_active_time(page, &job_card_ele)?;
 
     let job_detail_url = format!("https://www.zhipin.com{}", job_href);
     let platform_job_id = extract_job_id(&job_detail_url)
@@ -604,8 +620,421 @@ fn read_job_card(
         detail: job_detail_text,
         salary: decode_salary(&salary_text),
         location: Some(company_location),
+        recruiter_active_time,
         detail_url: job_detail_url,
     })))
+}
+
+fn read_recruiter_active_time(
+    page: &Page,
+    job_card_ele: &Element,
+) -> Result<Option<String>, anyhow::Error> {
+    // 只读取当前岗位卡片内的 badge。不能在整页上查 `.boss-active-time`，
+    // 否则当前卡片缺失时可能拿到其他岗位卡片的招聘者活跃度。
+    for selector in [".boss-online-tag", ".boss-active-time"] {
+        if let Some(text) = job_card_ele
+            .element(selector)?
+            .and_then(|element| element.text_content().ok())
+            .and_then(|text| extract_recruiter_active_text(&text))
+        {
+            return Ok(Some(text));
+        }
+    }
+
+    if let Some(text) = job_card_ele
+        .text_content()
+        .ok()
+        .and_then(|text| extract_recruiter_active_text(&text))
+    {
+        return Ok(Some(text));
+    }
+
+    // 详情页只允许读取当前招聘者信息容器，缺失时返回未知。
+    // 不能扫 `.job-detail-body` 或 body 文本，岗位描述里的“在线办公”等词会造成误判。
+    for selector in recruiter_detail_scope_selectors() {
+        let Some(detail_boss_info) = page.ele(selector)? else {
+            continue;
+        };
+
+        for activity_selector in [".boss-online-tag", ".boss-active-time"] {
+            if let Some(text) = detail_boss_info
+                .element(activity_selector)?
+                .and_then(|element| element.text_content().ok())
+                .and_then(|text| extract_recruiter_active_text(&text))
+            {
+                return Ok(Some(text));
+            }
+        }
+
+        if let Some(text) = detail_boss_info
+            .text_content()
+            .ok()
+            .and_then(|text| extract_recruiter_active_text(&text))
+        {
+            return Ok(Some(text));
+        }
+    }
+
+    Ok(None)
+}
+
+fn recruiter_detail_scope_selectors() -> &'static [&'static str] {
+    &[
+        ".job-detail-box .job-boss-info",
+        ".job-detail-container .job-boss-info",
+        ".job-detail-op .job-boss-info",
+        ".job-boss-info",
+    ]
+}
+
+fn extract_recruiter_active_text(text: &str) -> Option<String> {
+    const PATTERNS: &[&str] = &[
+        "当前在线",
+        "在线",
+        "刚刚活跃",
+        "今日活跃",
+        "今天活跃",
+        "3日内活跃",
+        "三日内活跃",
+        "3天内活跃",
+        "三天内活跃",
+        "本周活跃",
+        "近一周活跃",
+        "7日内活跃",
+        "7天内活跃",
+        "一周内活跃",
+        "本月活跃",
+        "2周内活跃",
+        "两周内活跃",
+        "二周内活跃",
+        "近半月活跃",
+        "半月内活跃",
+        "15日内活跃",
+        "十五日内活跃",
+        "15天内活跃",
+        "十五天内活跃",
+        "一个月内活跃",
+        "1个月内活跃",
+        "30日内活跃",
+        "30天内活跃",
+        "2月内活跃",
+        "2个月内活跃",
+        "3月内活跃",
+        "3个月内活跃",
+        "4月内活跃",
+        "4个月内活跃",
+        "5月内活跃",
+        "5个月内活跃",
+        "近半年活跃",
+        "半年内活跃",
+        "半月前活跃",
+        "一个月前活跃",
+        "1个月前活跃",
+        "两个月前活跃",
+        "2个月前活跃",
+        "半年前活跃",
+    ];
+    if let Some(pattern) = PATTERNS.iter().find(|pattern| text.contains(**pattern)) {
+        return Some((*pattern).to_string());
+    }
+
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join("");
+    let Ok(regex) = regex::Regex::new(
+        r"([0-9一二两三四五六七八九十半个]+)(分钟|小时|天|日|周|星期|个月|月|年)(?:前|内)活跃",
+    ) else {
+        return None;
+    };
+    regex
+        .captures(&normalized)
+        .and_then(|captures| captures.get(0).map(|m| m.as_str().to_string()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum RecruiterActiveRank {
+    Online,
+    JustActive,
+    ThreeDays,
+    ThisWeek,
+    TwoWeeks,
+    ThisMonth,
+    TwoMonths,
+    ThreeMonths,
+    FourMonths,
+    FiveMonths,
+    HalfYear,
+    Older,
+}
+
+fn active_threshold_rank(threshold: BossRecruiterActiveThreshold) -> Option<RecruiterActiveRank> {
+    match threshold {
+        BossRecruiterActiveThreshold::Online => Some(RecruiterActiveRank::Online),
+        BossRecruiterActiveThreshold::JustActive => Some(RecruiterActiveRank::JustActive),
+        BossRecruiterActiveThreshold::ThreeDays => Some(RecruiterActiveRank::ThreeDays),
+        BossRecruiterActiveThreshold::ThisWeek
+        | BossRecruiterActiveThreshold::SevenDays
+        | BossRecruiterActiveThreshold::SevenDaysText => Some(RecruiterActiveRank::ThisWeek),
+        BossRecruiterActiveThreshold::TwoWeeks => Some(RecruiterActiveRank::TwoWeeks),
+        BossRecruiterActiveThreshold::ThisMonth => Some(RecruiterActiveRank::ThisMonth),
+        BossRecruiterActiveThreshold::TwoMonths => Some(RecruiterActiveRank::TwoMonths),
+        BossRecruiterActiveThreshold::ThreeMonths => Some(RecruiterActiveRank::ThreeMonths),
+        BossRecruiterActiveThreshold::FourMonths => Some(RecruiterActiveRank::FourMonths),
+        BossRecruiterActiveThreshold::FiveMonths => Some(RecruiterActiveRank::FiveMonths),
+        BossRecruiterActiveThreshold::HalfYear | BossRecruiterActiveThreshold::HalfYearAgo => {
+            Some(RecruiterActiveRank::HalfYear)
+        }
+        BossRecruiterActiveThreshold::Disabled => None,
+    }
+}
+
+fn classify_recruiter_active_text(text: &str) -> RecruiterActiveRank {
+    if text.contains("在线") {
+        return RecruiterActiveRank::Online;
+    }
+    if text.contains("刚刚活跃") || text.contains("今日活跃") || text.contains("今天活跃")
+    {
+        return RecruiterActiveRank::JustActive;
+    }
+    if text.contains("3日内") || text.contains("三日内") {
+        return RecruiterActiveRank::ThreeDays;
+    }
+    if text.contains("3天内") || text.contains("三天内") {
+        return RecruiterActiveRank::ThreeDays;
+    }
+    if text.contains("本周")
+        || text.contains("近一周")
+        || text.contains("7日内")
+        || text.contains("7天内")
+        || text.contains("一周内")
+    {
+        return RecruiterActiveRank::ThisWeek;
+    }
+    if text.contains("2周内") || text.contains("两周内") || text.contains("二周内") {
+        return RecruiterActiveRank::TwoWeeks;
+    }
+    if text.contains("本月")
+        || text.contains("半月内")
+        || text.contains("近半月")
+        || text.contains("15日内")
+        || text.contains("十五日内")
+        || text.contains("15天内")
+        || text.contains("十五天内")
+        || text.contains("一个月内")
+        || text.contains("1个月内")
+        || text.contains("30日内")
+        || text.contains("30天内")
+    {
+        return RecruiterActiveRank::ThisMonth;
+    }
+    if text.contains("2月内") || text.contains("2个月内") || text.contains("两月内") {
+        return RecruiterActiveRank::TwoMonths;
+    }
+    if text.contains("3月内") || text.contains("3个月内") || text.contains("三月内") {
+        return RecruiterActiveRank::ThreeMonths;
+    }
+    if text.contains("4月内") || text.contains("4个月内") || text.contains("四月内") {
+        return RecruiterActiveRank::FourMonths;
+    }
+    if text.contains("5月内") || text.contains("5个月内") || text.contains("五月内") {
+        return RecruiterActiveRank::FiveMonths;
+    }
+    if text.contains("近半年") || text.contains("半年内") || text.contains("半年前") {
+        return RecruiterActiveRank::HalfYear;
+    }
+
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join("");
+    if normalized.contains("分钟前") || normalized.contains("小时前") {
+        return RecruiterActiveRank::JustActive;
+    }
+    if let Some(rank) = classify_relative_active_text(&normalized) {
+        return rank;
+    }
+    if normalized.contains("天前") || normalized.contains("日前") {
+        let days = parse_chinese_or_ascii_number(
+            normalized
+                .split_once('天')
+                .or_else(|| normalized.split_once('日'))
+                .map(|(value, _)| value)
+                .unwrap_or_default(),
+        )
+        .unwrap_or(31);
+        return classify_day_amount(days);
+    }
+    if normalized.contains("周前") || normalized.contains("星期前") {
+        return RecruiterActiveRank::Older;
+    }
+    if normalized.contains("半月前")
+        || normalized.contains("个月前")
+        || normalized.contains("月前")
+        || normalized.contains("年前")
+    {
+        return RecruiterActiveRank::Older;
+    }
+
+    RecruiterActiveRank::Older
+}
+
+fn classify_relative_active_text(text: &str) -> Option<RecruiterActiveRank> {
+    let regex = regex::Regex::new(
+        r"([0-9一二两三四五六七八九十半个]+)(分钟|小时|天|日|周|星期|个月|月|年)(前|内)活跃",
+    )
+    .ok()?;
+    let captures = regex.captures(text)?;
+    let amount_text = captures.get(1).map(|m| m.as_str()).unwrap_or_default();
+    let unit = captures.get(2).map(|m| m.as_str()).unwrap_or_default();
+    let direction = captures.get(3).map(|m| m.as_str()).unwrap_or_default();
+    let amount = parse_chinese_or_ascii_number(amount_text).unwrap_or_else(|| {
+        if amount_text.contains('半') {
+            1
+        } else {
+            u32::MAX
+        }
+    });
+
+    match (unit, direction) {
+        ("分钟" | "小时", _) => Some(RecruiterActiveRank::JustActive),
+        ("天" | "日", "内" | "前") => Some(classify_day_amount(amount)),
+        ("周" | "星期", "内" | "前") => Some(classify_week_amount(amount)),
+        ("个月" | "月", "内" | "前") => Some(classify_month_amount(amount)),
+        ("年", "内") if amount_text.contains('半') => Some(RecruiterActiveRank::HalfYear),
+        ("年", "前") if amount_text.contains('半') => Some(RecruiterActiveRank::HalfYear),
+        _ => Some(RecruiterActiveRank::Older),
+    }
+}
+
+fn classify_day_amount(amount: u32) -> RecruiterActiveRank {
+    match amount {
+        0..=3 => RecruiterActiveRank::ThreeDays,
+        4..=7 => RecruiterActiveRank::ThisWeek,
+        8..=14 => RecruiterActiveRank::TwoWeeks,
+        15..=31 => RecruiterActiveRank::ThisMonth,
+        _ => RecruiterActiveRank::Older,
+    }
+}
+
+fn classify_week_amount(amount: u32) -> RecruiterActiveRank {
+    match amount {
+        0 | 1 => RecruiterActiveRank::ThisWeek,
+        2 => RecruiterActiveRank::TwoWeeks,
+        3 | 4 => RecruiterActiveRank::ThisMonth,
+        5..=8 => RecruiterActiveRank::TwoMonths,
+        9..=13 => RecruiterActiveRank::ThreeMonths,
+        14..=17 => RecruiterActiveRank::FourMonths,
+        18..=22 => RecruiterActiveRank::FiveMonths,
+        23..=26 => RecruiterActiveRank::HalfYear,
+        _ => RecruiterActiveRank::Older,
+    }
+}
+
+fn classify_month_amount(amount: u32) -> RecruiterActiveRank {
+    match amount {
+        0 | 1 => RecruiterActiveRank::ThisMonth,
+        2 => RecruiterActiveRank::TwoMonths,
+        3 => RecruiterActiveRank::ThreeMonths,
+        4 => RecruiterActiveRank::FourMonths,
+        5 => RecruiterActiveRank::FiveMonths,
+        6 => RecruiterActiveRank::HalfYear,
+        _ => RecruiterActiveRank::Older,
+    }
+}
+
+fn parse_chinese_or_ascii_number(value: &str) -> Option<u32> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Some(prefix) = value.strip_suffix('个') {
+        return parse_chinese_or_ascii_number(prefix);
+    }
+    if let Ok(number) = value.parse::<u32>() {
+        return Some(number);
+    }
+    if let Some(number) = parse_simple_chinese_number(value) {
+        return Some(number);
+    }
+    None
+}
+
+fn parse_simple_chinese_number(value: &str) -> Option<u32> {
+    fn digit(value: &str) -> Option<u32> {
+        match value {
+            "" => Some(0),
+            "一" | "1" => Some(1),
+            "二" | "两" | "2" => Some(2),
+            "三" | "3" => Some(3),
+            "四" | "4" => Some(4),
+            "五" | "5" => Some(5),
+            "六" | "6" => Some(6),
+            "七" | "7" => Some(7),
+            "八" | "8" => Some(8),
+            "九" | "9" => Some(9),
+            _ => None,
+        }
+    }
+
+    if let Some((tens, ones)) = value.split_once('十') {
+        let tens = if tens.is_empty() { 1 } else { digit(tens)? };
+        return Some(tens * 10 + digit(ones)?);
+    }
+
+    match value {
+        "一" | "1" => Some(1),
+        "二" | "两" | "2" => Some(2),
+        "三" | "3" => Some(3),
+        "四" | "4" => Some(4),
+        "五" | "5" => Some(5),
+        "六" | "6" => Some(6),
+        "七" | "7" => Some(7),
+        "八" | "8" => Some(8),
+        "九" | "9" => Some(9),
+        "十" | "10" => Some(10),
+        _ => None,
+    }
+}
+
+fn inactive_recruiter_skip_reason(
+    active_text: &Option<String>,
+    config: &BossFilterConfig,
+) -> Option<String> {
+    if !config.active_filter_enabled {
+        return None;
+    }
+    let threshold = active_threshold_rank(config.active_threshold)?;
+    let Some(active_text) = active_text
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    else {
+        return Some("未识别到招聘者活跃度".to_string());
+    };
+
+    let rank = classify_recruiter_active_text(active_text);
+    (rank > threshold).then(|| {
+        format!(
+            "招聘者活跃度「{}」低于阈值「{}」",
+            active_text,
+            describe_active_threshold(config.active_threshold)
+        )
+    })
+}
+
+fn describe_active_threshold(threshold: BossRecruiterActiveThreshold) -> &'static str {
+    match threshold {
+        BossRecruiterActiveThreshold::Online => "在线",
+        BossRecruiterActiveThreshold::JustActive => "刚刚活跃",
+        BossRecruiterActiveThreshold::ThreeDays => "3日内活跃",
+        BossRecruiterActiveThreshold::ThisWeek => "本周活跃",
+        BossRecruiterActiveThreshold::SevenDays => "7日内活跃",
+        BossRecruiterActiveThreshold::SevenDaysText => "7天内活跃",
+        BossRecruiterActiveThreshold::TwoWeeks => "2周内活跃",
+        BossRecruiterActiveThreshold::ThisMonth => "本月活跃",
+        BossRecruiterActiveThreshold::TwoMonths => "2月内活跃",
+        BossRecruiterActiveThreshold::ThreeMonths => "3月内活跃",
+        BossRecruiterActiveThreshold::FourMonths => "4月内活跃",
+        BossRecruiterActiveThreshold::FiveMonths => "5月内活跃",
+        BossRecruiterActiveThreshold::HalfYear => "近半年活跃",
+        BossRecruiterActiveThreshold::HalfYearAgo => "半年前活跃",
+        BossRecruiterActiveThreshold::Disabled => "不筛选",
+    }
 }
 
 /// 从 joblist API 响应中提取所有 encryptJobId 和 hasMore 标志
@@ -1265,6 +1694,7 @@ mod tests {
             detail: "岗位描述".to_string(),
             salary: "30-60K".to_string(),
             location: Some("深圳".to_string()),
+            recruiter_active_time: Some("本周活跃".to_string()),
             detail_url: "https://www.zhipin.com/job_detail/a5de0e2bc67cb6a90nFz3925FlpZ.html"
                 .to_string(),
         };
@@ -1433,6 +1863,7 @@ mod tests {
             skipped_processed: 15,
             skipped_rule: 1,
             skipped_ai: 1,
+            skipped_inactive: 2,
             skipped_humanize: 2,
             read_failed: 0,
             greet_success: 1,
@@ -1444,6 +1875,7 @@ mod tests {
         assert!(summary.contains("共扫描 30 条岗位"));
         assert!(summary.contains("已浏览跳过 12 条"));
         assert!(summary.contains("已投递跳过 15 条"));
+        assert!(summary.contains("活跃度跳过 2 条"));
         assert!(summary.contains("规则过滤跳过 1 条"));
         assert!(summary.contains("AI 复核跳过 1 条"));
         assert!(summary.contains("拟人化跳过 2 条"));
@@ -1497,7 +1929,9 @@ mod tests {
     fn the_humanized_skip_happens_before_the_card_is_opened() {
         let source = include_str!("position_say_hello.rs");
 
-        let skim = source.find("pacer.should_skim()").expect("跳过判断已被移除");
+        let skim = source
+            .find("pacer.should_skim()")
+            .expect("跳过判断已被移除");
         let open = source
             .find("human_input::click(page, &job_card_ele)")
             .expect("卡片点击已被改写");
@@ -1516,6 +1950,188 @@ mod tests {
         assert_eq!(stats.skipped_humanize, 1);
         assert_eq!(stats.skipped_known(), 1);
         assert_eq!(stats.engaged(), 0);
+    }
+
+    #[test]
+    fn active_filter_accepts_this_week_but_skips_stale_recruiters() {
+        let config = BossFilterConfig {
+            active_filter_enabled: true,
+            active_threshold: BossRecruiterActiveThreshold::ThisWeek,
+        };
+
+        assert!(inactive_recruiter_skip_reason(&Some("在线".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("刚刚活跃".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("本周活跃".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("7天前活跃".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("2周内活跃".to_string()), &config).is_some());
+        assert!(inactive_recruiter_skip_reason(&Some("半月前活跃".to_string()), &config).is_some());
+        assert!(inactive_recruiter_skip_reason(&Some("近半年活跃".to_string()), &config).is_some());
+        assert!(inactive_recruiter_skip_reason(&None, &config).is_some());
+    }
+
+    #[test]
+    fn active_filter_online_requires_explicit_online_status() {
+        let config = BossFilterConfig {
+            active_filter_enabled: true,
+            active_threshold: BossRecruiterActiveThreshold::Online,
+        };
+
+        assert!(inactive_recruiter_skip_reason(&Some("在线".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("当前在线".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("刚刚活跃".to_string()), &config).is_some());
+        assert!(inactive_recruiter_skip_reason(&Some("今日活跃".to_string()), &config).is_some());
+        assert!(
+            inactive_recruiter_skip_reason(&Some("1小时前活跃".to_string()), &config).is_some()
+        );
+    }
+
+    #[test]
+    fn active_filter_classifies_days_ago_with_elapsed_days() {
+        let seven_days = BossFilterConfig {
+            active_filter_enabled: true,
+            active_threshold: BossRecruiterActiveThreshold::SevenDays,
+        };
+        let two_weeks = BossFilterConfig {
+            active_filter_enabled: true,
+            active_threshold: BossRecruiterActiveThreshold::TwoWeeks,
+        };
+        let this_month = BossFilterConfig {
+            active_filter_enabled: true,
+            active_threshold: BossRecruiterActiveThreshold::ThisMonth,
+        };
+
+        assert!(inactive_recruiter_skip_reason(&Some("7天前活跃".to_string()), &seven_days).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("七日前活跃".to_string()), &seven_days).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("8天前活跃".to_string()), &seven_days).is_some());
+        assert!(inactive_recruiter_skip_reason(&Some("8天前活跃".to_string()), &two_weeks).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("十四天前活跃".to_string()), &two_weeks).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("15天前活跃".to_string()), &two_weeks).is_some());
+        assert!(inactive_recruiter_skip_reason(&Some("31天前活跃".to_string()), &this_month).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("三十一日前活跃".to_string()), &this_month).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("32天前活跃".to_string()), &this_month).is_some());
+    }
+
+    #[test]
+    fn active_filter_accepts_two_weeks_when_threshold_is_this_month() {
+        let config = BossFilterConfig {
+            active_filter_enabled: true,
+            active_threshold: BossRecruiterActiveThreshold::ThisMonth,
+        };
+
+        assert!(inactive_recruiter_skip_reason(&Some("2周内活跃".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("1周前活跃".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("2周前活跃".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("四星期前活跃".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("半月前活跃".to_string()), &config).is_none());
+        assert!(
+            inactive_recruiter_skip_reason(&Some("一个月内活跃".to_string()), &config).is_none()
+        );
+        assert!(inactive_recruiter_skip_reason(&Some("5周前活跃".to_string()), &config).is_some());
+        assert!(inactive_recruiter_skip_reason(&Some("2月内活跃".to_string()), &config).is_some());
+    }
+
+    #[test]
+    fn active_filter_classifies_months_ago_with_elapsed_months() {
+        let config = BossFilterConfig {
+            active_filter_enabled: true,
+            active_threshold: BossRecruiterActiveThreshold::TwoMonths,
+        };
+
+        assert!(inactive_recruiter_skip_reason(&Some("一个月前活跃".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("1个月前活跃".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("两个月前活跃".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("2个月前活跃".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("三个月前活跃".to_string()), &config).is_some());
+    }
+
+    #[test]
+    fn active_filter_accepts_real_boss_activity_thresholds() {
+        let config = BossFilterConfig {
+            active_filter_enabled: true,
+            active_threshold: BossRecruiterActiveThreshold::FiveMonths,
+        };
+
+        assert!(inactive_recruiter_skip_reason(&Some("5月内活跃".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("5个月前活跃".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("六个月前活跃".to_string()), &config).is_some());
+        assert!(inactive_recruiter_skip_reason(&Some("近半年活跃".to_string()), &config).is_some());
+        assert!(inactive_recruiter_skip_reason(&Some("半年前活跃".to_string()), &config).is_some());
+    }
+
+    #[test]
+    fn active_filter_accepts_half_year_threshold() {
+        let config = BossFilterConfig {
+            active_filter_enabled: true,
+            active_threshold: BossRecruiterActiveThreshold::HalfYear,
+        };
+
+        assert!(inactive_recruiter_skip_reason(&Some("近半年活跃".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("半年前活跃".to_string()), &config).is_none());
+    }
+
+    #[test]
+    fn active_filter_can_be_disabled() {
+        let config = BossFilterConfig {
+            active_filter_enabled: false,
+            active_threshold: BossRecruiterActiveThreshold::ThisWeek,
+        };
+
+        assert!(inactive_recruiter_skip_reason(&None, &config).is_none());
+        assert!(
+            inactive_recruiter_skip_reason(&Some("一个月前活跃".to_string()), &config).is_none()
+        );
+    }
+
+    #[test]
+    fn extracts_recruiter_active_text_from_boss_copy() {
+        assert_eq!(
+            extract_recruiter_active_text("张三 HR 本周活跃").as_deref(),
+            Some("本周活跃")
+        );
+        assert_eq!(
+            extract_recruiter_active_text("张三 HR 7天前活跃").as_deref(),
+            Some("7天前活跃")
+        );
+    }
+
+    #[test]
+    fn extracts_recruiter_active_text_from_real_boss_dom() {
+        let html = r#"
+            <span data-v-759013b4="" class="boss-online-tag">在线</span>
+            <span data-v-759013b4="" class="boss-active-time">刚刚活跃</span>
+            <div data-v-759013b4="" class="job-boss-info">
+                <h2 data-v-759013b4="" class="name">
+                    邱瑞轩
+                    <i data-v-759013b4="" class="icon-vip"></i>
+                    <span data-v-759013b4="" class="boss-active-time">刚刚活跃</span>
+                </h2>
+                <div data-v-759013b4="" class="boss-info-attr"> 中企云软 · 经理 </div>
+            </div>
+        "#;
+
+        assert_eq!(extract_recruiter_active_text(html).as_deref(), Some("在线"));
+        assert_eq!(
+            extract_recruiter_active_text(
+                r#"<span data-v-759013b4="" class="boss-active-time">刚刚活跃</span>"#
+            )
+            .as_deref(),
+            Some("刚刚活跃")
+        );
+    }
+
+    #[test]
+    fn recruiter_active_scope_never_uses_global_badges_or_job_body() {
+        let selectors = recruiter_detail_scope_selectors();
+
+        assert!(selectors
+            .iter()
+            .all(|selector| selector.contains(".job-boss-info")));
+        assert!(!selectors.contains(&".boss-online-tag"));
+        assert!(!selectors.contains(&".boss-active-time"));
+        assert!(!selectors.iter().any(|selector| selector.contains("body")));
+        assert!(!selectors
+            .iter()
+            .any(|selector| selector.contains(".job-detail-body")));
     }
 
     #[test]

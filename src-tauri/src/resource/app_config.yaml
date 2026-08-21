@@ -124,6 +124,9 @@ job_profiles:
     archived: false
     job_filter_config: *default_job_filter
     platform_filter_config:
+      boss:
+        active_filter_enabled: true
+        active_threshold: this_week
       liepin:
         dq: null
         salary_code: null

@@ -149,6 +149,7 @@ mod tests {
             detail: detail.to_string(),
             salary: "20-30K".to_string(),
             location: Some("南京".to_string()),
+            recruiter_active_time: None,
             detail_url: "https://example.test/job-1".to_string(),
         }
     }

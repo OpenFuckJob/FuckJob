@@ -3,7 +3,7 @@ import { Alert, Button, ConfigProvider, Spin, Tabs, Typography } from "antd";
 import { RocketOutlined } from "@ant-design/icons";
 import "./App.css";
 import { useAppConfig } from "@/hooks/useAppConfig";
-import { copyJobProfile, DEFAULT_REGEX_RULE_LIMIT, getAnalysisConfig, getDefaultJobProfile, getHumanizeConfig, getJobProfiles, getPeriodicDeliveryConfig, getReplyPollingConfig, isLlmActive, isLlmConfigured, selectProfileAfterRemoval, type AnalysisConfig, type AppRuntimeConfig, type BrowserConfig, type GreetConfig, type GreetResource, type HumanizeConfig, type JobFilterConfig, type JobProfile, type PeriodicDeliveryConfig, type RegexRule, type ReplayConfig, type ReplyPollingConfig, type ReplyResource, type ReplyTemplate, type ResumeConfig } from "@/types/app-config";
+import { copyJobProfile, DEFAULT_REGEX_RULE_LIMIT, getAnalysisConfig, getDefaultJobProfile, getHumanizeConfig, getJobProfiles, getPeriodicDeliveryConfig, getPlatformFilterConfig, getReplyPollingConfig, isLlmActive, isLlmConfigured, selectProfileAfterRemoval, type AnalysisConfig, type AppRuntimeConfig, type BrowserConfig, type GreetConfig, type GreetResource, type HumanizeConfig, type JobFilterConfig, type JobProfile, type PeriodicDeliveryConfig, type PlatformFilterConfig, type RegexRule, type ReplayConfig, type ReplyPollingConfig, type ReplyResource, type ReplyTemplate, type ResumeConfig } from "@/types/app-config";
 import type { JobDetail } from "@/types/job-detail";
 import { Onboarding } from "@/view/onboarding";
 import { ConfigPage } from "@/view/config";
@@ -51,7 +51,7 @@ function MainShell({ config, update, save, status, message, dirty, importConfig,
     job_profiles: profiles,
     default_job_profile_id: config.default_job_profile_id || getDefaultJobProfile(config).id,
     job_filter_config: activeProfile.job_filter_config,
-    platform_filter_config: activeProfile.platform_filter_config,
+    platform_filter_config: getPlatformFilterConfig(activeProfile),
     resume_config: activeProfile.resume_config,
     greet_config: activeProfile.greet_config,
     replay_config: activeProfile.replay_config,
@@ -86,8 +86,16 @@ function MainShell({ config, update, save, status, message, dirty, importConfig,
       default_job_profile_id: c.default_job_profile_id || selected.id,
     };
   });
-  const updateProfileSection = <K extends "job_filter_config" | "greet_config" | "replay_config" | "resume_config">(key: K, next: Partial<JobProfile[K]>) =>
+  const updateProfileSection = <K extends "job_filter_config" | "platform_filter_config" | "greet_config" | "replay_config" | "resume_config">(key: K, next: Partial<JobProfile[K]>) =>
     updateActiveProfile((profile) => ({ ...profile, [key]: { ...profile[key], ...next } }));
+  const updatePlatformFilter = (next: Partial<PlatformFilterConfig>) =>
+    updateActiveProfile((profile) => ({
+      ...profile,
+      platform_filter_config: {
+        ...getPlatformFilterConfig(profile),
+        ...next,
+      },
+    }));
   // 分析配置在旧方案里可能整块缺失，先补默认值再合并
   const updateAnalysis = (next: Partial<AnalysisConfig>) =>
     updateActiveProfile((profile) => ({ ...profile, analysis_config: { ...getAnalysisConfig(profile), ...next } }));
@@ -135,6 +143,7 @@ function MainShell({ config, update, save, status, message, dirty, importConfig,
     updateLlmRetryConfig={(llm_retry_config) => update((c) => ({ ...c, llm_retry_config }))}
     persistConfig={() => save()}
     updateJobFilter={(v: Partial<JobFilterConfig>) => updateProfileSection("job_filter_config", v)}
+    updatePlatformFilter={updatePlatformFilter}
     updateGreet={(v: Partial<GreetConfig>) => updateProfileSection("greet_config", v)}
     updateGreetDefaultResource={(i: number, v: Partial<GreetResource>) => updateActiveProfile((p) => ({ ...p, greet_config: { ...p.greet_config, default_template: updateAt(p.greet_config.default_template, i, v) } }))}
     addGreetDefaultResource={(resourceType: GreetResource["resource_type"] = "Text") => updateActiveProfile((p) => ({ ...p, greet_config: { ...p.greet_config, default_template: [...p.greet_config.default_template, { resource_type: resourceType, content: "" }] } }))}

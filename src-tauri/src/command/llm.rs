@@ -167,6 +167,7 @@ pub async fn debug_generate_greet(
         detail: req.job_detail,
         salary: req.salary,
         location: Some(req.location),
+        recruiter_active_time: None,
         detail_url: String::new(),
     };
 

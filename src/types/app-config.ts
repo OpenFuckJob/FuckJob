@@ -52,9 +52,46 @@ export interface LiepinFilterConfig {
   comp_tag: string[];
 }
 
+export type BossRecruiterActiveThreshold =
+  | "online"
+  | "just_active"
+  | "three_days"
+  | "this_week"
+  | "seven_days"
+  | "seven_days_text"
+  | "two_weeks"
+  | "this_month"
+  | "two_months"
+  | "three_months"
+  | "four_months"
+  | "five_months"
+  | "half_year"
+  | "half_year_ago"
+  | "disabled";
+
+export interface BossFilterConfig {
+  active_filter_enabled: boolean;
+  active_threshold: BossRecruiterActiveThreshold;
+}
+
 export interface PlatformFilterConfig {
+  boss: BossFilterConfig;
   liepin: LiepinFilterConfig;
 }
+
+export const DEFAULT_PLATFORM_FILTER_CONFIG: PlatformFilterConfig = {
+  boss: {
+    active_filter_enabled: true,
+    active_threshold: "this_week",
+  },
+  liepin: {
+    dq: null,
+    salary_code: null,
+    pub_time: null,
+    work_year_code: null,
+    comp_tag: [],
+  },
+};
 
 export type LlmProviderPreset =
   | "anthropic"
@@ -457,6 +494,19 @@ export function getReplyPollingConfig(config: Pick<AppRuntimeConfig, "reply_poll
   return { ...DEFAULT_REPLY_POLLING_CONFIG, ...(config.reply_polling_config ?? {}) };
 }
 
+export function getPlatformFilterConfig(source: Pick<AppRuntimeConfig, "platform_filter_config"> | Pick<JobProfile, "platform_filter_config">): PlatformFilterConfig {
+  return {
+    boss: {
+      ...DEFAULT_PLATFORM_FILTER_CONFIG.boss,
+      ...(source.platform_filter_config?.boss ?? {}),
+    },
+    liepin: {
+      ...DEFAULT_PLATFORM_FILTER_CONFIG.liepin,
+      ...(source.platform_filter_config?.liepin ?? {}),
+    },
+  };
+}
+
 /** 读取周期投递默认参数，旧配置缺这块时回落到默认值。 */
 export function getPeriodicDeliveryConfig(
   config: Pick<AppRuntimeConfig, "periodic_delivery_config">,
@@ -508,7 +558,7 @@ export function getJobProfiles(config: AppRuntimeConfig): JobProfile[] {
     description: "由原有求职配置自动生成",
     archived: false,
     job_filter_config: config.job_filter_config,
-    platform_filter_config: config.platform_filter_config,
+    platform_filter_config: getPlatformFilterConfig(config),
     resume_config: config.resume_config,
     greet_config: config.greet_config,
     replay_config: config.replay_config,
