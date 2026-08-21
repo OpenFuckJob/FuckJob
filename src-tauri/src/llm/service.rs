@@ -11,8 +11,6 @@ use std::future::Future;
 use std::time::Duration;
 use tokio::time::timeout;
 
-const LLM_REQUEST_TIMEOUT_SECONDS: u64 = 120;
-
 #[derive(Clone, Debug)]
 pub struct LlmService {
     backend: LlmBackend,
@@ -49,7 +47,13 @@ impl LlmService {
             .llm_chain()
             .into_iter()
             .next()
-            .ok_or_else(|| AppError::configuration("请先配置大模型服务"))?;
+            .ok_or_else(|| {
+                if config.llm_configured() && !config.llm_active() {
+                    AppError::configuration("大模型已停用，请先启用模型服务")
+                } else {
+                    AppError::configuration("请先配置大模型服务")
+                }
+            })?;
         Ok(Self::from_chain_link(&link, credential)?.with_retry(config.llm_retry_config.clone()))
     }
 
@@ -359,107 +363,33 @@ impl LlmService {
     where
         F: FnMut(String) -> Result<(), AppError>,
     {
+        let retry = &self.retry;
+
+        macro_rules! stream {
+            ($client:expr) => {
+                stream_once(
+                    $client.completion_model(&self.model),
+                    &self.model,
+                    &prompt,
+                    &self.provider,
+                    retry,
+                    &mut on_delta,
+                )
+                .await
+            };
+        }
+
         match &self.backend {
-            LlmBackend::Anthropic(client) => {
-                stream_once(
-                    client.completion_model(&self.model),
-                    &self.model,
-                    &prompt,
-                    &self.provider,
-                    &mut on_delta,
-                )
-                .await
-            }
-            LlmBackend::DeepSeek(client) => {
-                stream_once(
-                    client.completion_model(&self.model),
-                    &self.model,
-                    &prompt,
-                    &self.provider,
-                    &mut on_delta,
-                )
-                .await
-            }
-            LlmBackend::OpenAiCompatible(client) => {
-                stream_once(
-                    client.completion_model(&self.model),
-                    &self.model,
-                    &prompt,
-                    &self.provider,
-                    &mut on_delta,
-                )
-                .await
-            }
-            LlmBackend::OpenAiResponses(client) => {
-                stream_once(
-                    client.completion_model(&self.model),
-                    &self.model,
-                    &prompt,
-                    &self.provider,
-                    &mut on_delta,
-                )
-                .await
-            }
-            LlmBackend::MiniMax(client) => {
-                stream_once(
-                    client.completion_model(&self.model),
-                    &self.model,
-                    &prompt,
-                    &self.provider,
-                    &mut on_delta,
-                )
-                .await
-            }
-            LlmBackend::Moonshot(client) => {
-                stream_once(
-                    client.completion_model(&self.model),
-                    &self.model,
-                    &prompt,
-                    &self.provider,
-                    &mut on_delta,
-                )
-                .await
-            }
-            LlmBackend::Ollama(client) => {
-                stream_once(
-                    client.completion_model(&self.model),
-                    &self.model,
-                    &prompt,
-                    &self.provider,
-                    &mut on_delta,
-                )
-                .await
-            }
-            LlmBackend::OpenRouter(client) => {
-                stream_once(
-                    client.completion_model(&self.model),
-                    &self.model,
-                    &prompt,
-                    &self.provider,
-                    &mut on_delta,
-                )
-                .await
-            }
-            LlmBackend::XiaomiMimo(client) => {
-                stream_once(
-                    client.completion_model(&self.model),
-                    &self.model,
-                    &prompt,
-                    &self.provider,
-                    &mut on_delta,
-                )
-                .await
-            }
-            LlmBackend::ZAi(client) => {
-                stream_once(
-                    client.completion_model(&self.model),
-                    &self.model,
-                    &prompt,
-                    &self.provider,
-                    &mut on_delta,
-                )
-                .await
-            }
+            LlmBackend::Anthropic(client) => stream!(client),
+            LlmBackend::DeepSeek(client) => stream!(client),
+            LlmBackend::OpenAiCompatible(client) => stream!(client),
+            LlmBackend::OpenAiResponses(client) => stream!(client),
+            LlmBackend::MiniMax(client) => stream!(client),
+            LlmBackend::Moonshot(client) => stream!(client),
+            LlmBackend::Ollama(client) => stream!(client),
+            LlmBackend::OpenRouter(client) => stream!(client),
+            LlmBackend::XiaomiMimo(client) => stream!(client),
+            LlmBackend::ZAi(client) => stream!(client),
         }
     }
 
@@ -487,7 +417,11 @@ impl LlmChainService {
     pub fn from_runtime(config: &AppRuntimeConfig) -> Result<Self, AppError> {
         let links = config.llm_chain();
         if links.is_empty() {
-            return Err(AppError::configuration("请先配置大模型服务"));
+            return Err(if config.llm_configured() && !config.llm_active() {
+                AppError::configuration("大模型已停用，请先启用模型服务")
+            } else {
+                AppError::configuration("请先配置大模型服务")
+            });
         }
         Ok(Self {
             links,
@@ -653,7 +587,7 @@ pub(crate) fn chain_exhausted_error(last_error: Option<AppError>, attempted: usi
 }
 
 /// 单次请求的失败来源。**超时**与**请求返回错误**必须结构性分开：
-/// 超时意味着 120 秒已经等满，重试只会成倍拖慢整轮求职；
+/// 超时意味着配置的等待时间已经耗尽，重试只会成倍拖慢整轮求职；
 /// 只有「请求返回错误」里的网络层瞬时故障才值得重试。
 #[derive(Debug)]
 pub(crate) enum AttemptFailure {
@@ -691,7 +625,7 @@ pub(crate) fn retry_plan(
         return None;
     }
     match failure {
-        // 超时不重试：120 秒已经等满，重发只会让整轮求职成倍变慢
+        // 超时不重试：请求已经等满，重发只会让整轮求职成倍变慢
         AttemptFailure::Timeout => None,
         // 只对网络层瞬时故障重试；鉴权失败、额度受限、配置错误重试多少次都是同样结果
         AttemptFailure::Completion(error) => (error.code == AppErrorCode::Network)
@@ -719,7 +653,7 @@ where
     // 已完成的重试次数；`retry.network_retry_attempts` 为 0 时循环只会执行一遍
     let mut attempt: u32 = 0;
     loop {
-        let outcome = timeout(Duration::from_secs(LLM_REQUEST_TIMEOUT_SECONDS), async {
+        let outcome = timeout(Duration::from_secs(retry.request_timeout_seconds), async {
             model.completion_request(prompt).send().await
         })
         .await;
@@ -772,13 +706,14 @@ async fn stream_once<M, F>(
     model_name: &str,
     prompt: &str,
     provider: &LlmProviderPreset,
+    retry: &LlmRetryConfig,
     on_delta: &mut F,
 ) -> Result<LlmResponse, AppError>
 where
     M: CompletionModel + Send,
     F: FnMut(String) -> Result<(), AppError>,
 {
-    timeout(Duration::from_secs(LLM_REQUEST_TIMEOUT_SECONDS), async {
+    timeout(Duration::from_secs(retry.request_timeout_seconds), async {
         let request = model.completion_request(prompt).build();
         let mut stream = model
             .stream(request)
@@ -814,11 +749,12 @@ async fn stream_collect_attempt<M>(
     model_name: &str,
     prompt: &str,
     provider: &LlmProviderPreset,
+    retry: &LlmRetryConfig,
 ) -> Result<LlmResponse, AttemptFailure>
 where
     M: CompletionModel + Send,
 {
-    let outcome = timeout(Duration::from_secs(LLM_REQUEST_TIMEOUT_SECONDS), async {
+    let outcome = timeout(Duration::from_secs(retry.request_timeout_seconds), async {
         let request = model.completion_request(prompt).build();
         let mut stream = model
             .stream(request)
@@ -867,7 +803,7 @@ where
 {
     let mut attempt: u32 = 0;
     loop {
-        let failure = match stream_collect_attempt(make_model(), model_name, prompt, provider).await
+        let failure = match stream_collect_attempt(make_model(), model_name, prompt, provider, retry).await
         {
             Ok(response) => return Ok(response),
             Err(failure) => failure,
@@ -1320,6 +1256,7 @@ mod tests {
         LlmRetryConfig {
             network_retry_attempts: attempts,
             retry_base_delay_ms: base_delay_ms,
+            request_timeout_seconds: 120,
         }
     }
 
@@ -1609,6 +1546,23 @@ mod tests {
 
         assert_eq!(error.code, AppErrorCode::Configuration);
         assert_eq!(error.message, "请先配置大模型服务");
+    }
+
+    #[test]
+    fn chain_service_reports_a_disabled_primary_without_losing_its_configuration() {
+        let mut config = default_app_config();
+        config.llm_config = Some(LlmConfig {
+            provider: LlmProviderPreset::OpenAi,
+            base_url: "http://127.0.0.1:1/v1".to_string(),
+            model: "primary-model".to_string(),
+        });
+        config.llm_enabled = Some(false);
+
+        let error = LlmChainService::from_runtime(&config).unwrap_err();
+
+        assert_eq!(error.code, AppErrorCode::Configuration);
+        assert_eq!(error.message, "大模型已停用，请先启用模型服务");
+        assert!(config.llm_config.is_some());
     }
 
     #[test]

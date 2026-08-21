@@ -129,8 +129,8 @@ where
 }
 
 /// 在降级链中按标识定位一个服务。
-/// 链由已保存的配置推导而来，所以「找不到」既可能是标识写错，
-/// 也可能是用户刚在界面上填完还没保存，错误文案需要同时覆盖这两种情况。
+/// 链只收录填写完整且处于启用状态的服务，所以「找不到」通常是缺服务地址或模型名，
+/// 其次才是该服务被停用了。
 fn find_chain_link<'a>(
     chain: &'a [LlmChainLink],
     entry_id: &str,
@@ -139,9 +139,7 @@ fn find_chain_link<'a>(
         .iter()
         .find(|link| link.id == entry_id)
         .ok_or_else(|| {
-            AppError::configuration(
-                "未找到该大模型服务，请先保存配置后再测试；未保存或已停用的服务无法测试",
-            )
+            AppError::configuration("该大模型服务尚不可用，请补齐服务地址和模型名称并确认它已启用")
         })
 }
 
@@ -179,19 +177,43 @@ pub async fn test_llm_entry_connection(
     }
 }
 
-/// 列出降级链中某个服务可用的模型
+/// 界面上正在编辑的服务参数。两项齐备才算数：只传一半无从判断该配哪个客户端，
+/// 与其猜一个，不如退回已落盘的配置。
+fn draft_override(
+    provider: Option<LlmProviderPreset>,
+    base_url: Option<String>,
+) -> Option<(LlmProviderPreset, String)> {
+    let base_url = base_url.map(|url| url.trim().to_string())?;
+    if base_url.is_empty() {
+        return None;
+    }
+    Some((provider?, base_url))
+}
+
+/// 列出降级链中某个服务可用的模型。
+///
+/// `provider` / `base_url` 是界面上正在编辑的草稿，传了就以草稿为准。
+/// 备用服务的模型名为空时整份配置根本保存不了，若这里坚持只读已落盘的配置，
+/// 就成了「保存要模型、取模型要先保存」的死锁——新建的备用服务永远拿不到模型列表。
+/// 密钥始终按 `entry_id` 从凭据库读取，明文不经过前端。
 #[tauri::command]
 pub async fn list_llm_models_for(
     app_handle: tauri::AppHandle,
     entry_id: String,
+    provider: Option<LlmProviderPreset>,
+    base_url: Option<String>,
 ) -> CommandResult<Vec<String>> {
-    let (link, credential) = match resolve_chain_entry(app_handle, &entry_id) {
-        Ok(resolved) => resolved,
-        Err(error) => return CommandResult::err(error),
+    let (provider, base_url, credential) = match draft_override(provider, base_url) {
+        Some((provider, base_url)) => match credential::resolve_for_entry(&entry_id) {
+            Ok(credential) => (provider, base_url, credential),
+            Err(error) => return CommandResult::err(error),
+        },
+        None => match resolve_chain_entry(app_handle, &entry_id) {
+            Ok((link, credential)) => (link.provider, link.base_url, credential),
+            Err(error) => return CommandResult::err(error),
+        },
     };
-    to_command_result(
-        fetch_model_list_with_credential(link.provider, &link.base_url, &credential).await,
-    )
+    to_command_result(fetch_model_list_with_credential(provider, &base_url, &credential).await)
 }
 
 fn validate_llm_base_url(base_url: &str) -> Result<(), AppError> {
@@ -463,15 +485,15 @@ mod tests {
     }
 
     #[test]
-    fn find_chain_link_reports_unsaved_service_clearly() {
+    fn find_chain_link_reports_an_unusable_service_clearly() {
         let chain = chain();
 
-        // 界面上刚填完还没保存就点测试，是最常见的误用，错误文案必须点明这一点
-        let error = find_chain_link(&chain, "backup-unsaved").unwrap_err();
+        // 草稿也会落盘，所以链里没有它多半是缺地址或模型名，错误文案要直接指向该补什么
+        let error = find_chain_link(&chain, "backup-incomplete").unwrap_err();
 
         assert_eq!(error.code, AppErrorCode::Configuration);
-        assert!(error.message.contains("未找到该大模型服务"));
-        assert!(error.message.contains("保存"));
+        assert!(error.message.contains("尚不可用"));
+        assert!(error.message.contains("模型名称"));
     }
 
     #[test]
@@ -479,7 +501,38 @@ mod tests {
         let error = find_chain_link(&[], PRIMARY_LLM_ENTRY_ID).unwrap_err();
 
         assert_eq!(error.code, AppErrorCode::Configuration);
-        assert!(error.message.contains("未找到该大模型服务"));
+        assert!(error.message.contains("尚不可用"));
+    }
+
+    #[test]
+    fn draft_override_takes_the_editing_values_and_trims_them() {
+        let draft = draft_override(
+            Some(LlmProviderPreset::DeepSeek),
+            Some("  https://api.deepseek.com  ".to_string()),
+        );
+
+        assert_eq!(
+            draft,
+            Some((
+                LlmProviderPreset::DeepSeek,
+                "https://api.deepseek.com".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn draft_override_falls_back_to_saved_config_when_incomplete() {
+        // 只传一半、空串、全不传，都退回已落盘的配置，不去猜另一半
+        assert_eq!(draft_override(Some(LlmProviderPreset::OpenAi), None), None);
+        assert_eq!(
+            draft_override(None, Some("https://api.openai.com/v1".to_string())),
+            None
+        );
+        assert_eq!(
+            draft_override(Some(LlmProviderPreset::OpenAi), Some("   ".to_string())),
+            None
+        );
+        assert_eq!(draft_override(None, None), None);
     }
 
     #[test]

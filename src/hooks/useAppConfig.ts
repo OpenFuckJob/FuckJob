@@ -39,10 +39,13 @@ export function useAppConfig() {
     const configAtSaveStart = config;
     setStatus("loading");
     try {
-      await saveAppConfig(value);
-      const savedValue = JSON.stringify(value);
-      savedSnapshot.current = savedValue;
-      setConfig((current) => current === configAtSaveStart ? value : current);
+      // 用后端落盘后的那份而不是提交的那份：保存路径上会做迁移、夹取上下界、
+      // 补生成拟人化的人格种子。拿旧值当已保存快照的话，下次保存又原样提交一遍，
+      // 种子于是每存一次换一个，拟人化的「当天节奏稳定」就不成立了
+      const saved = await saveAppConfig(value);
+      savedSnapshot.current = JSON.stringify(saved);
+      // 保存期间用户可能又改了别处，这时不能拿回包覆盖他正在编辑的内容
+      setConfig((current) => current === configAtSaveStart ? saved : current);
       setStatus("saved");
       setMessage("配置已保存");
       return true;

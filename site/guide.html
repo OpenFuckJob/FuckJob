@@ -1,0 +1,1081 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Fuck Job 使用教程：安装、浏览器环境与大模型配置、简历与岗位筛选、打招呼与自动回复提示词模板、启动运行。"
+    />
+    <title>使用教程 - Fuck Job</title>
+    <style>
+      :root {
+        --bg: #f7f8fb;
+        --surface: #ffffff;
+        --surface-soft: #f1f4f8;
+        --text: #111827;
+        --muted: #667085;
+        --line: #e4e7ec;
+        --primary: #2563eb;
+        --primary-strong: #1d4ed8;
+        --green: #059669;
+        --orange: #ea580c;
+        --shadow: 0 20px 48px rgba(17, 24, 39, 0.08);
+        --radius: 24px;
+        --radius-sm: 16px;
+        --max: 1120px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        margin: 0;
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          "PingFang SC",
+          "Microsoft YaHei",
+          sans-serif;
+        color: var(--text);
+        background: var(--bg);
+        line-height: 1.6;
+      }
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+      img {
+        display: block;
+        max-width: 100%;
+      }
+      code {
+        padding: 2px 6px;
+        border-radius: 6px;
+        background: var(--surface-soft);
+        color: var(--primary-strong);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.92em;
+      }
+
+      .container {
+        width: min(var(--max), calc(100% - 40px));
+        margin: 0 auto;
+      }
+
+      .nav {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        background: rgba(247, 248, 251, 0.82);
+        backdrop-filter: blur(14px);
+        border-bottom: 1px solid var(--line);
+      }
+      .nav-inner {
+        height: 68px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 800;
+      }
+      .brand-mark {
+        width: 36px;
+        height: 36px;
+        display: grid;
+        place-items: center;
+        border-radius: 11px;
+        color: #fff;
+        background: var(--text);
+        font-size: 14px;
+        letter-spacing: -0.04em;
+      }
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: 22px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .nav-links a:hover {
+        color: var(--text);
+      }
+      .nav-links a[aria-current="page"] {
+        color: var(--text);
+        font-weight: 750;
+      }
+      .download-link {
+        padding: 10px 16px;
+        color: #fff;
+        background: var(--primary);
+        border-radius: 999px;
+        font-weight: 700;
+      }
+      .download-link:hover {
+        background: var(--primary-strong);
+        color: #fff;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 24px;
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        min-height: 46px;
+        padding: 12px 18px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: var(--surface);
+        font-weight: 750;
+        transition:
+          transform 0.18s ease,
+          box-shadow 0.18s ease,
+          background 0.18s ease;
+      }
+      .btn:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 12px 28px rgba(17, 24, 39, 0.08);
+      }
+      .btn-primary {
+        color: #fff;
+        background: var(--primary);
+        border-color: var(--primary);
+      }
+      .btn-primary:hover {
+        background: var(--primary-strong);
+        color: #fff;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        color: var(--muted);
+        background: var(--surface);
+        font-size: 14px;
+        font-weight: 650;
+      }
+      .kicker {
+        margin: 0 0 8px;
+        color: var(--primary);
+        font-weight: 800;
+        font-size: 13px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .guide-hero {
+        padding: 54px 0 6px;
+      }
+      .guide-hero h1 {
+        margin: 16px 0 14px;
+        font-size: clamp(34px, 6vw, 56px);
+        line-height: 1.02;
+        letter-spacing: -0.06em;
+      }
+      .guide-hero p {
+        margin: 0;
+        max-width: 660px;
+        color: var(--muted);
+        font-size: 18px;
+      }
+
+      .guide-layout {
+        display: grid;
+        grid-template-columns: 244px minmax(0, 1fr);
+        gap: 36px;
+        align-items: start;
+        padding: 34px 0 12px;
+      }
+      .toc {
+        position: sticky;
+        top: 92px;
+        padding: 18px 20px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        background: var(--surface);
+      }
+      .toc strong {
+        display: block;
+        margin-bottom: 10px;
+        color: var(--muted);
+        font-size: 13px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .toc ol {
+        display: grid;
+        gap: 8px;
+        margin: 0;
+        padding-left: 20px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .toc a:hover {
+        color: var(--primary);
+      }
+
+      .guide-body {
+        display: grid;
+        gap: 14px;
+      }
+      .guide-section {
+        scroll-margin-top: 88px;
+        padding: 26px 28px 30px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--surface);
+        box-shadow: 0 10px 30px rgba(17, 24, 39, 0.04);
+      }
+      .guide-section > h2 {
+        margin: 6px 0 4px;
+        font-size: clamp(25px, 3.4vw, 32px);
+        line-height: 1.12;
+        letter-spacing: -0.045em;
+      }
+      .guide-section h3 {
+        margin: 26px 0 6px;
+        font-size: 20px;
+        letter-spacing: -0.02em;
+      }
+      .guide-section p {
+        margin: 12px 0 0;
+        color: var(--muted);
+        font-size: 15.5px;
+      }
+      .guide-section ul,
+      .guide-section ol {
+        margin: 12px 0 0;
+        padding-left: 22px;
+        color: var(--muted);
+        font-size: 15.5px;
+      }
+      .guide-section li {
+        margin: 6px 0;
+      }
+      .guide-section li strong,
+      .guide-section p strong {
+        color: var(--text);
+      }
+      .guide-section a:not(.btn) {
+        color: var(--primary);
+        font-weight: 650;
+      }
+      .guide-section a:not(.btn):hover {
+        color: var(--primary-strong);
+        text-decoration: underline;
+      }
+
+      .note {
+        margin: 16px 0 0;
+        padding: 14px 16px;
+        border-left: 3px solid var(--primary);
+        border-radius: 12px;
+        background: #eff6ff;
+      }
+      .note p,
+      .note p:first-child {
+        margin: 0;
+        color: #1e40af;
+        font-size: 15px;
+      }
+      .note p + p {
+        margin-top: 6px;
+      }
+      .note strong {
+        color: inherit;
+      }
+      .note-warn {
+        border-left-color: var(--orange);
+        background: #fff7ed;
+      }
+      .note-warn p {
+        color: #9a3412;
+      }
+      .note-ok {
+        border-left-color: var(--green);
+        background: #ecfdf5;
+      }
+      .note-ok p {
+        color: #065f46;
+      }
+
+      figure {
+        margin: 18px 0 0;
+      }
+      figure img {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        background: #fff;
+      }
+      figcaption {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 13.5px;
+      }
+      .figure-row {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+      }
+      .figure-row figure {
+        margin: 0;
+      }
+
+      .prompt {
+        position: relative;
+        margin: 16px 0 0;
+      }
+      .prompt pre {
+        margin: 0;
+        padding: 20px 18px;
+        max-height: 460px;
+        overflow: auto;
+        border-radius: var(--radius-sm);
+        color: #dbeafe;
+        background: #0b1220;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 13px;
+        line-height: 1.75;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .copy {
+        position: absolute;
+        top: 12px;
+        right: 14px;
+        padding: 6px 12px;
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.1);
+        color: #dbeafe;
+        font-family: inherit;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .copy:hover {
+        background: rgba(255, 255, 255, 0.2);
+      }
+
+      .vars {
+        display: grid;
+        gap: 8px;
+        margin: 16px 0 0;
+      }
+      .var {
+        display: grid;
+        grid-template-columns: 200px minmax(0, 1fr);
+        gap: 12px;
+        padding: 12px 14px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--surface-soft);
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .var code {
+        justify-self: start;
+        background: #fff;
+      }
+
+      .steps {
+        display: grid;
+        gap: 12px;
+        margin-top: 18px;
+      }
+      .step {
+        display: grid;
+        grid-template-columns: 42px 1fr;
+        gap: 14px;
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        background: var(--surface-soft);
+      }
+      .num {
+        width: 36px;
+        height: 36px;
+        display: grid;
+        place-items: center;
+        border-radius: 999px;
+        color: #fff;
+        background: var(--primary);
+        font-weight: 800;
+      }
+      .step h3 {
+        margin: 0 0 4px;
+        font-size: 18px;
+      }
+      .step p {
+        margin: 0;
+        font-size: 15px;
+      }
+      .step figure {
+        margin-top: 14px;
+      }
+
+      .faq {
+        display: grid;
+        gap: 10px;
+        margin-top: 18px;
+      }
+      .qa {
+        padding: 14px 16px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--surface-soft);
+      }
+      .qa summary {
+        cursor: pointer;
+        font-weight: 700;
+      }
+      .qa p {
+        margin: 10px 0 0;
+        font-size: 15px;
+      }
+      footer {
+        margin-top: 34px;
+        padding: 34px 0 42px;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .footer-inner {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      footer a {
+        color: var(--text);
+        font-weight: 700;
+      }
+
+      @media (max-width: 900px) {
+        .guide-layout {
+          grid-template-columns: 1fr;
+          gap: 18px;
+        }
+        .toc {
+          position: static;
+          top: auto;
+        }
+        .figure-row {
+          grid-template-columns: 1fr;
+        }
+        .nav-links a:not(.download-link) {
+          display: none;
+        }
+        .var {
+          grid-template-columns: 1fr;
+          gap: 6px;
+        }
+      }
+      @media (max-width: 620px) {
+        .container {
+          width: min(100% - 28px, var(--max));
+        }
+        .guide-hero {
+          padding-top: 38px;
+        }
+        .guide-section {
+          padding: 20px 18px 24px;
+        }
+        .nav-links {
+          gap: 0;
+        }
+        .brand span:last-child {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="nav">
+      <div class="container nav-inner">
+        <a class="brand" href="./index.html" aria-label="Fuck Job 首页">
+          <span class="brand-mark">FJ</span>
+          <span>Fuck Job</span>
+        </a>
+        <nav class="nav-links" aria-label="主要导航">
+          <a href="./index.html#features">功能</a>
+          <a href="./index.html#screens">截图</a>
+          <a href="./index.html#privacy">隐私</a>
+          <a href="./guide.html" aria-current="page">使用教程</a>
+          <a
+            class="download-link"
+            href="https://github.com/OpenFuckJob/FuckJob/releases/latest"
+            target="_blank"
+            rel="noreferrer"
+            >下载最新版</a
+          >
+        </nav>
+      </div>
+    </header>
+    <main id="top">
+      <section class="guide-hero">
+        <div class="container">
+          <span class="badge">📘 使用教程 · 约 10 分钟完成配置</span>
+          <h1>从安装到跑起来。</h1>
+          <p>
+            本教程按实际操作顺序讲解 Fuck Job
+            的安装、浏览器环境与大模型配置、简历与岗位筛选、打招呼与自动回复提示词，以及任务的启动方式。内容与仓库中的
+            <code>docs/user/README.md</code> 保持一致。
+          </p>
+          <div class="actions">
+            <a
+              class="btn btn-primary"
+              href="https://github.com/OpenFuckJob/FuckJob/releases/latest"
+              target="_blank"
+              rel="noreferrer"
+              >⬇️ 下载最新版</a
+            >
+            <a
+              class="btn"
+              href="https://github.com/OpenFuckJob/FuckJob/blob/master/docs/user/README.md"
+              target="_blank"
+              rel="noreferrer"
+              >查看 Markdown 版本</a
+            >
+          </div>
+        </div>
+      </section>
+      <div class="container guide-layout">
+        <aside class="toc" aria-label="教程目录">
+          <strong>目录</strong>
+          <ol>
+            <li><a href="#disclaimer">声明</a></li>
+            <li><a href="#install">安装软件</a></li>
+            <li><a href="#setup">初始化配置</a></li>
+            <li><a href="#resume">简历配置</a></li>
+            <li><a href="#filter">岗位筛选</a></li>
+            <li><a href="#greeting">打招呼配置</a></li>
+            <li><a href="#reply">自动回复</a></li>
+            <li><a href="#analysis">岗位分析</a></li>
+            <li><a href="#run">启动运行</a></li>
+            <li><a href="#faq">常见问题</a></li>
+          </ol>
+        </aside>
+
+        <div class="guide-body">
+          <section class="guide-section" id="disclaimer">
+            <p class="kicker">Step 00</p>
+            <h2>声明</h2>
+            <p>
+              本工具仅供个人求职辅助使用。使用过程中请遵守各招聘平台的服务条款，合理适度使用自动化功能。开发者不承担因使用本工具可能引起的账号限制、数据丢失或其他任何损失的责任。
+            </p>
+            <div class="note note-ok">
+              <p>
+                本项目代码开源，承诺不会收集或泄露任何个人隐私信息。如遇隐私相关问题，请核实软件安装包来源。
+              </p>
+            </div>
+          </section>
+          <section class="guide-section" id="install">
+            <p class="kicker">Step 01</p>
+            <h2>安装软件</h2>
+            <p>
+              从 GitHub Releases 页面下载与你系统匹配的安装包：<a
+                href="https://github.com/OpenFuckJob/FuckJob/releases"
+                target="_blank"
+                rel="noreferrer"
+                >github.com/OpenFuckJob/FuckJob/releases</a
+              >。
+            </p>
+            <figure>
+              <img
+                src="./docs/user/images/1.png"
+                alt="GitHub Releases 下载页面"
+                loading="lazy"
+              />
+              <figcaption>在 Releases 页面选择对应平台的安装包。</figcaption>
+            </figure>
+            <div class="note note-warn">
+              <p>
+                macOS 未签名版本如被系统拦截，可在终端执行
+                <code
+                  >xattr -dr com.apple.quarantine /Applications/fuckJob.app</code
+                >
+                后重新打开。
+              </p>
+            </div>
+          </section>
+          <section class="guide-section" id="setup">
+            <p class="kicker">Step 02</p>
+            <h2>初始化配置</h2>
+            <p>首次启动后，先完成浏览器环境和大模型两项基础配置。</p>
+
+            <h3>1. 浏览器环境配置</h3>
+            <p>
+              软件会自动检测本地已安装的 Chrome 内核浏览器，优先识别 Google
+              Chrome，其次为 Microsoft Edge。
+            </p>
+            <figure>
+              <img
+                src="./docs/user/images/2.png"
+                alt="浏览器环境自动检测结果"
+                loading="lazy"
+              />
+              <figcaption>浏览器环境配置页会显示检测到的可执行文件。</figcaption>
+            </figure>
+            <p>
+              如果已安装 Google Chrome 但未被检测到，请打开浏览器访问
+              <code>chrome://version</code>，手动复制可执行文件路径并填入配置；Edge
+              浏览器对应的地址是 <code>edge://version</code>。
+            </p>
+            <figure>
+              <img
+                src="./docs/user/images/3.png"
+                alt="通过 chrome://version 获取可执行文件路径"
+                loading="lazy"
+              />
+              <figcaption>
+                复制「可执行文件路径」一栏的内容，粘贴到浏览器路径输入框。
+              </figcaption>
+            </figure>
+            <h3>2. 大模型配置</h3>
+            <p>
+              熟悉大模型 API
+              调用的用户可自行配置；不熟悉的可以按下面的步骤使用 DeepSeek。先进入
+              <a
+                href="https://platform.deepseek.com/"
+                target="_blank"
+                rel="noreferrer"
+                >DeepSeek 开放平台</a
+              >，建议先充值少量金额（按实际使用量扣费）。
+            </p>
+            <div class="figure-row">
+              <figure>
+                <img
+                  src="./docs/user/images/5.png"
+                  alt="DeepSeek 开放平台充值页面"
+                  loading="lazy"
+                />
+                <figcaption>按实际用量扣费，先充少量金额即可试用。</figcaption>
+              </figure>
+              <figure>
+                <img
+                  src="./docs/user/images/6.png"
+                  alt="在 DeepSeek 平台创建 API Key"
+                  loading="lazy"
+                />
+                <figcaption>创建一个新的 API Key 并复制保存。</figcaption>
+              </figure>
+            </div>
+            <p>
+              回到软件的「配置中心 → 大模型」，选择 DeepSeek，填入 API Key
+              和模型名称。
+            </p>
+            <div class="figure-row">
+              <figure>
+                <img
+                  src="./docs/user/images/4.png"
+                  alt="软件内大模型配置界面"
+                  loading="lazy"
+                />
+                <figcaption>选择模型提供方，填写 API Key 与模型名称。</figcaption>
+              </figure>
+              <figure>
+                <img
+                  src="./docs/user/images/7.png"
+                  alt="大模型连接测试结果"
+                  loading="lazy"
+                />
+                <figcaption>保存凭证后点击测试连接，确认返回成功。</figcaption>
+              </figure>
+            </div>
+            <div class="note note-warn">
+              <p><strong>请先保存凭证信息，再点击验证连接。</strong></p>
+              <p>
+                未保存就验证会因为读不到密钥而失败。API Key
+                会写入系统钥匙串／凭据库，不会保存在普通配置文件中。
+              </p>
+            </div>
+          </section>
+          <section class="guide-section" id="resume">
+            <p class="kicker">Step 03</p>
+            <h2>简历配置</h2>
+            <p>
+              进入「配置中心 → 求职方案 → 简历配置」，上传 PDF
+              格式的简历文件，并开启「注入 LLM 上下文」。
+            </p>
+            <ul>
+              <li>
+                <strong>简历附件</strong>：选择 PDF
+                文件后会自动解析出文本，解析结果可以在「简历内容」中手动调整。
+              </li>
+              <li>
+                <strong>注入 LLM 上下文</strong>：开启后，打招呼、自动回复和岗位分析都会带上简历内容，生成结果才会贴合你的真实经历。
+              </li>
+            </ul>
+            <div class="figure-row">
+              <figure>
+                <img
+                  src="./docs/user/images/8.png"
+                  alt="简历配置的初始空状态"
+                  loading="lazy"
+                />
+                <figcaption>未上传时的空状态：先选择 PDF 简历文件。</figcaption>
+              </figure>
+              <figure>
+                <img
+                  src="./docs/user/images/9.png"
+                  alt="简历上传完成并开启注入 LLM 上下文"
+                  loading="lazy"
+                />
+                <figcaption>解析完成后确认文本内容，并开启上下文注入。</figcaption>
+              </figure>
+            </div>
+          </section>
+          <section class="guide-section" id="filter">
+            <p class="kicker">Step 04</p>
+            <h2>岗位筛选</h2>
+            <p>在配置中心根据个人需求设置岗位筛选条件，常用的几项：</p>
+            <ul>
+              <li>
+                <strong>公司关键词</strong>：包含或排除指定公司，直接过滤掉不想投的对象。
+              </li>
+              <li>
+                <strong>目标岗位要求</strong>：用自然语言描述你想要的岗位，供 AI 复核时参考。
+              </li>
+              <li>
+                <strong>高级筛选</strong>：支持正则匹配规则，也可以让 AI 帮你生成规则。
+              </li>
+              <li>
+                <strong>AI 岗位意图复核</strong>：关键词和正则规则筛选通过后，再根据岗位职责复核一次；复核失败或模型异常时会跳过岗位，避免误投。开启后可以识别描述虚假或明显偏离的岗位。
+              </li>
+            </ul>
+            <figure>
+              <img
+                src="./docs/user/images/10.png"
+                alt="岗位筛选与 AI 岗位意图复核配置"
+                loading="lazy"
+              />
+              <figcaption>
+                关键词、AI 岗位意图复核与高级正则规则在同一页配置。
+              </figcaption>
+            </figure>
+            <figure>
+              <img
+                src="./docs/user/images/11.png"
+                alt="岗位筛选条件与拟人化设置"
+                loading="lazy"
+              />
+              <figcaption>按薪酬、经验、学历等维度收窄投递范围。</figcaption>
+            </figure>
+            <div class="note">
+              <p>
+                建议同时开启<strong>拟人化</strong>，让操作节奏更接近真人，降低被平台风控识别的概率。
+              </p>
+            </div>
+          </section>
+          <section class="guide-section" id="greeting">
+            <p class="kicker">Step 05</p>
+            <h2>打招呼配置</h2>
+            <p>
+              开启 LLM 打招呼功能，并按需填写提示词。下面这份模板可以直接复制使用：
+            </p>
+            <div class="prompt">
+              <button class="copy" type="button">复制</button>
+              <pre>
+你是一个求职者，正在BOSS直聘上与招聘方沟通。请根据以下内容生成一段开场的打招呼用语。
+
+【严格要求】
+1. 严禁使用任何占位符，例如“X年”、“Y年”、“某技术”、“XX公司”等。也不要用括号标注“待补充”之类的内容。
+2. 如果简历（见下方“我的简历”）为空或缺少某些信息（如工作年限、具体技能），请使用模糊但自然的说法，例如“我有相关经验”、“熟悉该领域”、“有多年实践经验”等。绝对不能编造具体数字或占位符。
+3. 必须保证生成的文本是可以直接发送给HR的完整句子，无需人工修改。
+4. 总字数控制在60~120字。
+5. 结尾以开放式提问结束，例如“方便进一步沟通吗？”或“您觉得我的方向匹配吗？”。
+
+【示例】
+简历为空或信息很少时，正确写法：
+“您好，我对贵公司招聘的Java开发岗很感兴趣。我熟悉Spring Cloud等微服务框架，有相关项目经验。看到岗位中涉及高并发系统设计，这正是我所擅长的方向。方便进一步沟通吗？”
+错误写法（包含占位符）：
+“我有X年Java经验” 或 “我有3年经验（但实际上没有提供）”。
+
+=== 我的简历（可能为空） ===
+{{resume_context}}
+
+=== 当前岗位信息 ===
+{{job_content}}
+
+请直接输出打招呼文本，不要加额外解释。
+</pre>
+            </div>
+            <div class="vars">
+              <div class="var">
+                <code>{{resume_context}}</code>
+                <span>自动替换为简历配置中的简历文本（可能为空）。</span>
+              </div>
+              <div class="var">
+                <code>{{job_content}}</code>
+                <span>自动替换为当前正在沟通的岗位信息。</span>
+              </div>
+            </div>
+            <figure>
+              <img
+                src="./docs/user/images/12.png"
+                alt="打招呼配置与提示词填写"
+                loading="lazy"
+              />
+              <figcaption>填写提示词后，打招呼文本由模型按岗位实时生成。</figcaption>
+            </figure>
+            <div class="note">
+              <p>
+                建议再补充一份<strong>简历图片</strong>，HR
+                无需下载附件就能直接预览你的基本信息，回复率通常更高。
+              </p>
+            </div>
+          </section>
+          <section class="guide-section" id="reply">
+            <p class="kicker">Step 06</p>
+            <h2>自动回复</h2>
+            <p>如希望简化沟通流程，可选择「仅 AI 回复」模式，并填写自动回复提示词：</p>
+            <div class="prompt">
+              <button class="copy" type="button">复制</button>
+              <pre>
+你现在是一名在 Boss直聘 平台上和 HR 沟通的求职者。
+
+系统会提供以下上下文：
+
+1. 当前岗位信息；
+2. 求职者个人简历；
+3. 历史聊天记录；
+4. 额外补充说明（可选）。
+
+你的任务：
+
+* 结合上下文，生成一条适合发送给 HR 的回复；
+* 回复风格真实自然，符合中文求职聊天习惯；
+* 回复要简短，不啰嗦，避免长篇大论；
+* 保持礼貌、职业化，但不要过于正式；
+* 优先突出岗位匹配度、沟通意愿、到岗时间、项目经验等关键信息；
+* 如果 HR 提问，直接回答问题，不要答非所问；
+* 如果信息不足，可以礼貌追问；
+* 避免模板化、机械化表达；
+* 输出仅包含最终回复内容，不要添加解释。
+
+输入格式：
+【岗位信息】
+{{job_description}}
+
+【个人简历】
+{{resume}}
+
+【额外补充】
+{{background_context}}
+
+【历史聊天】
+{{chat_history}}
+
+请生成一条适合发送给 HR 的简短回复。
+</pre>
+            </div>
+            <div class="vars">
+              <div class="var">
+                <code>{{job_description}}</code>
+                <span>当前岗位的职位描述。</span>
+              </div>
+              <div class="var">
+                <code>{{resume}}</code>
+                <span>简历配置中的个人简历文本。</span>
+              </div>
+              <div class="var">
+                <code>{{background_context}}</code>
+                <span>你额外补充的说明，例如到岗时间、薪资预期。</span>
+              </div>
+              <div class="var">
+                <code>{{chat_history}}</code>
+                <span>与该 HR 的历史聊天记录。</span>
+              </div>
+            </div>
+            <figure>
+              <img
+                src="./docs/user/images/13.png"
+                alt="自动回复模式与提示词配置"
+                loading="lazy"
+              />
+              <figcaption>选择回复模式并填写提示词，可随时切回人工确认。</figcaption>
+            </figure>
+          </section>
+          <section class="guide-section" id="analysis">
+            <p class="kicker">Step 07</p>
+            <h2>岗位分析</h2>
+            <p>
+              岗位分析会结合岗位描述与简历上下文，辅助判断匹配度和沟通重点。该功能可根据需要选择性开启，不开启也能正常投递。
+            </p>
+          </section>
+
+          <section class="guide-section" id="run">
+            <p class="kicker">Step 08</p>
+            <h2>启动运行</h2>
+            <div class="steps">
+              <article class="step">
+                <div class="num">1</div>
+                <div>
+                  <h3>先执行环境检查</h3>
+                  <p>
+                    软件会自动检测浏览器环境和 BOSS
+                    直聘账号登录状态。如未登录，会展示登录二维码，使用 BOSS 直聘
+                    App 扫码即可。
+                  </p>
+                  <div class="figure-row">
+                    <figure>
+                      <img
+                        src="./docs/user/images/15.png"
+                        alt="环境检查执行界面"
+                        loading="lazy"
+                      />
+                      <figcaption>环境检查会逐项校验运行前置条件。</figcaption>
+                    </figure>
+                    <figure>
+                      <img
+                        src="./docs/user/images/16.png"
+                        alt="扫码登录二维码"
+                        loading="lazy"
+                      />
+                      <figcaption>未登录时展示二维码，App 扫码完成登录。</figcaption>
+                    </figure>
+                  </div>
+                </div>
+              </article>
+              <article class="step">
+                <div class="num">2</div>
+                <div>
+                  <h3>在「工作台」中添加任务并开始运行</h3>
+                  <p>
+                    创建任务后即可开始运行，任务状态与实时日志都会显示在工作台，可随时暂停或干预。
+                  </p>
+                  <div class="figure-row">
+                    <figure>
+                      <img
+                        src="./docs/user/images/14.png"
+                        alt="工作台添加任务"
+                        loading="lazy"
+                      />
+                      <figcaption>在工作台添加任务并设置运行参数。</figcaption>
+                    </figure>
+                    <figure>
+                      <img
+                        src="./docs/user/images/17.png"
+                        alt="任务运行与实时日志"
+                        loading="lazy"
+                      />
+                      <figcaption>运行过程中可观察日志，确认投递与沟通结果。</figcaption>
+                    </figure>
+                  </div>
+                </div>
+              </article>
+            </div>
+          </section>
+          <section class="guide-section" id="faq">
+            <p class="kicker">FAQ</p>
+            <h2>常见问题</h2>
+            <div class="faq">
+              <details class="qa">
+                <summary>已安装 Chrome，但软件检测不到浏览器</summary>
+                <p>
+                  打开 <code>chrome://version</code>（Edge 为
+                  <code>edge://version</code>），复制「可执行文件路径」并手动填入浏览器环境配置。
+                </p>
+              </details>
+              <details class="qa">
+                <summary>大模型测试连接失败</summary>
+                <p>
+                  先确认已经保存凭证再点击验证；然后检查 API Key
+                  是否有效、模型名称是否填写正确、平台账户是否还有余额。
+                </p>
+              </details>
+              <details class="qa">
+                <summary>打招呼内容里出现「X年」这类占位符</summary>
+                <p>
+                  保留提示词中【严格要求】的第 1、2
+                  条，并确认简历配置里已开启「注入 LLM
+                  上下文」，否则模型拿不到真实信息就会编造占位符。
+                </p>
+              </details>
+              <details class="qa">
+                <summary>担心被平台风控</summary>
+                <p>
+                  开启拟人化，控制单次任务的投递量，并合理适度使用自动化功能，遵守平台服务条款。
+                </p>
+              </details>
+            </div>
+          </section>
+        </div>
+      </div>
+
+    </main>
+
+    <footer>
+      <div class="container footer-inner">
+        <span>© 2026 Fuck Job · Apache License 2.0</span>
+        <span
+          ><a href="./index.html">返回首页</a>
+          ·
+          <a
+            href="https://github.com/OpenFuckJob/FuckJob/issues"
+            target="_blank"
+            rel="noreferrer"
+            >提交 Issue</a
+          >
+          ·
+          <a
+            href="https://github.com/OpenFuckJob/FuckJob/releases/latest"
+            target="_blank"
+            rel="noreferrer"
+            >Latest Release</a
+          ></span
+        >
+      </div>
+    </footer>
+
+    <script>
+      document.querySelectorAll(".prompt").forEach(function (box) {
+        var btn = box.querySelector(".copy");
+        var pre = box.querySelector("pre");
+        if (!btn || !pre) return;
+        btn.addEventListener("click", function () {
+          var text = pre.textContent.trim();
+          var done = function (label) {
+            btn.textContent = label;
+            setTimeout(function () {
+              btn.textContent = "复制";
+            }, 1600);
+          };
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(
+              function () {
+                done("已复制");
+              },
+              function () {
+                done("复制失败");
+              },
+            );
+          } else {
+            done("复制失败");
+          }
+        });
+      });
+    </script>
+  </body>
+</html>

@@ -10,13 +10,17 @@ pub fn load_app_config(app_handle: tauri::AppHandle) -> CommandResult<AppRuntime
     }
 }
 
+/// 保存配置，并把**落盘后**的那份交回前端。
+///
+/// 保存路径上会做迁移、夹取、补生成人格种子，落盘内容与提交内容并不相同。
+/// 前端拿这个返回值刷新自己手里的配置，才不会带着旧值继续编辑
 #[tauri::command]
 pub fn save_app_config(
     app_handle: tauri::AppHandle,
     config: AppRuntimeConfig,
-) -> CommandResult<()> {
+) -> CommandResult<AppRuntimeConfig> {
     match config::save_app_config_inner(app_handle, config) {
-        Ok(()) => CommandResult::ok(()),
+        Ok(saved) => CommandResult::ok(saved),
         Err(err) => CommandResult::err(err),
     }
 }

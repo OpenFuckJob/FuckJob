@@ -3,7 +3,7 @@ import { Alert, Button, ConfigProvider, Spin, Tabs, Typography } from "antd";
 import { RocketOutlined } from "@ant-design/icons";
 import "./App.css";
 import { useAppConfig } from "@/hooks/useAppConfig";
-import { copyJobProfile, DEFAULT_REGEX_RULE_LIMIT, getAnalysisConfig, getDefaultJobProfile, getJobProfiles, getPlatformFilterConfig, getReplyPollingConfig, selectProfileAfterRemoval, type AnalysisConfig, type AppRuntimeConfig, type BrowserConfig, type GreetConfig, type GreetResource, type JobFilterConfig, type JobProfile, type PlatformFilterConfig, type RegexRule, type ReplayConfig, type ReplyPollingConfig, type ReplyResource, type ReplyTemplate, type ResumeConfig } from "@/types/app-config";
+import { copyJobProfile, DEFAULT_REGEX_RULE_LIMIT, getAnalysisConfig, getDefaultJobProfile, getHumanizeConfig, getJobProfiles, getPeriodicDeliveryConfig, getPlatformFilterConfig, getReplyPollingConfig, isLlmActive, isLlmConfigured, selectProfileAfterRemoval, type AnalysisConfig, type AppRuntimeConfig, type BrowserConfig, type GreetConfig, type GreetResource, type HumanizeConfig, type JobFilterConfig, type JobProfile, type PeriodicDeliveryConfig, type PlatformFilterConfig, type RegexRule, type ReplayConfig, type ReplyPollingConfig, type ReplyResource, type ReplyTemplate, type ResumeConfig } from "@/types/app-config";
 import type { JobDetail } from "@/types/job-detail";
 import { Onboarding } from "@/view/onboarding";
 import { ConfigPage } from "@/view/config";
@@ -39,9 +39,11 @@ function MainShell({ config, update, save, status, message, dirty, importConfig,
   const [activeTab, setActiveTab] = useState<AppTabKey>("workspace");
   const [focusJobId, setFocusJobId] = useState<string>();
   const [interviewJob, setInterviewJob] = useState<JobDetail>();
-  const [configGroup, setConfigGroup] = useState<"resume" | "llm" | "job" | "greet" | "reply" | "analysis" | "browser">("resume");
+  const [configGroup, setConfigGroup] = useState<"resume" | "llm" | "job" | "greet" | "reply" | "analysis" | "browser">("job");
   const [activeProfileId, setActiveProfileId] = useState(() => getDefaultJobProfile(config).id);
   const profiles = getJobProfiles(config);
+  const llmConfigured = isLlmConfigured(config);
+  const llmActive = isLlmActive(config);
   const activeProfile = profiles.find((profile) => profile.id === activeProfileId)
     ?? getDefaultJobProfile(config);
   const profileConfig = useMemo(() => ({
@@ -55,6 +57,10 @@ function MainShell({ config, update, save, status, message, dirty, importConfig,
     replay_config: activeProfile.replay_config,
     analysis_config: getAnalysisConfig(activeProfile),
   }), [activeProfile, config, profiles]);
+
+  // 填了一半的大模型服务也照常落盘：它只是草稿，后端不会拿它去发起调用。
+  // 曾经这里要拦下不完整的草稿，是因为后端拒绝保存——那反过来卡死了配置页，
+  // 模型名要拉列表才知道，拉列表又得先把这份配置连同密钥存好。
   useEffect(() => {
     if (!dirty || status === "loading" || status === "error") return;
     const timer = window.setTimeout(() => { void save(); }, 700);
@@ -96,6 +102,11 @@ function MainShell({ config, update, save, status, message, dirty, importConfig,
   // 轮询节奏是顶层配置，但同样可能整块缺失，不能直接走 merge
   const updatePolling = (next: Partial<ReplyPollingConfig>) =>
     update((c) => ({ ...c, reply_polling_config: { ...getReplyPollingConfig(c), ...next } }));
+  const updatePeriodicDelivery = (next: Partial<PeriodicDeliveryConfig>) =>
+    update((c) => ({ ...c, periodic_delivery_config: { ...getPeriodicDeliveryConfig(c), ...next } }));
+  // 拟人化同样是顶层配置，旧配置里整块缺失，不能直接走 merge
+  const updateHumanize = (next: Partial<HumanizeConfig>) =>
+    update((c) => ({ ...c, humanize_config: { ...getHumanizeConfig(c), ...next } }));
   const updateProfiles = (nextProfiles: JobProfile[], defaultId = config.default_job_profile_id) => update((c) => ({
     ...c,
     job_profiles: nextProfiles,
@@ -127,6 +138,7 @@ function MainShell({ config, update, save, status, message, dirty, importConfig,
     onOpenLlmConfig={openLlm}
     updateLlm={(llm_config) => update((c) => ({ ...c, llm_config }))}
     persistLlm={async (llm_config) => save({ ...config, llm_config })}
+    updateLlmEnabled={(llm_enabled) => update((c) => ({ ...c, llm_enabled }))}
     updateLlmFallbacks={(llm_fallbacks) => update((c) => ({ ...c, llm_fallbacks }))}
     updateLlmRetryConfig={(llm_retry_config) => update((c) => ({ ...c, llm_retry_config }))}
     persistConfig={() => save()}
@@ -146,6 +158,8 @@ function MainShell({ config, update, save, status, message, dirty, importConfig,
     removeReplyResource={(ti: number, ri: number) => updateActiveProfile((p) => ({ ...p, replay_config: { ...p.replay_config, templates: p.replay_config.templates.map((t, i) => i === ti ? { ...t, content: t.content.filter((_, x) => x !== ri) } : t) } }))}
     updateAnalysis={updateAnalysis}
     updatePolling={updatePolling}
+    updatePeriodicDelivery={updatePeriodicDelivery}
+    updateHumanize={updateHumanize}
     updateBrowser={(v: Partial<BrowserConfig>) => merge("browser_config", v)} updateResume={(v: Partial<ResumeConfig>) => updateProfileSection("resume_config", v)}
     updateRule={(i: number, v: Partial<RegexRule>) => updateActiveProfile((p) => ({ ...p, job_filter_config: { ...p.job_filter_config, regex_rules: updateAt(p.job_filter_config.regex_rules, i, v) } }))}
     addRule={() => updateActiveProfile((p) => ({ ...p, job_filter_config: { ...p.job_filter_config, regex_rules: [...p.job_filter_config.regex_rules, { name: "", pattern: "", target: "All", mode: "ACCEPT" }] } }))}
@@ -153,7 +167,7 @@ function MainShell({ config, update, save, status, message, dirty, importConfig,
     removeRule={(i: number) => updateActiveProfile((p) => ({ ...p, job_filter_config: { ...p.job_filter_config, regex_rules: p.job_filter_config.regex_rules.filter((_, x) => x !== i) } }))}
     importConfig={importConfig} exportConfig={exportConfig} />;
 
-  const content = activeTab === "workspace" ? <WorkspacePage config={config} onNavigate={(tab) => void navigate(tab)} onOpenConfig={openConfig} onOpenConversation={openConversation} /> : activeTab === "job-overview" ? <JobOverviewPage onNavigate={(target) => target === "job-data" ? navigate("job-data") : openConfig(target)} onOpenConversation={openConversation} /> : activeTab === "job-data" ? <JobDataPage aiConfigured={!!config.llm_config} onConfigureAi={openLlm} focusJobId={focusJobId} onFocusHandled={clearFocusJob} highMatchScore={getAnalysisConfig(getDefaultJobProfile(config)).high_match_score} onStartInterview={startInterview} /> : activeTab === "conversation-debug" ? <ConversationDebugPage aiConfigured={!!config.llm_config} onConfigureAi={openLlm} /> : activeTab === "resume-optimizer" ? <ResumeOptimizerPage config={profileConfig} onOpenLlmConfig={openLlm} onUpdateResume={(resume_content) => updateProfileSection("resume_config", { resume_content })} pendingInterviewJob={interviewJob} onPendingInterviewHandled={clearInterviewJob} /> : configPage;
+  const content = activeTab === "workspace" ? <WorkspacePage config={config} onNavigate={(tab) => void navigate(tab)} onOpenConfig={openConfig} onOpenConversation={openConversation} /> : activeTab === "job-overview" ? <JobOverviewPage onNavigate={(target) => target === "job-data" ? navigate("job-data") : openConfig(target)} onOpenConversation={openConversation} /> : activeTab === "job-data" ? <JobDataPage aiConfigured={llmActive} llmConfigured={llmConfigured} onConfigureAi={openLlm} focusJobId={focusJobId} onFocusHandled={clearFocusJob} highMatchScore={getAnalysisConfig(getDefaultJobProfile(config)).high_match_score} onStartInterview={startInterview} /> : activeTab === "conversation-debug" ? <ConversationDebugPage aiConfigured={llmActive} llmConfigured={llmConfigured} onConfigureAi={openLlm} /> : activeTab === "resume-optimizer" ? <ResumeOptimizerPage config={profileConfig} llmConfigured={llmConfigured} onOpenLlmConfig={openLlm} onUpdateResume={(resume_content) => updateProfileSection("resume_config", { resume_content })} pendingInterviewJob={interviewJob} onPendingInterviewHandled={clearInterviewJob} /> : configPage;
   return (
     <main className="app-shell">
       <header className="app-header">

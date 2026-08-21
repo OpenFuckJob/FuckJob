@@ -11,8 +11,10 @@ use crate::{
         common::{upload_image_to_file_input, RpaJob},
         conversation::SendVerdict,
         greet::build_greet_resources,
+        human_pace::GreetPacer,
         liepin::LIEPIN_SITE_URL,
         run_flow::is_job_task_stop_requested,
+        schedule::{BudgetVerdict, RoundBudget},
     },
     utils::salary::decode_salary,
     verify,
@@ -22,12 +24,15 @@ use rust_drission::{utils::sleep_random_ms, ChromiumPage, Page};
 use serde::Deserialize;
 use urlencoding::encode;
 
-pub async fn position_say_hello(config: &AppRuntimeConfig) -> Result<(), anyhow::Error> {
+pub async fn position_say_hello(
+    config: &AppRuntimeConfig,
+    budget: RoundBudget,
+) -> Result<(), anyhow::Error> {
     let config = config.clone();
     browser::with_browser(|connection| {
-        Box::pin(
-            async move { position_say_hello_on_page(connection, connection.tab(), &config).await },
-        )
+        Box::pin(async move {
+            position_say_hello_on_page(connection, connection.tab(), &config, budget).await
+        })
     })
     .await
 }
@@ -37,8 +42,13 @@ pub async fn position_say_hello_on_page(
     connection: &ChromiumPage,
     page: &Page,
     config: &AppRuntimeConfig,
+    budget: RoundBudget,
 ) -> Result<(), anyhow::Error> {
     let config = config.clone();
+    let round_started = Instant::now();
+    // 页级 RoundStats 每页都会重置，而预算按整轮算，所以另攒两个整轮计数
+    let mut round_greeted = 0u32;
+    let mut consecutive_greet_failures = 0u32;
     let search_url = build_job_search_url(&config);
     let mut processed_job_ids: HashSet<String> = job_detail_dao::list()
         .unwrap_or_default()
@@ -51,6 +61,9 @@ pub async fn position_say_hello_on_page(
     ))?;
 
     let mut seen_job_ids: HashSet<String> = HashSet::new();
+    // 休息节奏从用户设的单轮上限派生。拟人化关着时它是个空壳，
+    // 停顿仍是改造前那段固定间隔
+    let mut pacer = GreetPacer::new(&config.humanize_config, budget.max_greets);
 
     logger::info(format!("正在打开猎聘职位搜索页: {}", search_url))?;
     page.get(&search_url)?;
@@ -61,6 +74,15 @@ pub async fn position_say_hello_on_page(
     loop {
         if is_job_task_stop_requested() {
             logger::info("猎聘求职任务已结束")?;
+            return Ok(());
+        }
+        if let Some(reason) = budget_stop_reason(
+            &budget,
+            round_greeted,
+            round_started,
+            consecutive_greet_failures,
+        ) {
+            logger::info(reason)?;
             return Ok(());
         }
 
@@ -75,6 +97,16 @@ pub async fn position_say_hello_on_page(
         for job in jobs {
             if is_job_task_stop_requested() {
                 logger::info("猎聘求职任务已结束")?;
+                return Ok(());
+            }
+            if let Some(reason) = budget_stop_reason(
+                &budget,
+                round_greeted,
+                round_started,
+                consecutive_greet_failures,
+            ) {
+                logger::info(stats.summary())?;
+                logger::info(reason)?;
                 return Ok(());
             }
 
@@ -93,6 +125,13 @@ pub async fn position_say_hello_on_page(
             let filter_decision = verify::filter_decision(&job, &config);
             if !filter_decision.matched {
                 stats.skipped_rule += 1;
+                continue;
+            }
+            // 「每个符合条件的岗位都投」是人做不到的事。放在语义复核之前，
+            // 跳过的岗位不烧模型额度
+            if pacer.should_skim() {
+                stats.skipped_humanize += 1;
+                logger::info(format!("拟人化跳过本岗位：{}", job.title))?;
                 continue;
             }
 
@@ -131,29 +170,71 @@ pub async fn position_say_hello_on_page(
                 AnalysisTrigger::FilterPassed,
                 &config,
             );
-            match greet_job(connection, job.clone(), config.clone()).await {
+            let greeted = match greet_job(connection, job.clone(), config.clone()).await {
                 Ok(false) => {
                     stats.skipped_hold += 1;
+                    consecutive_greet_failures = 0;
+                    false
                 }
                 Ok(true) => {
                     stats.greeted += 1;
+                    round_greeted += 1;
+                    consecutive_greet_failures = 0;
                     processed_job_ids.insert(format!("liepin:{}", job.platform_job_id));
                     processed_job_ids.insert(job.platform_job_id.clone());
+                    true
                 }
                 Err(error) => {
                     stats.greet_failed += 1;
+                    consecutive_greet_failures += 1;
                     logger::warning(greet_failure_message(&job.title, &job.company_name, &error))?;
                     continue;
                 }
+            };
+            // 停顿、以及连投若干条之后的休息都在这里面。收到停止请求时立即收尾，
+            // 不能让用户等完一段十几分钟的休息
+            if !pacer.after_greet(greeted).await {
+                logger::info(stats.summary())?;
+                logger::info("猎聘求职任务已结束")?;
+                return Ok(());
             }
-            sleep_random_ms(2500, 4500);
         }
 
         logger::info(stats.summary())?;
+        if let Some(summary) = pacer.summary() {
+            logger::info(summary)?;
+        }
 
         if !scroll_next(page)? {
             logger::info("猎聘岗位列表已触底")?;
             return Ok(());
+        }
+    }
+}
+
+/// 把预算判定翻译成本轮的结束语。预算还够时返回 None。
+///
+/// 提前结束不是故障，文案必须说清楚「下一轮还会继续」，否则用户会以为投递挂了
+fn budget_stop_reason(
+    budget: &RoundBudget,
+    round_greeted: u32,
+    round_started: Instant,
+    consecutive_greet_failures: u32,
+) -> Option<&'static str> {
+    match budget.check(
+        round_greeted,
+        round_started.elapsed(),
+        consecutive_greet_failures,
+    ) {
+        BudgetVerdict::Continue => None,
+        BudgetVerdict::GreetLimit => {
+            Some("猎聘本轮打招呼条数已达设定上限，提前结束本轮；周期投递会在下一轮继续")
+        }
+        BudgetVerdict::TimeLimit => {
+            Some("猎聘本轮运行时长已达设定上限，提前结束本轮；周期投递会在下一轮继续")
+        }
+        BudgetVerdict::FailureLimit => {
+            Some("猎聘连续多次打招呼失败，可能已达平台每日沟通上限或触发了安全验证，本轮提前结束")
         }
     }
 }
@@ -168,6 +249,8 @@ struct RoundStats {
     skipped_rule: u32,
     /// AI 语义复核未通过或失败
     skipped_ai: u32,
+    /// 被拟人化随机跳过（「只看不投」）
+    skipped_humanize: u32,
     /// 内容通过了复核，但发送前被闸门整轮拦下（例如模型判断不该投）
     skipped_hold: u32,
     greeted: u32,
@@ -177,13 +260,14 @@ struct RoundStats {
 impl RoundStats {
     fn summary(&self) -> String {
         format!(
-            "猎聘本页 {} 条岗位：打招呼成功 {} 条，失败 {} 条；已沟通跳过 {} 条，规则过滤跳过 {} 条，AI 复核跳过 {} 条，发送闸门拦下 {} 条",
+            "猎聘本页 {} 条岗位：打招呼成功 {} 条，失败 {} 条；已沟通跳过 {} 条，规则过滤跳过 {} 条，AI 复核跳过 {} 条，拟人化跳过 {} 条，发送闸门拦下 {} 条",
             self.scanned,
             self.greeted,
             self.greet_failed,
             self.skipped_processed,
             self.skipped_rule,
             self.skipped_ai,
+            self.skipped_humanize,
             self.skipped_hold
         )
     }
@@ -1519,6 +1603,7 @@ mod tests {
             skipped_processed: 28,
             skipped_rule: 8,
             skipped_ai: 3,
+            skipped_humanize: 2,
             skipped_hold: 4,
             greeted: 2,
             greet_failed: 1,
@@ -1532,6 +1617,8 @@ mod tests {
         assert!(summary.contains("已沟通跳过 28 条"));
         assert!(summary.contains("规则过滤跳过 8 条"));
         assert!(summary.contains("AI 复核跳过 3 条"));
+        // 拟人化跳过必须和「规则不匹配」分开记，否则用户会以为自己筛选条件写错了
+        assert!(summary.contains("拟人化跳过 2 条"));
         assert!(summary.contains("发送闸门拦下 4 条"));
     }
 

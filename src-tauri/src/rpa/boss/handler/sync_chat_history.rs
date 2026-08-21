@@ -14,7 +14,7 @@ use crate::{
         boss::{
             handler::{
                 chat_list::{self, conversation_key, ListState},
-                parse_chat_messages, parse_encrypt_job_id,
+                parse_chat_messages, parse_encrypt_job_id, MessageDirection,
             },
             model::ChatMessage,
             BOSS_CHAT_URL,
@@ -385,6 +385,8 @@ pub async fn sync_chat_history_on_page(
     let mut result = ChatHistorySyncResult::default();
     let mut seen = HashSet::new();
     let mut stagnant_rounds = 0;
+    // 我方 uid 一轮内不变，跨会话攒着用，见 [`MessageDirection`]
+    let mut direction = MessageDirection::default();
 
     // 会话列表为虚拟滚动列表：不断处理当前已渲染项并向下滚动，
     // 连续三轮没有新会话时认为到达底部。
@@ -444,8 +446,8 @@ pub async fn sync_chat_history_on_page(
                 continue;
             };
 
-            let messages =
-                parse_chat_messages(&history_body).context("解析周期间歇历史对话失败")?;
+            let messages = parse_chat_messages(&history_body, &mut direction)
+                .context("解析周期间歇历史对话失败")?;
             let dom_snapshot = extract_job_snapshot_from_dom(page);
             let api_snapshot = merge_snapshot(
                 boss_data_body
@@ -607,6 +609,7 @@ mod tests {
                 ]
               }
             }"#,
+            &mut MessageDirection::default(),
         )
         .expect("简历附件消息应能解析");
 

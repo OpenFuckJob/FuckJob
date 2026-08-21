@@ -2,6 +2,7 @@ use crate::command::base::CommandResult;
 use crate::config;
 use crate::dao::model::{ChatMessageRecord, InterviewJobAnalysis, JobDetail};
 use crate::dao::{analysis_dao, chat_message_dao, job_detail_dao};
+use crate::job_description::ParsedJobDescription;
 use chrono::{Duration, Local, NaiveDate, NaiveDateTime, TimeZone};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -630,6 +631,22 @@ pub fn job_delete(id: String) -> CommandResult<()> {
     }
 }
 
+/// 岗位描述的结构化视图。
+///
+/// 前端不再自己洗一遍 JD：清洗规则跟着平台页面结构走，前后端各存一份必然漂移。
+/// 页面要展示什么就从这个出口取，和喂给模型的是同一份文本
+#[tauri::command]
+pub fn job_description_view(job_id: String) -> CommandResult<ParsedJobDescription> {
+    match job_detail_dao::get_by_id(&job_id) {
+        Ok(Some(job)) => CommandResult::ok(crate::job_description::parse(
+            &job.detail,
+            &job.platform,
+        )),
+        Ok(None) => CommandResult::err(format!("岗位不存在: {}", job_id)),
+        Err(e) => CommandResult::err(e.to_string()),
+    }
+}
+
 #[tauri::command]
 pub fn chat_messages_by_job(job_id: String) -> CommandResult<Vec<ChatMessageRecord>> {
     match chat_message_dao::find_by_job_id(&job_id) {
@@ -675,6 +692,9 @@ struct LlmAnalysisOutput {
 }
 
 fn build_analysis_prompt(job: &JobDetail) -> String {
+    // 抓下来的 JD 混着反爬注入的样式代码和噪声词，原样喂进去既占额度又干扰判断，
+    // 统一走 job_description 这个出口洗一遍
+    let detail = crate::job_description::clean_text(&job.detail, &job.platform);
     // 只填岗位骨架；resume_context / background_context / chat_context 这些
     // 业务变量留给后续的模板渲染，两层的替换时机不同不能混做
     crate::agent::prompts::compose(
@@ -684,7 +704,7 @@ fn build_analysis_prompt(job: &JobDetail) -> String {
             ("JOB_COMPANY", &job.company_name),
             ("JOB_SALARY", &job.salary),
             ("JOB_LOCATION", job.location.as_deref().unwrap_or("-")),
-            ("JOB_DETAIL", &job.detail),
+            ("JOB_DETAIL", &detail),
         ],
     )
 }
@@ -745,7 +765,11 @@ pub async fn job_analyze_batch(
         Err(e) => return CommandResult::err(format!("加载配置失败: {}", e)),
     };
     if app_config.llm_chain().is_empty() {
-        return CommandResult::err("请先配置大模型服务".to_string());
+        return CommandResult::err(if app_config.llm_configured() {
+            "大模型已停用，请先启用模型服务".to_string()
+        } else {
+            "请先配置大模型服务".to_string()
+        });
     }
     let skip_analyzed = skip_analyzed.unwrap_or(true);
 

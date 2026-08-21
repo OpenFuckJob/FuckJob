@@ -12,7 +12,7 @@ use crate::{
     command::base::CommandResult,
     dao::{chat_message_dao, job_detail_dao, model::JobDetail},
     logger,
-    rpa::boss::handler::{parse_chat_messages, parse_encrypt_job_id},
+    rpa::boss::handler::{parse_chat_messages, parse_encrypt_job_id, MessageDirection},
     rpa::run_flow::{is_job_task_stop_requested, try_start_job_task, JobTaskRunningGuard},
     utils::salary::decode_salary,
 };
@@ -116,6 +116,8 @@ async fn collect_communicated_jobs_from_browser(
     let mut jobs = Vec::new();
     let mut seen_ids = HashSet::new();
     let mut messages_inserted = 0;
+    // 我方 uid 一轮内不变，跨会话攒着用，见 [`MessageDirection`]
+    let mut direction = MessageDirection::default();
 
     for page_no in 1..=page_limit {
         if is_job_task_stop_requested() {
@@ -158,7 +160,7 @@ async fn collect_communicated_jobs_from_browser(
                 continue;
             }
 
-            match collect_conversation_messages(page, &snapshot, &id) {
+            match collect_conversation_messages(page, &snapshot, &id, &mut direction) {
                 Ok(inserted) => {
                     messages_inserted += inserted;
                     if inserted > 0 {
@@ -263,6 +265,7 @@ fn collect_conversation_messages(
     page: &ChromiumPage,
     snapshot: &CommunicatedJobCardSnapshot,
     fallback_job_id: &str,
+    direction: &mut MessageDirection,
 ) -> Result<usize, anyhow::Error> {
     let history_listener = page.listen_url("zpchat/geek/historyMsg")?;
     let boss_data_listener = page.listen_url("zpchat/geek/getBossData")?;
@@ -287,7 +290,7 @@ fn collect_conversation_messages(
     };
 
     let body_str = String::from_utf8(body).context("historyMsg 响应非 UTF-8 编码")?;
-    let chat_messages = parse_chat_messages(&body_str)?;
+    let chat_messages = parse_chat_messages(&body_str, direction)?;
     // BOSS 的 encryptJobId 同时充当会话标识与岗位标识
     let saved = chat_message_dao::upsert_incremental(
         chat_message_dao::ConversationKey {
@@ -520,26 +523,15 @@ fn extract_detail_text(page: &Page) -> Result<String, anyhow::Error> {
     })()
     "#;
     let value = page.run_js_await(script)?;
-    let raw_text = extract_remote_value(value)
+    // 原样落库：清洗规则跟着平台页面结构走，统一放在读取侧的
+    // [`crate::job_description`] 里。写入时就洗掉，规则一改旧数据就再也救不回来了
+    Ok(extract_remote_value(value)
         .as_str()
         .unwrap_or("")
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
         .trim()
-        .to_string();
-
-    Ok(sanitize_boss_job_detail(&raw_text))
-}
-
-fn sanitize_boss_job_detail(text: &str) -> String {
-    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-    let marker = "职位描述";
-    let body = normalized
-        .find(marker)
-        .map(|index| &normalized[index + marker.len()..])
-        .unwrap_or(normalized.as_str());
-
-    let cleaned = body.trim().trim_start_matches([':', '：', '-', '—']).trim();
-
-    cleaned.replace("\n\n\n", "\n\n")
+        .to_string())
 }
 
 fn scroll_page_once(page: &ChromiumPage) -> Result<(), anyhow::Error> {
@@ -640,13 +632,17 @@ mod tests {
         );
     }
 
+    /// 抓到的原文原样落库，「职位描述」这类标题留给读取侧切小节用
     #[test]
-    fn sanitizes_boss_detail_text_before_job_description_heading() {
+    fn keeps_scraped_detail_intact_for_the_read_side_parser() {
         let raw = "微信扫码分享\n举\n报\n职位描述\n负责推荐系统后端开发。\n要求熟悉 Rust。";
+        let parsed = crate::job_description::parse(raw, "boss");
 
+        assert_eq!(parsed.sections.len(), 1);
+        assert_eq!(parsed.sections[0].title, "职位描述");
         assert_eq!(
-            sanitize_boss_job_detail(raw),
-            "负责推荐系统后端开发。\n要求熟悉 Rust。"
+            parsed.sections[0].items,
+            vec!["负责推荐系统后端开发。", "要求熟悉 Rust。"]
         );
     }
 

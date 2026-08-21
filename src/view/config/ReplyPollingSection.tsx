@@ -1,4 +1,4 @@
-import { Select, Typography } from "antd";
+import { Button, Typography } from "antd";
 import {
   ClockCircleOutlined,
   DeploymentUnitOutlined,
@@ -8,8 +8,10 @@ import {
 } from "@ant-design/icons";
 import {
   DEFAULT_REPLY_POLLING_CONFIG,
+  HOURS_PER_DAY,
   type ReplyPollingConfig,
 } from "../../types/app-config";
+import HourGrid from "@/components/HourGrid";
 import {
   SettingGroup,
   SettingHeading,
@@ -19,10 +21,69 @@ import {
 
 const { Text } = Typography;
 
-const HOUR_OPTIONS = Array.from({ length: 24 }, (_, hour) => ({
-  value: hour,
-  label: `${String(hour).padStart(2, "0")}:00`,
-}));
+const REPLY_WINDOW_PRESETS: Array<{ label: string; start: number; end: number }> = [
+  { label: "工作时间 9-18", start: 9, end: 18 },
+  { label: "白天 9-22", start: 9, end: 22 },
+  { label: "夜间 22-08", start: 22, end: 8 },
+  { label: "全天", start: 0, end: 0 },
+];
+
+const clampStartHour = (hour: number) =>
+  Math.min(Math.max(Math.round(hour), 0), HOURS_PER_DAY - 1);
+const clampEndHour = (hour: number) =>
+  Math.min(Math.max(Math.round(hour), 0), HOURS_PER_DAY);
+const hourLabel = (hour: number) =>
+  `${String(hour).padStart(2, "0")}:00`;
+
+export function replyActiveHoursToGrid(
+  config: Pick<ReplyPollingConfig, "active_start_hour" | "active_end_hour">,
+): boolean[] {
+  const start = clampStartHour(config.active_start_hour);
+  const end = clampEndHour(config.active_end_hour);
+  if (start === end) return Array.from({ length: HOURS_PER_DAY }, () => true);
+  return Array.from({ length: HOURS_PER_DAY }, (_, hour) =>
+    start < end ? hour >= start && hour < end : hour >= start || hour < end,
+  );
+}
+
+export function replyGridToActiveHours(hours: boolean[]): Pick<
+  ReplyPollingConfig,
+  "active_start_hour" | "active_end_hour"
+> {
+  const selected = hours
+    .slice(0, HOURS_PER_DAY)
+    .map((enabled, hour) => (enabled ? hour : null))
+    .filter((hour): hour is number => hour !== null);
+  if (selected.length === 0 || selected.length === HOURS_PER_DAY) {
+    return { active_start_hour: 0, active_end_hour: 0 };
+  }
+
+  let largestGap = -1;
+  let start = selected[0];
+  let end = (selected[selected.length - 1] + 1) % HOURS_PER_DAY;
+  for (let index = 0; index < selected.length; index += 1) {
+    const current = selected[index];
+    const next = selected[(index + 1) % selected.length];
+    const gap = (next - current - 1 + HOURS_PER_DAY) % HOURS_PER_DAY;
+    if (gap > largestGap) {
+      largestGap = gap;
+      start = next;
+      end = (current + 1) % HOURS_PER_DAY;
+    }
+  }
+
+  return { active_start_hour: start, active_end_hour: end };
+}
+
+export function describeReplyActiveHours(
+  config: Pick<ReplyPollingConfig, "active_start_hour" | "active_end_hour">,
+): string {
+  const start = clampStartHour(config.active_start_hour);
+  const end = clampEndHour(config.active_end_hour);
+  return start === end || (start === 0 && end === HOURS_PER_DAY)
+    ? "全天回复"
+    : `${hourLabel(start)}-${hourLabel(end)} 回复`;
+}
 
 interface Props {
   config: ReplyPollingConfig;
@@ -97,29 +158,30 @@ export default function ReplyPollingSection({ config, onChange }: Props) {
           onChange={(checked) => onChange({ active_hours_enabled: checked })}
         >
           {config.active_hours_enabled && (
-            <div className="flex flex-wrap items-center gap-3">
-              <Select
-                aria-label="回复时段起点"
-                className="w-32"
-                prefix={<ClockCircleOutlined className="text-slate-400" />}
-                value={config.active_start_hour}
-                options={HOUR_OPTIONS}
-                onChange={(value) => onChange({ active_start_hour: value })}
+            <div className="space-y-2">
+              <HourGrid
+                label="回复时段"
+                value={replyActiveHoursToGrid(config)}
+                onChange={(hours) => onChange(replyGridToActiveHours(hours))}
               />
-              <span className="text-slate-400 text-xs">至</span>
-              <Select
-                aria-label="回复时段终点"
-                className="w-32"
-                prefix={<ClockCircleOutlined className="text-slate-400" />}
-                value={config.active_end_hour}
-                options={HOUR_OPTIONS}
-                onChange={(value) => onChange({ active_end_hour: value })}
-              />
-              {config.active_start_hour === config.active_end_hour && (
-                <span className="text-amber-600 text-xs">
-                  起止相同表示全天回复
-                </span>
-              )}
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-slate-400">快捷</span>
+                {REPLY_WINDOW_PRESETS.map((preset) => (
+                  <Button
+                    key={preset.label}
+                    size="small"
+                    onClick={() => onChange({
+                      active_start_hour: preset.start,
+                      active_end_hour: preset.end,
+                    })}
+                  >
+                    {preset.label}
+                  </Button>
+                ))}
+              </div>
+              <div className="text-xs text-slate-500">
+                当前：{describeReplyActiveHours(config)}
+              </div>
             </div>
           )}
         </SettingToggle>

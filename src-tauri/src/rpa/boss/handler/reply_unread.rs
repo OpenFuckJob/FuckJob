@@ -57,6 +57,8 @@ pub async fn reply_unread_on_page(
     // 后面的才会补上来。handled 只是最后一道防线，兜住「处理完仍赖在列表里」的
     // 会话，免得同一张卡片被无限重试
     let mut handled: HashSet<String> = HashSet::new();
+    // 我方 uid 一轮内不变，跨会话攒着用，见 [`MessageDirection`]
+    let mut direction = MessageDirection::default();
     // 未读堆积时不能一口气全处理完：单轮耗时一旦超过轮询间隔，
     // 后面每一轮都在追赶上一轮的尾巴，节奏彻底乱掉。剩下的留给下一轮
     let max_per_round = app_runtime_config
@@ -140,7 +142,7 @@ pub async fn reply_unread_on_page(
             continue;
         };
         let body_str = String::from_utf8(body_bytes).context("historyMsg 响应非 UTF-8 编码")?;
-        let fresh = parse_chat_messages(&body_str)?;
+        let fresh = parse_chat_messages(&body_str, &mut direction)?;
 
         // 处理这一个会话时出的错不该让整轮未读中断：后面还有别的会话等着
         if let Err(error) =
@@ -403,12 +405,57 @@ fn describe_action(action: ReplyAction) -> &'static str {
     }
 }
 
+/// 跨会话累积的收发方判定线索。
+///
+/// 招聘者 uid 只挂在 `body.type == 8` 的岗位卡片消息上，而这条消息未必落在本次
+/// 拉取的分页里。缺了它就无从区分收发，旧实现一律当成对方发来，整段会话在沟通
+/// 记录里会全部挤到左侧——实测 467 个会话里有 6 个这样，且都是聊得最久的。
+///
+/// 但「我方 uid」在一轮任务里是不变的：只要有任意一个会话拿到了招聘者 uid，
+/// 剩下的 uid 必然是自己（BOSS 会话都是一对一）。把它记下来往后传，缺岗位卡片
+/// 的会话就能反着判。
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct MessageDirection {
+    self_uid: Option<i64>,
+}
+
+impl MessageDirection {
+    /// 已知招聘者 uid 时，同一会话里另一个 uid 就是自己。
+    ///
+    /// 收发两侧都要看：只有招聘者单方发言的会话，`from` 里挑不出自己，
+    /// 但每条消息的 `to` 都指向自己。
+    fn learn(&mut self, boss_uid: i64, counterpart: Option<i64>) {
+        if self.self_uid.is_some() {
+            return;
+        }
+        if let Some(uid) = counterpart.filter(|uid| *uid != boss_uid) {
+            self.self_uid = Some(uid);
+        }
+    }
+
+    /// `true` 表示招聘者发来的消息，`false` 表示自己发出的。
+    fn is_received(&self, boss_uid: Option<i64>, from_uid: Option<i64>) -> bool {
+        match (boss_uid, from_uid, self.self_uid) {
+            (Some(boss), Some(from), _) => from == boss,
+            // 缺岗位卡片时退回「我方 uid」反推
+            (None, Some(from), Some(own)) => from != own,
+            // 两个线索都没有，只能沿用旧兜底：宁可当成对方发来，也不要把
+            // 招聘者的话认成自己说的
+            _ => true,
+        }
+    }
+}
+
 // 从 historyMsg 接口响应中解析消息列表
 //
 // 发送方判断逻辑：
 //   第一条 body.type == 8 的消息携带 body.jobDesc.boss.uid（招聘者 uid）。
 //   后续每条消息：from.uid == boss_uid 则 received=true（招聘者发来），否则 received=false（自己发送）。
-pub(crate) fn parse_chat_messages(body: &str) -> Result<Vec<ChatMessage>, anyhow::Error> {
+//   本次响应里没有岗位卡片消息时，改用 `direction` 中跨会话攒下的我方 uid 反推。
+pub(crate) fn parse_chat_messages(
+    body: &str,
+    direction: &mut MessageDirection,
+) -> Result<Vec<ChatMessage>, anyhow::Error> {
     let root: serde_json::Value = serde_json::from_str(body).context("historyMsg JSON 解析失败")?;
 
     let code = root.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
@@ -437,6 +484,15 @@ pub(crate) fn parse_chat_messages(body: &str) -> Result<Vec<ChatMessage>, anyhow
             None
         }
     });
+
+    // 这个会话认出了招聘者，顺手把我方 uid 记下来给后面缺岗位卡片的会话用
+    if let Some(boss) = boss_uid {
+        for msg in messages {
+            for path in ["/from/uid", "/to/uid"] {
+                direction.learn(boss, msg.pointer(path).and_then(|v| v.as_i64()));
+            }
+        }
+    }
 
     fn first_attachment_name(value: &serde_json::Value) -> Option<String> {
         match value {
@@ -509,10 +565,7 @@ pub(crate) fn parse_chat_messages(body: &str) -> Result<Vec<ChatMessage>, anyhow
             let mid = msg.get("mid").and_then(|v| v.as_i64())?;
             let from_uid = msg.pointer("/from/uid").and_then(|v| v.as_i64());
             // received=true 表示招聘者（boss）发来的消息，false 表示自己发送的
-            let received = match (boss_uid, from_uid) {
-                (Some(boss), Some(from)) => from == boss,
-                _ => true, // 无法判断时默认视为对方发来
-            };
+            let received = direction.is_received(boss_uid, from_uid);
             let time = msg.get("time").and_then(|v| v.as_i64()).unwrap_or(0);
             let from_name = msg
                 .pointer("/from/name")
@@ -589,12 +642,85 @@ mod tests {
                 ]
               }
             }"#,
+            &mut MessageDirection::default(),
         )
         .expect("简历附件消息应能解析");
 
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].text, "简历文件：张三-Java开发简历.pdf");
         assert!(!messages[0].received);
+    }
+
+    /// 缺岗位卡片的会话，靠上一个会话攒下的我方 uid 反推收发方。
+    /// 没有这条兜底时整段会话会被判成对方发来，沟通记录里全挤在左侧。
+    #[test]
+    fn falls_back_to_learned_self_uid_when_job_card_missing() {
+        let mut direction = MessageDirection::default();
+
+        // 第一个会话带岗位卡片，从中认出招聘者 10，反推出我方是 20
+        parse_chat_messages(
+            r#"{
+              "code": 0,
+              "zpData": {
+                "messages": [
+                  {
+                    "mid": 1, "time": 1000,
+                    "from": {"uid": 10, "name": "招聘者"}, "to": {"uid": 20},
+                    "body": {"type": 8, "jobDesc": {"boss": {"uid": 10}}}
+                  }
+                ]
+              }
+            }"#,
+            &mut direction,
+        )
+        .expect("首个会话应能解析");
+
+        // 第二个会话分页里没有岗位卡片，招聘者换成了 30
+        let messages = parse_chat_messages(
+            r#"{
+              "code": 0,
+              "zpData": {
+                "messages": [
+                  {
+                    "mid": 2, "time": 2000,
+                    "from": {"uid": 30, "name": "曾女士"}, "to": {"uid": 20},
+                    "body": {"type": 1, "text": "方便聊聊吗"}
+                  },
+                  {
+                    "mid": 3, "time": 3000,
+                    "from": {"uid": 20, "name": "我"}, "to": {"uid": 30},
+                    "body": {"type": 1, "text": "方便的"}
+                  }
+                ]
+              }
+            }"#,
+            &mut direction,
+        )
+        .expect("缺岗位卡片的会话也应能解析");
+
+        assert_eq!(messages.len(), 2);
+        assert!(messages[0].received, "招聘者发来的");
+        assert!(!messages[1].received, "自己发出的");
+    }
+
+    /// 两个线索都没有时沿用旧兜底：宁可当成对方发来，
+    /// 也不能把招聘者的话认成自己说的
+    #[test]
+    fn defaults_to_received_without_any_uid_hint() {
+        let messages = parse_chat_messages(
+            r#"{
+              "code": 0,
+              "zpData": {
+                "messages": [
+                  {"mid": 1, "time": 1000, "from": {"uid": 30}, "body": {"type": 1, "text": "在吗"}}
+                ]
+              }
+            }"#,
+            &mut MessageDirection::default(),
+        )
+        .expect("无 uid 线索时也应能解析");
+
+        assert!(messages[0].received);
     }
 
     #[test]

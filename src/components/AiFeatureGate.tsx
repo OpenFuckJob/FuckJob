@@ -1,14 +1,30 @@
 import type { ReactNode } from "react";
 import { Alert, Button, Space } from "antd";
 
-export function AiFeatureGate({ configured, onConfigure, children }: { configured: boolean; onConfigure: () => void; children: ReactNode }) {
-  if (configured) return <>{children}</>;
+export function AiFeatureGate({
+  active,
+  configured = active,
+  onConfigure,
+  children,
+}: {
+  active: boolean;
+  configured?: boolean;
+  onConfigure: () => void;
+  children: ReactNode;
+}) {
+  if (active) return <>{children}</>;
   return (
     <Alert
-      type="info"
+      type={configured ? "warning" : "info"}
       showIcon
-      message="AI 是可选功能，当前尚未配置大模型"
-      description={<Space direction="vertical"><span>其他本地功能仍可正常使用。</span><Button size="small" type="primary" onClick={onConfigure}>配置大模型</Button></Space>}
+      message={configured ? "大模型已停用" : "AI 是可选功能，当前尚未配置大模型"}
+      description={
+        <Space direction="vertical">
+          <Button size="small" type="primary" onClick={onConfigure}>
+            {configured ? "去启用" : "配置大模型"}
+          </Button>
+        </Space>
+      }
     />
   );
 }

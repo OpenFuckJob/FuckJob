@@ -6,25 +6,67 @@ use crate::{
     config::{ReplayResourceType, ReplyResource},
     logger,
     rpa::common::upload_image_to_file_input,
+    rpa::human_input,
+    rpa::run_flow::is_job_task_stop_requested,
 };
+
+const CHAT_INPUT_SELECTOR: &str = "#chat-input";
+const SEND_BUTTON_SELECTOR: &str = ".chat-op .btn-send";
 
 // 发送文本消息
 pub fn send_text_message(page: &Page, greeting: &str) -> Result<bool, anyhow::Error> {
-    let greeting_js = serde_json::to_string(greeting).map_err(|e| anyhow!("{}", e))?;
-    page.wait(".chat-op .btn-send", Duration::from_secs(10))?;
-    page.run_js(&format!(
-        "document.querySelector('#chat-input').textContent = {};",
-        greeting_js
-    ))?;
+    page.wait(SEND_BUTTON_SELECTOR, Duration::from_secs(10))?;
+    if !type_greeting(page, greeting)? {
+        return Ok(false);
+    }
+    // 逐字输入一条长招呼语要几十秒，这中间用户完全可能点了停止。
+    // 内容已经填进输入框了，但按不按发送是另一回事
+    if is_job_task_stop_requested() {
+        logger::info("任务已停止，本条消息未发送")?;
+        return Ok(false);
+    }
     // input-area
     sleep_random_ms(900, 1500);
-    let send_btn_selector = ".chat-op .btn-send";
-    let send_btn_ele = page.ele(send_btn_selector)?;
+    let send_btn_ele = page.ele(SEND_BUTTON_SELECTOR)?;
     if let Some(send_btn_ele) = send_btn_ele {
-        send_btn_ele.click()?;
+        human_input::click(page, &send_btn_ele)?;
         return Ok(true);
     }
     Ok(false)
+}
+
+/// 把招呼语填进聊天输入框。
+///
+/// 拟人化开着时逐字符敲进去——CDP 的 `Input.insertText` 触发的是真实的
+/// `beforeinput` / `input`，而直接给 `textContent` 赋值这一路，站点侧看到的是
+/// 内容凭空出现、没有任何输入事件。
+///
+/// 打字这条路只要没走通就整段回退到赋值：残缺的半句话发给 HR 比机器特征糟得多，
+/// 所以回退前先把输入框清空，绝不在已有内容上接着写
+fn type_greeting(page: &Page, greeting: &str) -> Result<bool, anyhow::Error> {
+    if let Some(input) = page.ele(CHAT_INPUT_SELECTOR)? {
+        match human_input::type_text(page, &input, greeting) {
+            Ok(true) => return Ok(true),
+            Ok(false) => clear_chat_input(page)?,
+            Err(error) => {
+                logger::warning(format!("逐字输入失败，改用整段填入：{error}"))?;
+                clear_chat_input(page)?;
+            }
+        }
+    }
+
+    let greeting_js = serde_json::to_string(greeting).map_err(|e| anyhow!("{}", e))?;
+    page.run_js(&format!(
+        "document.querySelector('{CHAT_INPUT_SELECTOR}').textContent = {greeting_js};"
+    ))?;
+    Ok(true)
+}
+
+fn clear_chat_input(page: &Page) -> Result<(), anyhow::Error> {
+    page.run_js(&format!(
+        "(() => {{ const el = document.querySelector('{CHAT_INPUT_SELECTOR}'); if (el) el.textContent = ''; }})();"
+    ))?;
+    Ok(())
 }
 
 // 不加 `input[type=file]` 裸兜底：Boss 聊天页还有简历上传框，误命中会把图片塞错地方

@@ -3,6 +3,7 @@ import {
   Alert,
   Button,
   Card,
+  Drawer,
   Image,
   Modal,
   Radio,
@@ -26,6 +27,8 @@ import {
   PlayCircleOutlined,
   RocketOutlined,
   SendOutlined,
+  SlidersOutlined,
+  UndoOutlined,
   WarningOutlined,
 } from "@ant-design/icons";
 import { invoke } from "@tauri-apps/api/core";
@@ -41,18 +44,26 @@ import type {
   PlatformKind,
 } from "../../types/rpa";
 import {
+  buildPeriodicPlan,
   countJobTasks,
+  describePeriodicDelivery,
+  describePeriodicPlan,
   isActiveJobTask,
 } from "../../types/rpa";
+import type { PeriodicPlan } from "../../types/rpa";
 import type { JobDetail } from "../../types/job-detail";
 import ManualReviewDrawer, { useManualReview } from "./manual-review-drawer";
 import {
   getDefaultJobProfile,
   getJobProfiles,
+  getPeriodicDeliveryConfig,
   getReplyPollingConfig,
   type AppRuntimeConfig,
+  type PeriodicDeliveryConfig,
 } from "../../types/app-config";
-import { NumberField } from "../../components/NumberField";
+import PeriodicDeliverySection, {
+  canResetPeriodicDelivery,
+} from "../config/PeriodicDeliverySection";
 
 type CheckPhase = "idle" | "checking" | "done";
 
@@ -210,10 +221,6 @@ const TASK_STATE_ORDER: Record<JobTaskInfo["status"], number> = {
 
 const PLATFORM_ORDER: PlatformKind[] = ["boss", "liepin"];
 
-const DEFAULT_INTERVAL_MINUTES = 30;
-const MIN_INTERVAL_MINUTES = 1;
-const MAX_INTERVAL_MINUTES = 1440;
-
 export function sortTasksForQueue(tasks: JobTaskInfo[]): JobTaskInfo[] {
   return [...tasks].sort((left, right) => {
     const stateOrder = TASK_STATE_ORDER[left.status] - TASK_STATE_ORDER[right.status];
@@ -264,6 +271,22 @@ function taskStateColor(status: JobTaskInfo["status"]): string {
   }[status];
 }
 
+/**
+ * 周期投递里挡住启动的配置问题，没有问题时返回 null。
+ *
+ * 「开了时段限制却一格都没选」是个安静的陷阱：任务能入队、能跑，但永远等不到
+ * 可投的时刻，日志上只会看到一句「暂停投递」然后再无下文。挡在启动之前才说得清
+ */
+export function describePeriodicBlocker(
+  config: Pick<PeriodicDeliveryConfig, "interval_minutes" | "window_enabled" | "windows">,
+): string | null {
+  if (config.interval_minutes <= 0) return "投递间隔必须大于 0 分钟";
+  if (config.window_enabled && config.windows.length === 0) {
+    return "投递时段一格都没选，任务不会投递";
+  }
+  return null;
+}
+
 export function requestStopJobTask(taskId: string): Promise<CommandResult<void>> {
   return invoke<CommandResult<void>>("stop_job_task", { taskId });
 }
@@ -306,7 +329,11 @@ const WorkspacePage = ({
   const [logContent, setLogContent] = useState("");
   const [startModalOpen, setStartModalOpen] = useState(false);
   const [selectedMode, setSelectedMode] = useState<FlowMode>("job_hunting");
-  const [intervalMinutes, setIntervalMinutes] = useState<number>(DEFAULT_INTERVAL_MINUTES);
+  // 弹窗里的周期参数是本次任务的，改动不回写配置——配置页存的只是初值
+  const [periodicDraft, setPeriodicDraft] = useState<PeriodicDeliveryConfig>(() =>
+    getPeriodicDeliveryConfig(config),
+  );
+  const [paramsDrawerOpen, setParamsDrawerOpen] = useState(false);
   const [selectedProfileId, setSelectedProfileId] = useState<string>(() => getDefaultJobProfile(config).id);
   const [platform, setPlatform] = useState<PlatformKind>("boss");
   const [reviewDrawerOpen, setReviewDrawerOpen] = useState(false);
@@ -441,7 +468,7 @@ const WorkspacePage = ({
     async (
       startedPlatform: PlatformKind,
       mode: FlowMode,
-      intervalMinutes?: number,
+      plan?: PeriodicPlan,
       profileId?: string,
     ) => {
       setPendingStartPlatforms((current) => ({
@@ -452,7 +479,7 @@ const WorkspacePage = ({
         const result = await invoke<CommandResult<JobTaskInfo>>("start_job_task", {
           platform: startedPlatform,
           mode,
-          intervalMinutes: mode === "periodic_job_hunting" ? intervalMinutes : undefined,
+          plan: mode === "periodic_job_hunting" ? plan : undefined,
           profileId: mode === "job_hunting" || mode === "periodic_job_hunting" ? profileId : undefined,
         });
         if (!result.success || !result.data) {
@@ -482,11 +509,18 @@ const WorkspacePage = ({
     setModalPlatform(targetPlatform);
     setSelectedMode("job_hunting");
     setSelectedProfileId(getDefaultJobProfile(config).id);
+    // 每次打开都从配置重新取初值，上一次弹窗里的临时改动不该粘在这一次上
+    setPeriodicDraft(getPeriodicDeliveryConfig(config));
+    setParamsDrawerOpen(false);
     setStartModalOpen(true);
   }, [config]);
 
+  const closeParamsDrawer = useCallback(() => setParamsDrawerOpen(false), []);
+
   const closeStartModal = useCallback(() => {
     setStartModalOpen(false);
+    // 抽屉挂在弹窗之上，弹窗关了它还浮着就成了没有来路的孤儿面板
+    setParamsDrawerOpen(false);
   }, []);
 
   const handleStartConfirm = useCallback(async () => {
@@ -494,14 +528,15 @@ const WorkspacePage = ({
     await handleRpaFlow(
       modalPlatform,
       selectedMode,
-      selectedMode === "periodic_job_hunting" ? intervalMinutes : undefined,
+      // 「最长运行 N 小时」在这里才换算成绝对结束时刻，基准是点下确认的这一刻
+      selectedMode === "periodic_job_hunting" ? buildPeriodicPlan(periodicDraft) : undefined,
       selectedMode === "job_hunting" || selectedMode === "periodic_job_hunting" ? selectedProfileId : undefined,
     );
   }, [
     closeStartModal,
     handleRpaFlow,
-    intervalMinutes,
     modalPlatform,
+    periodicDraft,
     selectedMode,
     selectedProfileId,
   ]);
@@ -562,6 +597,98 @@ const WorkspacePage = ({
   const replyRate = totalJobs > 0 ? `${((repliedCount / totalJobs) * 100).toFixed(0)}%` : "—";
   const runningModeLabel = `${taskCounts.running} / ${taskOverview.max_parallel_tasks}`;
   const pendingReviewCount = manualReview.records.length;
+
+  /** 摘要区的一行：左侧窄标签、右侧内容，两行之间靠这个网格对齐 */
+  const summaryRow = (label: string, content: React.ReactNode) => (
+    <>
+      <Typography.Text type="secondary" style={{ fontSize: 13 }}>{label}</Typography.Text>
+      <div style={{ minWidth: 0 }}>{content}</div>
+    </>
+  );
+
+  const profileRow = summaryRow(
+    "求职方案",
+    <>
+      <Select
+        aria-label="本次使用的求职方案"
+        style={{ width: "100%" }}
+        value={selectedProfileId}
+        onChange={setSelectedProfileId}
+        options={getJobProfiles(config).filter((profile) => !profile.archived).map((profile) => ({
+          value: profile.id,
+          label: `${profile.name}${profile.id === (config.default_job_profile_id || getDefaultJobProfile(config).id) ? "（默认）" : ""}`,
+        }))}
+      />
+      <Typography.Text type="secondary" style={{ display: "block", marginTop: 4, fontSize: 12 }}>
+        入队后固定使用该方案快照，之后改配置不影响本次任务
+      </Typography.Text>
+    </>,
+  );
+
+  /**
+   * 选中模式后，在列表下方的摘要区交代这次任务的关键参数。
+   *
+   * 摘要区只出结论，不出表单：周期投递那六项参数都有合理默认，绝大多数启动
+   * 不需要动，铺在确认按钮上方只会把一个可选项渲染成必填项。要改的走抽屉
+   */
+  const renderModeSummary = (mode: FlowMode): React.ReactNode => {
+    const polling = getReplyPollingConfig(config);
+    switch (mode) {
+      case "job_hunting":
+        return profileRow;
+      case "periodic_job_hunting":
+        return (
+          <>
+            {profileRow}
+            {summaryRow(
+              "运行节奏",
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, justifyContent: "space-between" }}>
+                  <Typography.Text style={{ fontSize: 12 }}>
+                    {describePeriodicDelivery(periodicDraft)}
+                  </Typography.Text>
+                  <Button size="small" icon={<SlidersOutlined />} onClick={() => setParamsDrawerOpen(true)}>
+                    调整参数
+                  </Button>
+                </div>
+                {periodicBlocker && (
+                  // 按钮灰着却不说为什么，用户只会以为程序坏了
+                  <Typography.Text style={{ display: "block", marginTop: 4, fontSize: 12, color: "#d97706" }}>
+                    {periodicBlocker}，请在「调整参数」里修正
+                  </Typography.Text>
+                )}
+              </div>,
+            )}
+          </>
+        );
+      case "reply_unread":
+        return summaryRow(
+          "求职方案",
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            按会话自动路由：每条未读消息沿用首次联系该岗位时使用的方案
+          </Typography.Text>,
+        );
+      case "polling_reply":
+        return summaryRow(
+          "轮询节奏",
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            每 {polling.interval_minutes} 分钟检查一次新消息
+            {polling.active_hours_enabled
+              ? `，只在 ${polling.active_start_hour}:00 - ${polling.active_end_hour}:00 之间回复`
+              : "，全天回复"}
+            。可在「配置中心 · 自动回复」调整
+          </Typography.Text>,
+        );
+      case "sync_chat_history":
+        return null;
+    }
+  };
+
+  const periodicBlocker =
+    selectedMode === "periodic_job_hunting"
+      ? describePeriodicBlocker(periodicDraft)
+      : null;
+  const modeSummary = renderModeSummary(selectedMode);
 
   const statTiles: StatTile[] = [
     {
@@ -692,7 +819,7 @@ const WorkspacePage = ({
               </div>
 
               {currentEnvironment.phase === "idle" ? (
-                <Typography.Text type="secondary" style={{ fontSize: 12.5 }}>尚未检查。需要确认登录状态时点击右侧按钮，本次结果会保留在当前平台卡片中。</Typography.Text>
+                <Typography.Text type="secondary" style={{ fontSize: 12.5 }}>尚未检查。需要确认登录状态时点击右侧按钮。</Typography.Text>
               ) : (
                 <Steps
                   size="small"
@@ -772,7 +899,6 @@ const WorkspacePage = ({
             type="info"
             showIcon
             message={queueTasks.length === 0 ? "任务队列为空" : "当前筛选下没有任务"}
-            description={queueTasks.length === 0 ? "从左侧添加任务后，会在这里显示执行状态和顺序。" : "可切换为全部或另一个平台查看任务。"}
           />
         ) : (
           <div
@@ -827,6 +953,11 @@ const WorkspacePage = ({
                     <Typography.Text type="secondary" style={{ display: "block", marginTop: 2, fontSize: 11.5 }}>
                       方案：{getTaskProfileLabel(task)}
                     </Typography.Text>
+                    {task.plan && (
+                      <Typography.Text type="secondary" style={{ display: "block", marginTop: 2, fontSize: 11.5 }}>
+                        节奏：{describePeriodicPlan(task.plan)}
+                      </Typography.Text>
+                    )}
                   </div>
                   <Tag color={taskStateColor(task.status)} style={{ width: "fit-content" }}>
                     {taskStateLabel(task.status)}{queuePosition ? ` · 第 ${queuePosition} 位` : ""}
@@ -856,98 +987,104 @@ const WorkspacePage = ({
         title={`添加 ${PLATFORM_META[modalPlatform].label} 任务`}
         open={startModalOpen}
         centered
-        width={640}
-        styles={{ body: { maxHeight: "60vh", overflowY: "auto", paddingRight: 4 } }}
+        // 参数都搬进抽屉之后这里只剩五行列表加两行摘要，再宽就是一片空白
+        width={680}
+        styles={{ body: { maxHeight: "60vh", overflowY: "auto" } }}
         onOk={() => void handleStartConfirm()}
         onCancel={closeStartModal}
         okText="确认启动"
         cancelText="取消"
         okButtonProps={{
-          disabled:
-            modalTaskStartPending ||
-            (selectedMode === "periodic_job_hunting" &&
-              (!intervalMinutes || intervalMinutes <= 0)),
+          disabled: modalTaskStartPending || !!periodicBlocker,
         }}
       >
-        <Space direction="vertical" size={16} style={{ width: "100%", paddingTop: 8 }}>
-          <Radio.Group
-            value={selectedMode}
-            onChange={(event) => setSelectedMode(event.target.value)}
-            style={{ width: "100%" }}
-          >
-            <Space direction="vertical" style={{ width: "100%" }} size={12}>
-              {FLOW_MODE_OPTIONS.filter(
-                (option) => modalPlatform === "boss" || option.key !== "sync_chat_history",
-              ).map((option) => (
-                <Card
-                  key={option.key}
-                  size="small"
-                  hoverable
-                  style={{
-                    borderColor: selectedMode === option.key ? "#1677ff" : undefined,
-                    background: selectedMode === option.key ? "rgba(22, 119, 255, 0.02)" : undefined,
-                  }}
-                  onClick={() => setSelectedMode(option.key)}
-                >
-                  <Radio value={option.key}>
-                    <Space direction="vertical" size={0}>
-                      <Typography.Text strong>{option.label}</Typography.Text>
-                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>{option.description}</Typography.Text>
-                    </Space>
-                  </Radio>
-                </Card>
-              ))}
-            </Space>
-          </Radio.Group>
+        <Radio.Group
+          value={selectedMode}
+          onChange={(event) => setSelectedMode(event.target.value)}
+          style={{ width: "100%", paddingTop: 4 }}
+        >
+          {FLOW_MODE_OPTIONS.filter(
+            (option) => modalPlatform === "boss" || option.key !== "sync_chat_history",
+          ).map((option) => {
+            const selected = selectedMode === option.key;
+            return (
+              <div
+                key={option.key}
+                onClick={() => setSelectedMode(option.key)}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "168px 1fr",
+                  alignItems: "center",
+                  gap: 12,
+                  padding: "9px 12px",
+                  borderRadius: 8,
+                  cursor: "pointer",
+                  background: selected ? "rgba(22, 119, 255, 0.07)" : undefined,
+                }}
+              >
+                <Radio value={option.key}>
+                  <Typography.Text strong={selected}>{option.label}</Typography.Text>
+                </Radio>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {option.description}
+                </Typography.Text>
+              </div>
+            );
+          })}
+        </Radio.Group>
 
-          {selectedMode === "periodic_job_hunting" && (
-            <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 12px", background: "#f8fafc", borderRadius: 8 }}>
-              <Typography.Text style={{ fontSize: 13 }}>每轮投递间隔时间</Typography.Text>
-              <NumberField
-                min={MIN_INTERVAL_MINUTES}
-                max={MAX_INTERVAL_MINUTES}
-                precision={0}
-                fallback={DEFAULT_INTERVAL_MINUTES}
-                value={intervalMinutes}
-                onChange={setIntervalMinutes}
-                addonAfter="分钟"
-                style={{ width: 160 }}
-              />
-            </div>
-          )}
-          {selectedMode === "polling_reply" && (
-            <div style={{ padding: "8px 12px", background: "#f8fafc", borderRadius: 8 }}>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                每 {getReplyPollingConfig(config).interval_minutes} 分钟检查一次新消息
-                {getReplyPollingConfig(config).active_hours_enabled
-                  ? `，只在 ${getReplyPollingConfig(config).active_start_hour}:00 - ${getReplyPollingConfig(config).active_end_hour}:00 之间回复`
-                  : "，全天回复"}
-                。节奏可在「设置 · 自动回复」里调整。
-              </Typography.Text>
-            </div>
-          )}
-          {(selectedMode === "job_hunting" || selectedMode === "periodic_job_hunting") ? (
-            <div style={{ padding: "12px", background: "#f0f7ff", border: "1px solid #d6e8ff", borderRadius: 8 }}>
-              <Typography.Text strong style={{ display: "block", marginBottom: 8 }}>本次使用的求职方案</Typography.Text>
-              <Select
-                aria-label="本次使用的求职方案"
-                style={{ width: "100%" }}
-                value={selectedProfileId}
-                onChange={setSelectedProfileId}
-                options={getJobProfiles(config).filter((profile) => !profile.archived).map((profile) => ({
-                  value: profile.id,
-                  label: `${profile.name}${profile.id === (config.default_job_profile_id || getDefaultJobProfile(config).id) ? "（默认）" : ""}`,
-                }))}
-              />
-              <Typography.Text type="secondary" style={{ display: "block", marginTop: 6, fontSize: 12 }}>
-                任务加入队列后会固定使用该方案快照，之后修改配置不会影响本次任务。
-              </Typography.Text>
-            </div>
-          ) : selectedMode === "reply_unread" ? (
-            <Alert type="info" showIcon message="按会话方案自动路由" description="每条未读消息会沿用首次联系该岗位时使用的求职方案。" />
-          ) : null}
-        </Space>
+        {modeSummary && (
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "68px 1fr",
+              alignItems: "start",
+              rowGap: 12,
+              columnGap: 12,
+              marginTop: 14,
+              paddingTop: 14,
+              borderTop: "1px solid #e8edf3",
+            }}
+          >
+            {modeSummary}
+          </div>
+        )}
       </Modal>
+
+      {/* ── 周期投递参数抽屉 ── */}
+      <Drawer
+        title="周期投递参数"
+        width={760}
+        open={paramsDrawerOpen}
+        onClose={closeParamsDrawer}
+        // 挂在启动弹窗之上，默认层级会被弹窗的遮罩压住
+        zIndex={1100}
+        extra={
+          <Space>
+            <Button
+              icon={<UndoOutlined />}
+              disabled={!canResetPeriodicDelivery(periodicDraft, getPeriodicDeliveryConfig(config))}
+              onClick={() => setPeriodicDraft(getPeriodicDeliveryConfig(config))}
+            >
+              恢复我的默认
+            </Button>
+            <Button type="primary" onClick={closeParamsDrawer}>完成</Button>
+          </Space>
+        }
+      >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="这里的改动只作用于本次任务"
+          description="要改每次启动的初值，请到「配置中心 · 岗位筛选 · 周期投递」。"
+        />
+        <PeriodicDeliverySection
+          variant="plain"
+          config={periodicDraft}
+          onChange={(next) => setPeriodicDraft((current) => ({ ...current, ...next }))}
+        />
+      </Drawer>
 
       {/* ── Collapsible log terminal ── */}
       <section style={{ flex: "1 1 0", minHeight: 0, display: "flex", flexDirection: "column" }}>
