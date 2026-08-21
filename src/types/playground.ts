@@ -129,6 +129,104 @@ export function stageMeta(stage: PlaygroundStage): StageMeta | undefined {
   return STAGE_META_BY_KEY.get(stage);
 }
 
+/** 三段可覆盖的提示词，与后端 PromptOverrides 一一对应 */
+export type PromptKey = "greet_prompt" | "reply_prompt" | "semantic_filter_intent";
+
+export interface ChainMeta {
+  chain: PlaygroundChain;
+  label: string;
+  /** 选链路时卡片上的那一句话 */
+  summary: string;
+  /** 底部主按钮的动作名 */
+  action: string;
+  /** 这条链路吃哪条提示词；null = 纯本地判断，没提示词可调 */
+  promptKey: PromptKey | null;
+  /** 要先在沙盘里造出对话才跑得起来 */
+  needsChat: boolean;
+  /** 要交代简历入口与已回复条数这类会话现场 */
+  needsReplyContext: boolean;
+}
+
+/**
+ * 一次只跑一条链路——后端三条命令各自只填自己的那几个环节。
+ *
+ * 旧版把十个环节和三条链路的输入一起摊在一屏上，于是「我现在到底在测什么」
+ * 全靠用户自己记；按链路先做一次选择，后面每一步要填什么、结果该看哪几行，
+ * 都能由这份元数据推出来
+ */
+export const PLAYGROUND_CHAINS: readonly ChainMeta[] = [
+  {
+    chain: "screen",
+    label: "岗位筛选",
+    summary: "拿一个岗位过筛选规则与 AI 语义复核，看它会不会被挡在门外",
+    action: "跑筛选",
+    promptKey: "semantic_filter_intent",
+    needsChat: false,
+    needsReplyContext: false,
+  },
+  {
+    chain: "greet",
+    label: "打招呼",
+    summary: "预演开场白：模型写什么、拼成几条消息、体检拦不拦",
+    action: "跑打招呼",
+    promptKey: "greet_prompt",
+    needsChat: false,
+    needsReplyContext: false,
+  },
+  {
+    chain: "reply",
+    label: "自动回复",
+    summary: "自己扮 HR 造一段对话，看这一刻该不该回、会回什么",
+    action: "让 AI 回复",
+    promptKey: "reply_prompt",
+    needsChat: true,
+    needsReplyContext: true,
+  },
+] as const;
+
+const CHAIN_META_BY_KEY = new Map<PlaygroundChain, ChainMeta>(
+  PLAYGROUND_CHAINS.map((meta) => [meta.chain, meta]),
+);
+
+export function chainMeta(chain: PlaygroundChain): ChainMeta {
+  // 三条链路写死在上面，取不到只可能是类型被绕过了
+  return CHAIN_META_BY_KEY.get(chain) ?? PLAYGROUND_CHAINS[0];
+}
+
+export function stagesOfChain(chain: PlaygroundChain): StageMeta[] {
+  return PLAYGROUND_STAGES.filter((meta) => meta.chain === chain);
+}
+
+export type ReportVerdict =
+  | { kind: "pass"; stage: StageMeta }
+  | { kind: "block"; stage: StageMeta; reason: string }
+  | { kind: "empty" };
+
+/**
+ * 一趟跑完的结论：走通了，还是断在哪一步。
+ *
+ * 断点是用户跑这一趟最想知道的事，不该逼他自己在十行状态里找那一行红的。
+ * 「跳过」不算断点——语义复核没开也照样往下走，把它报成失败会让人去改一个没坏的地方
+ */
+export function reportVerdict(steps: StepResult[]): ReportVerdict {
+  const blocked = steps.find((step) => step.outcome.kind === "block");
+  if (blocked) {
+    const meta = stageMeta(blocked.stage);
+    if (meta) {
+      return {
+        kind: "block",
+        stage: meta,
+        reason: blocked.outcome.kind === "block" ? blocked.outcome.reason : "",
+      };
+    }
+  }
+  const executed = steps
+    .map((step) => stageMeta(step.stage))
+    .filter((meta): meta is StageMeta => meta !== undefined);
+  const last = executed[executed.length - 1];
+  return last ? { kind: "pass", stage: last } : { kind: "empty" };
+}
+
 const ORDER_SYMBOLS = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"];
 
 /** 圈号只到 ⑩，超出后退回普通数字而不是渲染出空白 */

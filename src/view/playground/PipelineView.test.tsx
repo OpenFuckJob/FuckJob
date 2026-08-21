@@ -6,39 +6,53 @@ import type { StepResult } from "@/types/playground";
 // vitest 没开 globals，testing-library 的自动清理不会注册
 afterEach(cleanup);
 
-const steps: StepResult[] = [
-  { stage: "regex_filter", outcome: { kind: "pass" }, detail: { matched_rule: "后端优先" } },
-  { stage: "semantic_match", outcome: { kind: "pass" }, detail: { score: 82, verdict: "方向吻合" } },
+const greetSteps: StepResult[] = [
   { stage: "greet_decide", outcome: { kind: "pass" }, detail: { action: "send" } },
   { stage: "greet_compose", outcome: { kind: "pass" }, detail: { messages: ["你好", "我是候选人", "方便聊聊吗"] } },
   { stage: "greet_vet", outcome: { kind: "block", reason: "话术里还留着 {company} 占位符" }, detail: { issues: ["占位符未替换"] } },
 ];
 
 describe("PipelineView", () => {
-  it("没跑过时给引导而不是十行灰条", () => {
-    render(<PipelineView steps={[]} hasRun={false} />);
-    expect(screen.getByText(/跑筛选/)).toBeInTheDocument();
-    expect(screen.queryByTestId("pipeline")).toBeNull();
+  it("只列本条链路的环节，别的链路不来凑数", () => {
+    render(<PipelineView steps={greetSteps} chain="greet" />);
+
+    expect(screen.getByText("打招呼决策")).toBeInTheDocument();
+    // 筛选与回复链路的环节压根没被触发，不该出现在打招呼的结果里
+    expect(screen.queryByText("正则与关键词筛选")).toBeNull();
+    expect(screen.queryByText("回复闸门")).toBeNull();
   });
 
-  it("把每个环节渲染成对应状态，没跑到的留灰", () => {
-    render(<PipelineView steps={steps} hasRun />);
+  it("跑到的环节可点开，没跑到的留灰且不可点", () => {
+    render(
+      <PipelineView
+        steps={[{ stage: "greet_decide", outcome: { kind: "pass" }, detail: { action: "send" } }]}
+        chain="greet"
+      />,
+    );
 
-    // 十个环节一个不少，跑到的五个 + 没跑到的五个
-    expect(screen.getByText("正则与关键词筛选")).toBeInTheDocument();
-    expect(screen.getByText("回复闸门")).toBeInTheDocument();
-
-    expect(screen.getByRole("button", { name: /正则与关键词筛选/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /打招呼决策/ })).toBeEnabled();
     // 没执行的环节不可点开，避免让人以为里面藏了内容
-    expect(screen.getByRole("button", { name: /回复闸门/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /打招呼发送前体检/ })).toBeDisabled();
+  });
+
+  it("把每个环节渲染成对应状态的摘要", () => {
+    render(
+      <PipelineView
+        steps={[
+          { stage: "regex_filter", outcome: { kind: "pass" }, detail: { matched_rule: "后端优先" } },
+          { stage: "semantic_match", outcome: { kind: "pass" }, detail: { score: 82, verdict: "方向吻合" } },
+        ]}
+        chain="screen"
+      />,
+    );
 
     expect(screen.getByText("命中规则 后端优先")).toBeInTheDocument();
     expect(screen.getByText("82 分 · 方向吻合")).toBeInTheDocument();
-    expect(screen.getByText("3 条消息")).toBeInTheDocument();
   });
 
   it("被拦下的原因不用展开就能看到", () => {
-    render(<PipelineView steps={steps} hasRun />);
+    render(<PipelineView steps={greetSteps} chain="greet" />);
+    expect(screen.getByText("3 条消息")).toBeInTheDocument();
     expect(screen.getByText(/拦下原因：话术里还留着 \{company\} 占位符/)).toBeInTheDocument();
   });
 
@@ -46,7 +60,7 @@ describe("PipelineView", () => {
     render(
       <PipelineView
         steps={[{ stage: "semantic_match", outcome: { kind: "skip", reason: "方案没开语义筛选" }, detail: null }]}
-        hasRun
+        chain="screen"
       />,
     );
     expect(screen.getByText(/跳过原因：方案没开语义筛选/)).toBeInTheDocument();
@@ -63,7 +77,7 @@ describe("PipelineView", () => {
             detail: { route: "llm", nested: { a: 1 }, tags: ["x", "y"], score: 7 },
           },
         ]}
-        hasRun
+        chain="reply"
       />,
     );
 

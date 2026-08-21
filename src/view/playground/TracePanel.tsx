@@ -179,29 +179,42 @@ export interface TracePanelProps {
 }
 
 /**
- * 右栏：这一趟链路里模型到底被调了几次、每次说了什么。
+ * 这一趟链路里模型到底被调了几次、每次说了什么。
  *
  * 轨迹按 StepReport 带回的 trace_ids 拉取，所以列表顺序就是调用顺序，
  * 不再按时间倒序——调试时要顺着链路读下来，倒序反而得从底下往上看。
+ * 提示词原文动辄上千字，所以它占满结果区的整幅宽度，而不是挤在一条窄侧栏里
  */
 export function TracePanel({ traces, loading, onRefresh, onClear, onExport }: TracePanelProps) {
   const [selected, setSelected] = useState<string | null>(null);
   const active = traces.find((trace) => trace.id === selected) ?? null;
 
   return (
-    <div className="flex h-full min-h-0 w-[340px] shrink-0 flex-col gap-2 border-l border-slate-100 pl-3">
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-semibold text-slate-500">Agent 轨迹</span>
-        <Button type="text" size="small" icon={<ReloadOutlined />} loading={loading} onClick={onRefresh}>
-          刷新
-        </Button>
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs text-slate-500">
+          {traces.length > 0 ? "点开任意一次调用，能看到完整提示词、原始输出与返工过程" : ""}
+        </span>
+        <Space>
+          <Button type="text" size="small" icon={<ReloadOutlined />} loading={loading} onClick={onRefresh}>
+            刷新
+          </Button>
+          <Tooltip title="清掉后端缓存的全部轨迹">
+            <Button type="text" size="small" icon={<ClearOutlined />} onClick={onClear}>
+              清空
+            </Button>
+          </Tooltip>
+          <Button type="text" size="small" icon={<DownloadOutlined />} onClick={onExport}>
+            导出
+          </Button>
+        </Space>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+      <div>
         {traces.length === 0 ? (
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={<span className="text-xs text-slate-400">还没有模型调用</span>}
+            description={<span className="text-xs text-slate-400">这一趟没有调用大模型</span>}
           />
         ) : (
           <div className="space-y-1.5">
@@ -248,17 +261,6 @@ export function TracePanel({ traces, loading, onRefresh, onClear, onExport }: Tr
           </div>
         )}
       </div>
-
-      <Space className="shrink-0 border-t border-slate-100 pt-2">
-        <Tooltip title="清掉后端缓存的全部轨迹">
-          <Button size="small" icon={<ClearOutlined />} onClick={onClear}>
-            清空
-          </Button>
-        </Tooltip>
-        <Button size="small" icon={<DownloadOutlined />} onClick={onExport}>
-          导出轨迹
-        </Button>
-      </Space>
     </div>
   );
 }

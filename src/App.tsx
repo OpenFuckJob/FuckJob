@@ -14,13 +14,14 @@ import ResumeOptimizerPage from "@/view/resume-optimizer";
 import WorkspacePage from "@/view/workspace";
 import { AutoUpdaterModal, UpdaterProvider } from "@/lib/updater";
 
-type AppTabKey = "workspace" | "job-overview" | "job-data" | "playground" | "resume-optimizer" | "config";
+type AppTabKey = "workspace" | "job-overview" | "job-data" | "resume-optimizer" | "config";
+// 测试模式不在这里：它是调配置的工具，入口收在「配置中心 · 系统能力」下，
+// 与大模型、浏览器环境并列——顶层这几个页签留给日常求职的主流程
 const tabs: Array<{ key: AppTabKey; label: string }> = [
   { key: "workspace", label: "工作台" },
   { key: "job-overview", label: "求职数据" },
   { key: "job-data", label: "岗位管理" },
   { key: "resume-optimizer", label: "模拟面试" },
-  { key: "playground", label: "测试模式" },
   { key: "config", label: "配置中心" },
 ];
 const updateAt = <T,>(items: T[], index: number, next: Partial<T>) => items.map((item, i) => i === index ? { ...item, ...next } : item);
@@ -40,7 +41,7 @@ function MainShell({ config, update, save, status, message, dirty, importConfig,
   const [activeTab, setActiveTab] = useState<AppTabKey>("workspace");
   const [focusJobId, setFocusJobId] = useState<string>();
   const [interviewJob, setInterviewJob] = useState<JobDetail>();
-  const [configGroup, setConfigGroup] = useState<"resume" | "llm" | "job" | "greet" | "reply" | "analysis" | "browser">("job");
+  const [configGroup, setConfigGroup] = useState<"resume" | "llm" | "job" | "greet" | "reply" | "analysis" | "browser" | "playground">("job");
   const [activeProfileId, setActiveProfileId] = useState(() => getDefaultJobProfile(config).id);
   const profiles = getJobProfiles(config);
   const llmConfigured = isLlmConfigured(config);
@@ -133,7 +134,10 @@ function MainShell({ config, update, save, status, message, dirty, importConfig,
     updateProfiles([...profiles, next]);
     setActiveProfileId(id);
   };
+  const playgroundPage = <PlaygroundPage config={config} llmConfigured={llmConfigured} llmActive={llmActive}
+    onOpenLlmConfig={openLlm} onSavePrompts={savePlaygroundPrompts} />;
   const configPage = <ConfigPage config={profileConfig} status={status} message={message} dirty={dirty} initialGroup={configGroup}
+    playgroundSlot={playgroundPage}
     activeProfileId={activeProfile.id}
     onSelectProfile={setActiveProfileId}
     onCreateProfile={(meta) => createProfile(getDefaultJobProfile(config), "新方案", meta)}
@@ -181,7 +185,7 @@ function MainShell({ config, update, save, status, message, dirty, importConfig,
     removeRule={(i: number) => updateActiveProfile((p) => ({ ...p, job_filter_config: { ...p.job_filter_config, regex_rules: p.job_filter_config.regex_rules.filter((_, x) => x !== i) } }))}
     importConfig={importConfig} exportConfig={exportConfig} />;
 
-  const content = activeTab === "workspace" ? <WorkspacePage config={config} onNavigate={(tab) => void navigate(tab)} onOpenConfig={openConfig} onOpenConversation={openConversation} /> : activeTab === "job-overview" ? <JobOverviewPage onNavigate={(target) => target === "job-data" ? navigate("job-data") : openConfig(target)} onOpenConversation={openConversation} /> : activeTab === "job-data" ? <JobDataPage aiConfigured={llmActive} llmConfigured={llmConfigured} onConfigureAi={openLlm} focusJobId={focusJobId} onFocusHandled={clearFocusJob} highMatchScore={getAnalysisConfig(getDefaultJobProfile(config)).high_match_score} onStartInterview={startInterview} /> : activeTab === "playground" ? <PlaygroundPage config={config} llmConfigured={llmConfigured} llmActive={llmActive} onOpenLlmConfig={openLlm} onSavePrompts={savePlaygroundPrompts} /> : activeTab === "resume-optimizer" ? <ResumeOptimizerPage config={profileConfig} llmConfigured={llmConfigured} onOpenLlmConfig={openLlm} onUpdateResume={(resume_content) => updateProfileSection("resume_config", { resume_content })} pendingInterviewJob={interviewJob} onPendingInterviewHandled={clearInterviewJob} /> : configPage;
+  const content = activeTab === "workspace" ? <WorkspacePage config={config} onNavigate={(tab) => void navigate(tab)} onOpenConfig={openConfig} onOpenConversation={openConversation} /> : activeTab === "job-overview" ? <JobOverviewPage onNavigate={(target) => target === "job-data" ? navigate("job-data") : openConfig(target)} onOpenConversation={openConversation} /> : activeTab === "job-data" ? <JobDataPage aiConfigured={llmActive} llmConfigured={llmConfigured} onConfigureAi={openLlm} focusJobId={focusJobId} onFocusHandled={clearFocusJob} highMatchScore={getAnalysisConfig(getDefaultJobProfile(config)).high_match_score} onStartInterview={startInterview} /> : activeTab === "resume-optimizer" ? <ResumeOptimizerPage config={profileConfig} llmConfigured={llmConfigured} onOpenLlmConfig={openLlm} onUpdateResume={(resume_content) => updateProfileSection("resume_config", { resume_content })} pendingInterviewJob={interviewJob} onPendingInterviewHandled={clearInterviewJob} /> : configPage;
   return (
     <main className="app-shell">
       <header className="app-header">

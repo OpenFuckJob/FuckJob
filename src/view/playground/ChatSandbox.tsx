@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Button, Input, Radio, Tooltip } from "antd";
-import { ClearOutlined, RobotOutlined, SendOutlined } from "@ant-design/icons";
+import { Button, Input, Radio } from "antd";
+import { SendOutlined } from "@ant-design/icons";
 import type { PlaygroundMessage } from "@/types/playground";
 
 type Identity = "hr" | "me";
@@ -8,19 +8,16 @@ type Identity = "hr" | "me";
 export interface ChatSandboxProps {
   messages: PlaygroundMessage[];
   onAppend: (message: PlaygroundMessage) => void;
-  onClear: () => void;
-  onAskAi: () => void;
-  running: boolean;
 }
 
 /**
- * 聊天沙盘。
+ * 聊天沙盘：只负责造对话，「让 AI 回复」在页面底部的行动条上。
  *
  * 身份切换不是为了好看：闸门有一条「对方尚未回复，不重复发送」的分支，
  * 只有当对话的最后一条是我方消息时才会走到。旧调试页固定以 HR 身份造消息，
- * 那条分支在界面上根本构造不出来。
+ * 那条分支在界面上根本构造不出来
  */
-export function ChatSandbox({ messages, onAppend, onClear, onAskAi, running }: ChatSandboxProps) {
+export function ChatSandbox({ messages, onAppend }: ChatSandboxProps) {
   const [identity, setIdentity] = useState<Identity>("hr");
   const [draft, setDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -36,27 +33,12 @@ export function ChatSandbox({ messages, onAppend, onClear, onAskAi, running }: C
     setDraft("");
   };
 
-  const lastIsMine = messages.length > 0 && !messages[messages.length - 1].received;
-
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="mb-1.5 flex items-center justify-between">
-        <span className="text-xs font-semibold text-slate-500">聊天沙盘</span>
-        <Button
-          type="text"
-          size="small"
-          icon={<ClearOutlined />}
-          disabled={messages.length === 0}
-          onClick={onClear}
-        >
-          清空对话
-        </Button>
-      </div>
-
-      <div className="min-h-[140px] flex-1 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+    <div>
+      <div className="h-55 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50/70 p-3">
         {messages.length === 0 ? (
           <div className="flex h-full items-center justify-center text-xs text-slate-400">
-            以 HR 身份造几条消息，再点「让 AI 回复」
+            还没有消息。先以 HR 身份说一句，链路才有得判
           </div>
         ) : (
           messages.map((message, index) => (
@@ -104,17 +86,6 @@ export function ChatSandbox({ messages, onAppend, onClear, onAskAi, running }: C
         <Button icon={<SendOutlined />} disabled={!draft.trim()} onClick={send}>
           发送
         </Button>
-        <Tooltip title={lastIsMine ? "最后一条是我方消息，闸门大概率会拦下——这正是要测的分支" : ""}>
-          <Button
-            type="primary"
-            icon={<RobotOutlined />}
-            loading={running}
-            disabled={messages.length === 0}
-            onClick={onAskAi}
-          >
-            让 AI 回复
-          </Button>
-        </Tooltip>
       </div>
     </div>
   );

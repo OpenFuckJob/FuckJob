@@ -1,5 +1,4 @@
 import { useState, type ReactNode } from "react";
-import { Empty } from "antd";
 import {
   CheckCircleFilled,
   CloseCircleFilled,
@@ -7,8 +6,9 @@ import {
   RightOutlined,
 } from "@ant-design/icons";
 import {
-  PLAYGROUND_STAGES,
+  stagesOfChain,
   stageSymbol,
+  type PlaygroundChain,
   type PlaygroundStage,
   type StepResult,
 } from "@/types/playground";
@@ -70,31 +70,24 @@ function DetailBody({ stage, detail }: { stage: PlaygroundStage; detail: unknown
 
 export interface PipelineViewProps {
   steps: StepResult[];
-  /** 空报告时给一句引导，而不是干摆十行灰条 */
-  hasRun: boolean;
+  /** 只列这条链路的环节，别的链路没跑本来就不该出现在结果里 */
+  chain: PlaygroundChain;
 }
 
 /**
- * 十个环节固定全列出来。
+ * 本条链路的环节固定全列出来。
  *
  * 只渲染「跑到的那几个」会让人误以为链路就这么长，看不出请求是在第几步断的；
  * 没跑到的保持灰态，配上被拦下环节的红底，用户扫一眼就知道断点在哪。
+ * 但另外两条链路的环节不在这里凑数——它们压根没被触发，摆十行灰条只是噪音
  */
-export function PipelineView({ steps, hasRun }: PipelineViewProps) {
+export function PipelineView({ steps, chain }: PipelineViewProps) {
   const [expanded, setExpanded] = useState<PlaygroundStage | null>(null);
   const executed = new Map(steps.map((step) => [step.stage, step]));
 
-  if (!hasRun) {
-    return (
-      <div className="flex flex-1 items-center justify-center">
-        <Empty description="填好岗位信息后点左侧的「跑筛选」或「跑打招呼」" />
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-1" data-testid="pipeline">
-      {PLAYGROUND_STAGES.map((meta) => {
+      {stagesOfChain(chain).map((meta) => {
         const step = executed.get(meta.stage);
         const state: RowState = step ? step.outcome.kind : "idle";
         const style = ROW_STYLE[state];

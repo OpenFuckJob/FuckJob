@@ -27,7 +27,7 @@ describe("splitRework", () => {
 describe("TracePanel", () => {
   it("没有调用时给空态", () => {
     render(<TracePanel traces={[]} loading={false} onRefresh={noop} onClear={noop} onExport={noop} />);
-    expect(screen.getByText("还没有模型调用")).toBeInTheDocument();
+    expect(screen.getByText("这一趟没有调用大模型")).toBeInTheDocument();
   });
 
   it("列出任务名、轮次与耗时", () => {
@@ -109,7 +109,7 @@ describe("TracePanel", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /清空/ }));
-    fireEvent.click(screen.getByRole("button", { name: /导出轨迹/ }));
+    fireEvent.click(screen.getByRole("button", { name: /导出/ }));
 
     expect(onClear).toHaveBeenCalled();
     expect(onExport).toHaveBeenCalled();
