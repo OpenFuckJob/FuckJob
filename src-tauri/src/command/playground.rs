@@ -189,6 +189,8 @@ fn to_rpa_job(job: &PlaygroundJob) -> RpaJob {
         detail: job.detail.clone(),
         salary: job.salary.clone(),
         location: Some(job.location.clone()),
+        // 测试模式里的岗位由用户手工构造，没有来源页面可提供招聘者活跃时间。
+        recruiter_active_time: None,
         // 手输岗位没有来源页面。留空而不是编一个 URL：任何一处误把它当真实链接
         // 点开都是错的
         detail_url: String::new(),

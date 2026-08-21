@@ -14,7 +14,10 @@ export function makeProfile(overrides: Partial<JobProfile> = {}): JobProfile {
       company_exclude_keywords: [], enable_semantic_filter: true,
       semantic_filter_intent: "只要后端岗", regex_rules: [],
     },
-    platform_filter_config: { liepin: { dq: null, salary_code: null, pub_time: null, work_year_code: null, comp_tag: [] } },
+    platform_filter_config: {
+      boss: { active_filter_enabled: true, active_threshold: "this_week" },
+      liepin: { dq: null, salary_code: null, pub_time: null, work_year_code: null, comp_tag: [] },
+    },
     resume_config: { inject_llm_context: false, resume_path: null, resume_content: null },
     greet_config: { enable_llm: true, reply_prompt: "原打招呼提示词", default_template: [] },
     replay_config: {
