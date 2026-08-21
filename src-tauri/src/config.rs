@@ -411,7 +411,9 @@ pub fn validate_and_normalize(config: &mut AppRuntimeConfig) -> Result<(), Strin
 
     normalize_llm_retry_config(&mut config.llm_retry_config);
     normalize_llm_fallbacks(&mut config.llm_fallbacks)?;
-    normalize_analysis_config(&mut config.analysis_config);
+    // 顶层 analysis_config 不在这里规整：它是默认方案的镜像，
+    // 值由下面的 normalize_job_profiles 从方案卡回写（方案卡各自已 clamp 过）。
+    // 在这里再 clamp 一次的结果总会被覆盖，留着只会让人以为顶层是独立数据
     config.periodic_delivery_config.migrate_legacy_window();
     config.humanize_config.ensure_seed();
     normalize_job_profiles(config)?;
@@ -1849,11 +1851,17 @@ fn normalize_job_profiles(config: &mut AppRuntimeConfig) -> Result<(), String> {
         return Err("默认求职方案不能是已归档方案".to_string());
     }
 
+    // 顶层是默认方案的执行镜像，**每一块都要同步**。这里原先漏了 analysis_config：
+    // 加方案卡字段时改了 from_runtime_mirror 和 resolve_job_profile，唯独忘了这一处，
+    // 于是顶层镜像里躺着一份永远不会更新的分析策略。
+    // `top_level_mirror_matches_the_default_profile` 用整体比对守着这件事，
+    // 以后再加配置块漏了同步会当场变红。
     config.job_filter_config = default_profile.job_filter_config.clone();
     config.platform_filter_config = default_profile.platform_filter_config.clone();
     config.resume_config = default_profile.resume_config.clone();
     config.greet_config = default_profile.greet_config.clone();
     config.replay_config = default_profile.replay_config.clone();
+    config.analysis_config = default_profile.analysis_config.clone();
     Ok(())
 }
 
@@ -1922,6 +1930,56 @@ mod tests {
         assert_eq!(
             parsed, config,
             "存进去又读出来的配置和原来不一样，说明解析路径漏掉了某个配置段"
+        );
+    }
+
+    /// 顶层那几块是默认方案卡的执行镜像，规整之后两边必须逐块一致。
+    ///
+    /// 同一份配置在代码里有三处反向搬运：`from_runtime_mirror`（顶层→方案卡）、
+    /// `resolve_job_profile`（方案卡→顶层）、`normalize_job_profiles`（默认方案→顶层）。
+    /// 加一块新配置就要记得改三处，而 analysis_config 当初只改了前两处——
+    /// 顶层因此长期躺着一份永不更新的分析策略。
+    ///
+    /// 这条测试**不列举任何配置块**：它把规整后的顶层重新投影成一张方案卡，
+    /// 与默认方案整体比对。以后新增配置块只要漏了同步，这里立刻失败。
+    #[test]
+    fn top_level_mirror_matches_the_default_profile() {
+        let mut config = default_app_config();
+        let default_id = config.default_job_profile_id.clone();
+        {
+            let profile = config
+                .job_profiles
+                .iter_mut()
+                .find(|profile| profile.id == default_id)
+                .expect("出厂配置必须有默认方案");
+            // 每一块都调成非默认值，否则「漏同步」和「本来就相等」区分不开
+            profile.job_filter_config.query = Some("Rust 后端".to_string());
+            profile.platform_filter_config.liepin.dq = Some("020".to_string());
+            profile.resume_config.inject_llm_context = true;
+            profile.greet_config.enable_llm = true;
+            profile.greet_config.reply_prompt = Some("打招呼提示词".to_string());
+            profile.replay_config.max_reply_chars = 321;
+            profile.analysis_config.high_match_score = 88;
+        }
+
+        validate_and_normalize(&mut config).expect("规整必须通过");
+
+        let default_profile = config
+            .job_profiles
+            .iter()
+            .find(|profile| profile.id == default_id)
+            .expect("默认方案还在")
+            .clone();
+        let mirrored =
+            JobProfile::from_runtime_mirror(&default_profile.id, &default_profile.name, &config);
+        let mut expected = default_profile;
+        // from_runtime_mirror 只投影配置块，这两个字段本来就不参与镜像
+        expected.description = None;
+        expected.archived = false;
+
+        assert_eq!(
+            mirrored, expected,
+            "顶层镜像和默认方案卡不一致，说明 normalize_job_profiles 漏同步了某一块配置"
         );
     }
 
@@ -2357,22 +2415,28 @@ llm_config:
         );
     }
 
-    /// 分数线和限额都必须落在可用区间内，避免手改配置文件把统计口径改坏
+    /// 分数线和限额都必须落在可用区间内，避免手改配置文件把统计口径改坏。
+    ///
+    /// 权威值在方案卡上，顶层只是默认方案的镜像，所以越界值在方案卡上被夹住之后，
+    /// 顶层拿到的是夹住之后的结果——而不是顶层自己那份越界值各夹各的
     #[test]
     fn analysis_config_is_clamped_to_a_usable_range() {
         let mut config = default_app_config();
+        // 顶层这两个越界值都该被默认方案的镜像盖掉，不该幸存下来
         config.analysis_config.high_match_score = 5;
         config.analysis_config.max_per_task = 9_999;
         config.job_profiles[0].analysis_config.high_match_score = 200;
+        config.job_profiles[0].analysis_config.max_per_task = 9_999;
 
         validate_and_normalize(&mut config).unwrap();
 
-        assert_eq!(
-            config.analysis_config.high_match_score,
-            MIN_HIGH_MATCH_SCORE
-        );
-        assert_eq!(config.analysis_config.max_per_task, MAX_ANALYSIS_PER_TASK);
         assert_eq!(config.job_profiles[0].analysis_config.high_match_score, 100);
+        assert_eq!(
+            config.job_profiles[0].analysis_config.max_per_task,
+            MAX_ANALYSIS_PER_TASK
+        );
+        assert_eq!(config.analysis_config.high_match_score, 100);
+        assert_eq!(config.analysis_config.max_per_task, MAX_ANALYSIS_PER_TASK);
     }
 
     #[test]
