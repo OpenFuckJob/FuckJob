@@ -908,12 +908,7 @@ fn classify_relative_active_text(text: &str) -> Option<RecruiterActiveRank> {
         ("天" | "日", "前") if amount < 7 => Some(RecruiterActiveRank::ThisWeek),
         ("天" | "日", "前") if amount <= 31 => Some(RecruiterActiveRank::ThisMonth),
         ("周" | "星期", "内" | "前") => Some(classify_week_amount(amount)),
-        ("个月" | "月", "内") if amount <= 1 => Some(RecruiterActiveRank::ThisMonth),
-        ("个月" | "月", "内") if amount <= 2 => Some(RecruiterActiveRank::TwoMonths),
-        ("个月" | "月", "内") if amount <= 3 => Some(RecruiterActiveRank::ThreeMonths),
-        ("个月" | "月", "内") if amount <= 4 => Some(RecruiterActiveRank::FourMonths),
-        ("个月" | "月", "内") if amount <= 5 => Some(RecruiterActiveRank::FiveMonths),
-        ("个月" | "月", "内") if amount <= 6 => Some(RecruiterActiveRank::HalfYear),
+        ("个月" | "月", "内" | "前") => Some(classify_month_amount(amount)),
         ("年", "内") if amount_text.contains('半') => Some(RecruiterActiveRank::HalfYear),
         ("年", "前") if amount_text.contains('半') => Some(RecruiterActiveRank::HalfYear),
         _ => Some(RecruiterActiveRank::Older),
@@ -934,10 +929,25 @@ fn classify_week_amount(amount: u32) -> RecruiterActiveRank {
     }
 }
 
+fn classify_month_amount(amount: u32) -> RecruiterActiveRank {
+    match amount {
+        0 | 1 => RecruiterActiveRank::ThisMonth,
+        2 => RecruiterActiveRank::TwoMonths,
+        3 => RecruiterActiveRank::ThreeMonths,
+        4 => RecruiterActiveRank::FourMonths,
+        5 => RecruiterActiveRank::FiveMonths,
+        6 => RecruiterActiveRank::HalfYear,
+        _ => RecruiterActiveRank::Older,
+    }
+}
+
 fn parse_chinese_or_ascii_number(value: &str) -> Option<u32> {
     let value = value.trim();
     if value.is_empty() {
         return None;
+    }
+    if let Some(prefix) = value.strip_suffix('个') {
+        return parse_chinese_or_ascii_number(prefix);
     }
     if let Ok(number) = value.parse::<u32>() {
         return Some(number);
@@ -1962,11 +1972,26 @@ mod tests {
         assert!(inactive_recruiter_skip_reason(&Some("1周前活跃".to_string()), &config).is_none());
         assert!(inactive_recruiter_skip_reason(&Some("2周前活跃".to_string()), &config).is_none());
         assert!(inactive_recruiter_skip_reason(&Some("四星期前活跃".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("半月前活跃".to_string()), &config).is_none());
         assert!(
             inactive_recruiter_skip_reason(&Some("一个月内活跃".to_string()), &config).is_none()
         );
         assert!(inactive_recruiter_skip_reason(&Some("5周前活跃".to_string()), &config).is_some());
         assert!(inactive_recruiter_skip_reason(&Some("2月内活跃".to_string()), &config).is_some());
+    }
+
+    #[test]
+    fn active_filter_classifies_months_ago_with_elapsed_months() {
+        let config = BossFilterConfig {
+            active_filter_enabled: true,
+            active_threshold: BossRecruiterActiveThreshold::TwoMonths,
+        };
+
+        assert!(inactive_recruiter_skip_reason(&Some("一个月前活跃".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("1个月前活跃".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("两个月前活跃".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("2个月前活跃".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("三个月前活跃".to_string()), &config).is_some());
     }
 
     #[test]
@@ -1977,6 +2002,8 @@ mod tests {
         };
 
         assert!(inactive_recruiter_skip_reason(&Some("5月内活跃".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("5个月前活跃".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("六个月前活跃".to_string()), &config).is_some());
         assert!(inactive_recruiter_skip_reason(&Some("近半年活跃".to_string()), &config).is_some());
         assert!(inactive_recruiter_skip_reason(&Some("半年前活跃".to_string()), &config).is_some());
     }
