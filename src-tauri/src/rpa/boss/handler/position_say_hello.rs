@@ -907,9 +907,7 @@ fn classify_relative_active_text(text: &str) -> Option<RecruiterActiveRank> {
         ("天" | "日", "前") if amount <= 3 => Some(RecruiterActiveRank::ThreeDays),
         ("天" | "日", "前") if amount < 7 => Some(RecruiterActiveRank::ThisWeek),
         ("天" | "日", "前") if amount <= 31 => Some(RecruiterActiveRank::ThisMonth),
-        ("周" | "星期", "内") if amount <= 1 => Some(RecruiterActiveRank::ThisWeek),
-        ("周" | "星期", "内") if amount <= 2 => Some(RecruiterActiveRank::TwoWeeks),
-        ("周" | "星期", "内") if amount <= 4 => Some(RecruiterActiveRank::ThisMonth),
+        ("周" | "星期", "内" | "前") => Some(classify_week_amount(amount)),
         ("个月" | "月", "内") if amount <= 1 => Some(RecruiterActiveRank::ThisMonth),
         ("个月" | "月", "内") if amount <= 2 => Some(RecruiterActiveRank::TwoMonths),
         ("个月" | "月", "内") if amount <= 3 => Some(RecruiterActiveRank::ThreeMonths),
@@ -919,6 +917,20 @@ fn classify_relative_active_text(text: &str) -> Option<RecruiterActiveRank> {
         ("年", "内") if amount_text.contains('半') => Some(RecruiterActiveRank::HalfYear),
         ("年", "前") if amount_text.contains('半') => Some(RecruiterActiveRank::HalfYear),
         _ => Some(RecruiterActiveRank::Older),
+    }
+}
+
+fn classify_week_amount(amount: u32) -> RecruiterActiveRank {
+    match amount {
+        0 | 1 => RecruiterActiveRank::ThisWeek,
+        2 => RecruiterActiveRank::TwoWeeks,
+        3 | 4 => RecruiterActiveRank::ThisMonth,
+        5..=8 => RecruiterActiveRank::TwoMonths,
+        9..=13 => RecruiterActiveRank::ThreeMonths,
+        14..=17 => RecruiterActiveRank::FourMonths,
+        18..=22 => RecruiterActiveRank::FiveMonths,
+        23..=26 => RecruiterActiveRank::HalfYear,
+        _ => RecruiterActiveRank::Older,
     }
 }
 
@@ -1947,9 +1959,13 @@ mod tests {
         };
 
         assert!(inactive_recruiter_skip_reason(&Some("2周内活跃".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("1周前活跃".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("2周前活跃".to_string()), &config).is_none());
+        assert!(inactive_recruiter_skip_reason(&Some("四星期前活跃".to_string()), &config).is_none());
         assert!(
             inactive_recruiter_skip_reason(&Some("一个月内活跃".to_string()), &config).is_none()
         );
+        assert!(inactive_recruiter_skip_reason(&Some("5周前活跃".to_string()), &config).is_some());
         assert!(inactive_recruiter_skip_reason(&Some("2月内活跃".to_string()), &config).is_some());
     }
 
