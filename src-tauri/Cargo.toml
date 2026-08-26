@@ -46,6 +46,7 @@ rand = "0.8"
 tempfile = "3.27.0"
 zip = "2.2.0"
 rig = { version = "0.40.0", default-features = false, features = ["reqwest", "native-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
 futures = "0.3.30"
 
 [dev-dependencies]

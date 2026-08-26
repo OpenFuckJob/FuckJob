@@ -14,14 +14,16 @@ import {
   PRIMARY_LLM_ENTRY_ID,
 } from "@/types/app-config";
 
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn((command: string) =>
-    Promise.resolve(
-      command === "list_llm_credential_status"
-        ? { success: true, data: [], error: null }
-        : { success: true, data: { configured: false, source: "none" }, error: null },
-    ),
+const invokeMock = vi.hoisted(() => vi.fn((command: string): Promise<unknown> =>
+  Promise.resolve(
+    command === "list_llm_credential_status"
+      ? { success: true, data: [], error: null }
+      : { success: true, data: { configured: false, source: "none" }, error: null },
   ),
+));
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: invokeMock,
 }));
 
 import {
@@ -193,7 +195,7 @@ function Harness({
   onPersistAll,
   dirty,
 }: {
-  initialConfig?: LlmConfig;
+  initialConfig?: LlmConfig | null;
   initialFallbacks?: LlmProviderEntry[];
   onFallbacks?: (next: LlmProviderEntry[]) => void;
   onRetry?: (next: LlmRetryConfig) => void;
@@ -460,6 +462,47 @@ describe("LlmConfigPanel 降级链界面", () => {
     expect(screen.getByRole("button", { name: "下移备用 1" })).not.toBeDisabled();
     expect(screen.getByRole("button", { name: "上移备用 2" })).not.toBeDisabled();
     expect(screen.getByRole("button", { name: "下移备用 2" })).toBeDisabled();
+  });
+
+  it("主用模型名为空时仍保留草稿编辑区并提示补全后才会生效", async () => {
+    render(<Harness initialConfig={{ ...primaryConfig, model: "" }} />);
+
+    expect(await screen.findByLabelText(`${PRIMARY_LLM_ENTRY_ID} 服务地址`)).toBeInTheDocument();
+    expect(screen.getByLabelText(`${PRIMARY_LLM_ENTRY_ID} 模型`)).toBeInTheDocument();
+    expect(screen.getByLabelText(`${PRIMARY_LLM_ENTRY_ID} API Key`)).toBeInTheDocument();
+    expect(screen.getByText("补齐服务地址和模型后，大模型才会启用")).toBeInTheDocument();
+    expect(screen.getByText(/补齐前不会触发自动保存/)).toBeInTheDocument();
+  });
+
+  it("模型列表自动填入第一个模型后再次展开仍展示完整候选", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_llm_credential_status") {
+        return Promise.resolve({
+          success: true,
+          data: [{ entry_id: PRIMARY_LLM_ENTRY_ID, configured: true, source: "keychain" }],
+          error: null,
+        });
+      }
+      if (command === "list_llm_models") {
+        return Promise.resolve({
+          success: true,
+          data: ["deepseek-chat", "deepseek-coder", "deepseek-reasoner"],
+          error: null,
+        });
+      }
+      return Promise.resolve({ success: true, data: { configured: false, source: "none" }, error: null });
+    });
+    render(<Harness initialConfig={{ provider: "deepseek", base_url: "https://api.deepseek.com", model: "" }} />);
+
+    const modelInput = await screen.findByLabelText(`${PRIMARY_LLM_ENTRY_ID} 模型`);
+    fireEvent.click(screen.getByRole("button", { name: "刷新primary模型列表" }));
+
+    await waitFor(() => expect(modelInput).toHaveValue("deepseek-chat"));
+    fireEvent.mouseDown(modelInput);
+
+    for (const model of ["deepseek-chat", "deepseek-coder", "deepseek-reasoner"]) {
+      expect((await screen.findAllByText(model)).length).toBeGreaterThan(0);
+    }
   });
 
   // 越界取值的夹紧行为由 clampRetryAttempts / clampRetryBaseDelay 的纯函数测试覆盖。

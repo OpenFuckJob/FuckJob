@@ -354,13 +354,15 @@ fn parse_llm_config(
         serde_yaml::from_value(value.clone()).map_err(|error| error.to_string())?;
     let base_url = raw.base_url.unwrap_or_default();
     let model = raw.model.unwrap_or_default();
-    if allow_incomplete_legacy && (base_url.trim().is_empty() || model.trim().is_empty()) {
+    let has_service_fields = !base_url.trim().is_empty() || !model.trim().is_empty();
+    if allow_incomplete_legacy && !service_is_usable(&base_url, &model) {
         return Ok(None);
     }
 
     let provider = match raw.provider {
         Some(provider) => provider,
         None if allow_incomplete_legacy => infer_legacy_provider(&base_url),
+        None if !has_service_fields => return Ok(None),
         None => return Err("大模型服务预设不能为空".to_string()),
     };
     let mut config = LlmConfig {
@@ -1005,6 +1007,9 @@ impl AppRuntimeConfig {
         let Some(primary) = self.llm_config.as_ref() else {
             return Vec::new();
         };
+        if !service_is_usable(&primary.base_url, &primary.model) {
+            return Vec::new();
+        }
 
         let mut chain = Vec::with_capacity(self.llm_fallbacks.len() + 1);
         chain.push(LlmChainLink {
@@ -2078,11 +2083,11 @@ mod tests {
     /// 旧版已写入的不完整主用服务必须能读出来修复，但不允许再次落盘。
     #[test]
     fn incomplete_current_llm_config_loads_as_a_draft_but_cannot_be_persisted() {
-        for (base_url, model) in [
-            ("", "qwen3"),
-            ("   ", "qwen3"),
-            ("http://localhost/v1", ""),
-            ("http://localhost/v1", "   "),
+        for (base_url, model, expected_base_url, expected_model) in [
+            ("", "qwen3", "", "qwen3"),
+            ("   ", "qwen3", "", "qwen3"),
+            (" http://localhost/v1/// ", "", "http://localhost/v1", ""),
+            ("http://localhost/v1", "   ", "http://localhost/v1", ""),
         ] {
             let mut config = default_app_config();
             config.llm_config = Some(LlmConfig {
@@ -2093,8 +2098,9 @@ mod tests {
 
             let yaml = serde_yaml::to_string(&config).unwrap();
             let mut loaded = parse_config_content(&yaml).expect("历史草稿不应阻断启动");
-
-            assert!(loaded.llm_config.is_some());
+            let llm = loaded.llm_config.as_ref().unwrap();
+            assert_eq!(llm.base_url, expected_base_url);
+            assert_eq!(llm.model, expected_model);
             assert!(!loaded.llm_active());
             assert!(loaded.llm_chain().is_empty());
             let error = validate_and_normalize(&mut loaded).unwrap_err();
@@ -2125,7 +2131,7 @@ llm_config:
 schema_version: 3
 llm_config:
   provider: openai
-  base_url: https://llm.example.test/v1
+  base_url: https://llm.example.test/v1/
   model: ""
 browser_config:
   user_data_dir: ""
@@ -2134,6 +2140,11 @@ browser_config:
         )
         .expect("历史草稿必须能加载");
 
+        let llm = config.llm_config.as_ref().unwrap();
+        assert_eq!(llm.provider, LlmProviderPreset::OpenAi);
+        assert_eq!(llm.base_url, "https://llm.example.test/v1");
+        assert_eq!(llm.model, "");
+        assert!(config.llm_chain().is_empty());
         assert!(!load_repairs_can_be_persisted(&config));
     }
 

@@ -537,7 +537,7 @@ export function LlmConfigPanel({
           options={entryModels.map((model) => ({ value: model, label: model }))}
           placeholder="直接输入模型名称，或点右侧按钮获取"
           onChange={(model) => patchEntry(entryId, { model })}
-          filterOption={(input, option) => String(option?.value ?? "").toLowerCase().includes(input.toLowerCase())}
+          filterOption={false}
         />
         <Button
           className="shrink-0"
@@ -576,7 +576,7 @@ export function LlmConfigPanel({
       <>
         <Form.Item label="API Key" className="!mb-3">
           <div className="flex gap-2">
-          <Input.Password
+            <Input.Password
             aria-label={`${entryId} API Key`}
             value={apiKeys[entryId] ?? ""}
             placeholder="设置或替换 API Key"

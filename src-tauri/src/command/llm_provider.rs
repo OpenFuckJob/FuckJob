@@ -5,7 +5,7 @@ use crate::error::AppError;
 use crate::llm::service::{normalize_provider_base_url, provider_requires_key, LlmService};
 use crate::llm::types::ConnectionReport;
 use rig::client::ModelListingClient;
-use rig::model::ModelListingError;
+use rig::model::{Model, ModelList, ModelListingError};
 use serde::Serialize;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -278,22 +278,7 @@ async fn fetch_model_list_with_credential(
             .map_err(|_| AppError::network("获取模型列表超时"))?
             .map_err(map_model_listing_error)?
         }
-        LlmProviderPreset::DeepSeek => {
-            let client = rig::providers::deepseek::Client::builder()
-                .api_key(api_key)
-                .base_url(&base_url)
-                .build()
-                .map_err(|error| {
-                    AppError::configuration("无法创建大模型客户端").with_detail(error.to_string())
-                })?;
-            timeout(
-                Duration::from_secs(MODEL_LIST_TIMEOUT_SECONDS),
-                client.list_models(),
-            )
-            .await
-            .map_err(|_| AppError::network("获取模型列表超时"))?
-            .map_err(map_model_listing_error)?
-        }
+        LlmProviderPreset::DeepSeek => fetch_openai_compatible_models(&base_url, api_key).await?,
         LlmProviderPreset::OpenAi | LlmProviderPreset::OpenAiResponses => {
             let client = rig::providers::openai::Client::builder()
                 .api_key(api_key)
@@ -302,13 +287,29 @@ async fn fetch_model_list_with_credential(
                 .map_err(|error| {
                     AppError::configuration("无法创建大模型客户端").with_detail(error.to_string())
                 })?;
-            timeout(
+            match timeout(
                 Duration::from_secs(MODEL_LIST_TIMEOUT_SECONDS),
                 client.list_models(),
             )
             .await
             .map_err(|_| AppError::network("获取模型列表超时"))?
-            .map_err(map_model_listing_error)?
+            {
+                Ok(models) => models,
+                Err(rig_error) => fetch_openai_compatible_models(&base_url, api_key)
+                    .await
+                    .map_err(|fallback_error| {
+                        let rig_error = map_model_listing_error(rig_error);
+                        let fallback_detail = fallback_error
+                            .detail
+                            .as_deref()
+                            .unwrap_or(fallback_error.message.as_str())
+                            .to_string();
+                        fallback_error.with_detail(format!(
+                            "rig 获取失败：{}；/models 兜底失败：{}",
+                            rig_error.message, fallback_detail,
+                        ))
+                    })?,
+            }
         }
         LlmProviderPreset::MiniMax | LlmProviderPreset::Moonshot | LlmProviderPreset::ZAi => {
             return Err(AppError::provider(
@@ -373,6 +374,88 @@ async fn fetch_model_list_with_credential(
     names.sort();
     names.dedup();
     Ok(names)
+}
+
+fn openai_compatible_models_url(base_url: &str) -> String {
+    format!("{}/models", base_url.trim().trim_end_matches('/'))
+}
+
+async fn fetch_openai_compatible_models(
+    base_url: &str,
+    api_key: &str,
+) -> Result<ModelList, AppError> {
+    let url = openai_compatible_models_url(base_url);
+    let response = timeout(
+        Duration::from_secs(MODEL_LIST_TIMEOUT_SECONDS),
+        reqwest::Client::new()
+            .get(&url)
+            .bearer_auth(api_key)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send(),
+    )
+    .await
+    .map_err(|_| AppError::network("获取模型列表超时"))?
+    .map_err(|error| {
+        AppError::network("无法连接大模型服务获取模型列表").with_detail(error.to_string())
+    })?;
+
+    let status = response.status();
+    let body = response.text().await.map_err(|error| {
+        AppError::network("读取模型列表响应失败").with_detail(error.to_string())
+    })?;
+    if !status.is_success() {
+        return Err(map_openai_compatible_models_status(status.as_u16(), body));
+    }
+
+    Ok(ModelList {
+        data: parse_openai_compatible_models(&body)?,
+    })
+}
+
+fn map_openai_compatible_models_status(status_code: u16, body: String) -> AppError {
+    let mut mapped = match status_code {
+        401 | 403 => AppError::credential("大模型密钥无效或无权获取模型列表"),
+        404 => AppError::provider("大模型服务未提供模型列表接口，请手动填写模型名称"),
+        429 => AppError::provider("获取模型列表受限或账户额度不足"),
+        _ => AppError::provider(format!("获取模型列表失败（HTTP {status_code}）")),
+    };
+    mapped = mapped.with_detail(format!("HTTP {status_code}; {body}"));
+    mapped
+}
+
+fn parse_openai_compatible_models(body: &str) -> Result<Vec<Model>, AppError> {
+    let value: serde_json::Value = serde_json::from_str(body).map_err(|error| {
+        AppError::provider("模型列表响应解析失败，请手动填写模型名称")
+            .with_detail(error.to_string())
+    })?;
+    let items = if let Some(data) = value.get("data") {
+        data.as_array()
+    } else {
+        value.as_array()
+    }
+    .ok_or_else(|| {
+        AppError::provider("模型列表响应解析失败，请手动填写模型名称").with_detail("缺少 data 数组")
+    })?;
+
+    let mut names = items
+        .iter()
+        .filter_map(|item| {
+            item.as_str()
+                .or_else(|| item.get("id").and_then(|id| id.as_str()))
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    if names.is_empty() {
+        return Err(
+            AppError::provider("模型列表响应解析失败，请手动填写模型名称")
+                .with_detail("响应中没有可用模型标识"),
+        );
+    }
+    Ok(names.into_iter().map(Model::from_id).collect())
 }
 
 fn map_model_listing_error(error: ModelListingError) -> AppError {
@@ -602,6 +685,78 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error.code, AppErrorCode::Credential);
+    }
+
+    #[test]
+    fn openai_compatible_models_url_normalizes_trailing_slashes() {
+        assert_eq!(
+            openai_compatible_models_url(" https://api.deepseek.com/// "),
+            "https://api.deepseek.com/models"
+        );
+        assert_eq!(
+            openai_compatible_models_url(" https://proxy.example.test/v1/ "),
+            "https://proxy.example.test/v1/models"
+        );
+        assert_eq!(
+            openai_compatible_models_url("https://proxy.example.test/v1///"),
+            "https://proxy.example.test/v1/models"
+        );
+    }
+
+    #[test]
+    fn parse_openai_compatible_models_accepts_standard_openai_payload() {
+        let models = parse_openai_compatible_models(
+            r#"{"object":"list","data":[{"id":"deepseek-chat"},{"id":"deepseek-reasoner"}]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            models.into_iter().map(|model| model.id).collect::<Vec<_>>(),
+            vec!["deepseek-chat", "deepseek-reasoner"]
+        );
+    }
+
+    #[test]
+    fn parse_openai_compatible_models_accepts_string_data_items() {
+        let models = parse_openai_compatible_models(r#"{"data":["model-a","model-b"]}"#).unwrap();
+
+        assert_eq!(
+            models.into_iter().map(|model| model.id).collect::<Vec<_>>(),
+            vec!["model-a", "model-b"]
+        );
+    }
+
+    #[test]
+    fn parse_openai_compatible_models_accepts_top_level_array() {
+        let models =
+            parse_openai_compatible_models(r#"[{"id":"model-a"},{"id":"model-b"}]"#).unwrap();
+
+        assert_eq!(
+            models.into_iter().map(|model| model.id).collect::<Vec<_>>(),
+            vec!["model-a", "model-b"]
+        );
+    }
+
+    #[test]
+    fn parse_openai_compatible_models_sorts_deduplicates_and_filters_blank_ids() {
+        let models = parse_openai_compatible_models(
+            r#"{"data":[{"id":" z-model "},{"id":""},{"id":"a-model"},"z-model",{"id":"   "}]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            models.into_iter().map(|model| model.id).collect::<Vec<_>>(),
+            vec!["a-model", "z-model"]
+        );
+    }
+
+    #[test]
+    fn parse_openai_compatible_models_reports_missing_model_ids() {
+        let error = parse_openai_compatible_models(r#"{"data":[{"object":"model"}]}"#).unwrap_err();
+
+        assert_eq!(error.code, AppErrorCode::Provider);
+        assert!(error.message.contains("模型列表响应解析失败"));
+        assert_eq!(error.detail.as_deref(), Some("响应中没有可用模型标识"));
     }
 
     #[test]
