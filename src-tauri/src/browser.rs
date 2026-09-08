@@ -12,7 +12,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Mutex, RwLock,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{anyhow, Result};
@@ -20,6 +20,7 @@ use once_cell::sync::Lazy;
 use rust_drission::{cdp::CdpClient, stealth_inject, ChromiumPage, Page};
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
+use uuid::Uuid;
 
 use crate::config::{self, BrowserConfig};
 
@@ -892,20 +893,52 @@ pub fn close_browser_session() -> Result<()> {
     Ok(())
 }
 
-fn create_background_target(client: &CdpClient) -> Result<String> {
+fn create_background_target(client: &CdpClient, url: &str) -> Result<String> {
     client
-        .send("Target.createTarget", Some(background_target_params()))?
+        .send("Target.createTarget", Some(background_target_params(url)))?
         .get("targetId")
         .and_then(serde_json::Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| anyhow!("后台标签页创建成功，但 CDP 未返回 targetId"))
 }
 
-fn background_target_params() -> serde_json::Value {
+fn background_target_url(token: &str) -> String {
+    format!("about:blank#offer-flow-{token}")
+}
+
+fn background_target_params(url: &str) -> serde_json::Value {
     serde_json::json!({
-        "url": "about:blank",
+        "url": url,
         "background": true
     })
+}
+
+fn attach_background_target(browser: &ChromiumPage, url: &str, target_id: &str) -> Result<Page> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match browser
+            .browser()
+            .get_tab("offer-flow-background", None, Some(url), Some("page"))
+        {
+            Ok(Some(tab)) => {
+                // Verify the attached session, not just the URL filter in rust_drission.
+                let info = tab.run_cdp("Target.getTargetInfo", None)?;
+                if info.pointer("/targetInfo/targetId").and_then(serde_json::Value::as_str)
+                    != Some(target_id)
+                {
+                    return Err(anyhow!("后台标签页会话与创建的 targetId 不一致"));
+                }
+                return Ok(tab);
+            }
+            Ok(None) if Instant::now() < deadline => {}
+            Ok(None) => return Err(anyhow!("无法附加到后台标签页 {url}")),
+            Err(error) if Instant::now() < deadline => {
+                let _ = error;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn close_target(client: &CdpClient, target_id: &str) {
@@ -926,19 +959,13 @@ pub fn new_stealth_tab(browser: &ChromiumPage) -> Result<Page> {
         .map_err(|e| anyhow!("获取浏览器调试端口读锁失败: {}", e))?
         .ok_or_else(|| anyhow!("浏览器调试端口未知，无法创建后台标签页"))?;
     let client = connect_browser_cdp(port)?;
-    let target_id = create_background_target(&client)?;
-    let tab = match browser
-        .browser()
-        .get_tab(&target_id, None, None, Some("page"))
-    {
-        Ok(Some(tab)) => tab,
-        Ok(None) => {
-            close_target(&client, &target_id);
-            return Err(anyhow!("无法附加到刚创建的后台标签页 {target_id}"));
-        }
+    let target_url = background_target_url(&Uuid::new_v4().simple().to_string());
+    let target_id = create_background_target(&client, &target_url)?;
+    let tab = match attach_background_target(browser, &target_url, &target_id) {
+        Ok(tab) => tab,
         Err(error) => {
             close_target(&client, &target_id);
-            return Err(error.into());
+            return Err(error);
         }
     };
     if let Err(error) = stealth_inject(&tab) {
@@ -1110,11 +1137,12 @@ mod tests {
 
     #[test]
     fn business_tabs_are_requested_without_foreground_activation() {
-        let params = background_target_params();
+        let url = background_target_url("probe");
+        let params = background_target_params(&url);
 
         assert_eq!(
             params.get("url").and_then(serde_json::Value::as_str),
-            Some("about:blank")
+            Some("about:blank#offer-flow-probe")
         );
         assert_eq!(
             params
@@ -1122,6 +1150,17 @@ mod tests {
                 .and_then(serde_json::Value::as_bool),
             Some(true)
         );
+    }
+
+    #[test]
+    fn background_tab_lookup_is_filtered_by_its_unique_url() {
+        let source = include_str!("browser.rs");
+        let start = source.find("fn attach_background_target").unwrap();
+        let end = source[start..].find("fn close_target").unwrap() + start;
+        let body = &source[start..end];
+
+        assert!(body.contains("Some(url)"));
+        assert!(!body.contains("get_tab(&target_id, None, None"));
     }
 
     #[test]

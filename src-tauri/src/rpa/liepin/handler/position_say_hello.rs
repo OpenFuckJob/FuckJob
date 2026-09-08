@@ -11,6 +11,7 @@ use crate::{
         common::{upload_image_to_file_input, RpaJob},
         conversation::SendVerdict,
         greet::build_greet_resources,
+        human_input,
         human_pace::GreetPacer,
         liepin::LIEPIN_SITE_URL,
         run_flow::is_job_task_stop_requested,
@@ -22,6 +23,7 @@ use crate::{
 use chrono::Local;
 use rust_drission::{utils::sleep_random_ms, ChromiumPage, Page};
 use serde::Deserialize;
+use serde_json::Value;
 use urlencoding::encode;
 
 pub async fn position_say_hello(
@@ -166,11 +168,11 @@ pub async fn position_say_hello_on_page(
 
             // 「筛选通过即分析」不关心后面招呼发没发出去，所以在进入打招呼之前就登记
             auto_analysis::schedule(
-                &build_job_detail(&job, &config),
+                &build_job_detail(&job, &config, false),
                 AnalysisTrigger::FilterPassed,
                 &config,
             );
-            let greeted = match greet_job(connection, job.clone(), config.clone()).await {
+            let greeted = match greet_job(connection, page, job.clone(), config.clone()).await {
                 Ok(false) => {
                     stats.skipped_hold += 1;
                     consecutive_greet_failures = 0;
@@ -647,6 +649,7 @@ fn parse_company_from_card_text(card_text: &str, link_text: &str) -> Option<Stri
 /// 区分出来是为了不把「拦下」计成「打招呼成功」，那会让统计骗人
 async fn greet_job(
     browser_page: &ChromiumPage,
+    main_page: &Page,
     mut job: RpaJob,
     config: AppRuntimeConfig,
 ) -> Result<bool, anyhow::Error> {
@@ -673,33 +676,46 @@ async fn greet_job(
             )?;
         }
 
-        click_first(
-            &page,
-            &[
-                ".btn-apply",
-                ".apply-btn",
-                "button[class*='apply']",
-                "a[class*='apply']",
-                "button[class*='chat']",
-                "a[class*='chat']",
-            ],
-        )?;
-        sleep_random_ms(800, 1200);
+        if is_external_apply_only(&page)? {
+            logger::info(format!(
+                "猎聘跳过 {}，该岗位仅支持外部网申，未生成或发送站内消息",
+                job.title
+            ))?;
+            return Ok(false);
+        }
 
-        match build_greet_resources(&config, &job).await? {
+        let resume_sent = match build_greet_resources(&config, &job).await? {
             // 整轮取消：既不发文本也不发图片，也不记为已沟通
             SendVerdict::Hold(reason) => {
                 logger::info(format!("猎聘跳过 {}，未发送任何内容：{reason}", job.title))?;
                 return Ok(false);
             }
-            SendVerdict::Send(resources) => send_resources(&page, resources)?,
-        }
-        let saved = save_job_detail(&job, &config);
+            SendVerdict::Send(resources) => {
+                let entry = click_first(
+                    &page,
+                    LIEPIN_CONTACT_ENTRY_SELECTORS,
+                )?;
+                if entry_sends_resume(entry) {
+                    logger::info("猎聘已点击投简历入口，继续发送招呼消息")?;
+                }
+                sleep_random_ms(800, 1200);
+                send_resources(&page, resources)?;
+                let resume_sent = confirm_resume_delivery(&page)?;
+                if !resume_sent {
+                    logger::warning("猎聘消息已发送，但尚未确认简历投递，保留简历未投递状态")?;
+                }
+                resume_sent
+            }
+        };
+        let saved = save_job_detail(&job, &config, resume_sent);
         auto_analysis::schedule(&saved, AnalysisTrigger::GreetSent, &config);
         logger::info(format!("猎聘 {} 初次沟通成功", job.title))?;
         Ok(true)
     }
     .await;
+    if let Err(error) = main_page.run_cdp("Page.bringToFront", None) {
+        let _ = logger::warning(format!("猎聘恢复主搜索页失败，继续清理详情页：{error}"));
+    }
     let close_result = page.close();
 
     match (result, close_result) {
@@ -1047,158 +1063,123 @@ fn build_wait_image_delivery_script(since: f64) -> String {
 const INPUT_READY_TIMEOUT_MS: u32 = 15000;
 const SEND_BUTTON_READY_TIMEOUT_MS: u32 = 15000;
 const INPUT_CLEARED_TIMEOUT_MS: u32 = 8000;
+const CHAT_INPUT_MARKER_SELECTOR: &str = "[data-fj-liepin-chat-input='1']";
+const LIEPIN_CONTACT_ENTRY_SELECTORS: &[&str] = &[
+    "a[data-selector='apply-job']",
+    "a[data-selector='chat-chat']",
+    "a.btn-chat",
+    ".btn-apply",
+    ".apply-btn",
+    "button[class*='apply']",
+    "a[class*='apply']",
+    "button[class*='chat']",
+    "a[class*='chat']",
+];
+const LIEPIN_EXTERNAL_APPLY_SELECTOR: &str = "a[data-selector='apply-ats']";
+
+fn is_external_apply_only(page: &Page) -> Result<bool, anyhow::Error> {
+    for selector in LIEPIN_CONTACT_ENTRY_SELECTORS {
+        if page.ele(selector)?.is_some() {
+            return Ok(false);
+        }
+    }
+    Ok(page.ele(LIEPIN_EXTERNAL_APPLY_SELECTOR)?.is_some())
+}
 
 fn send_text_resource(page: &Page, text: &str) -> Result<(), anyhow::Error> {
-    let value = page.run_js_await(&build_send_text_script(text))?;
-    let result = value.get("value").cloned().unwrap_or(value);
+    install_request_recorder(page)?;
+    unwrap_runtime_value(page.run_js_await(&build_mark_chat_input_script())?)?;
+    if let Some(input) = page.ele(CHAT_INPUT_MARKER_SELECTOR)? {
+        let _ = human_input::type_text(page, &input, text);
+    }
+    if is_job_task_stop_requested() {
+        return Err(anyhow::anyhow!("任务已停止，本条猎聘消息未发送"));
+    }
+    let result = unwrap_runtime_value(page.run_js_await(&build_send_text_script(text))?)?;
     let success = result
         .get("success")
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
-    let message = result
-        .get("message")
+    let reason = result
+        .get("reason")
         .and_then(|value| value.as_str())
-        .unwrap_or_default();
+        .unwrap_or("unknown");
 
     if !success {
-        return Err(anyhow::anyhow!("消息发送失败：{}", message));
+        return Err(anyhow::anyhow!("消息发送失败：{}", reason));
     }
 
-    // 成功不单独记，末尾的“初次沟通成功”已经覆盖
+    logger::info(format!(
+        "猎聘文本发送确认：尝试 {} 次，弹窗关闭 {}，请求确认 {}，气泡确认 {}",
+        result
+            .get("attempts")
+            .and_then(|value| value.as_u64())
+            .unwrap_or_default(),
+        result
+            .get("popupClosed")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false),
+        result
+            .get("requestSucceeded")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false),
+        result
+            .get("bubbleSeen")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false),
+    ))?;
     Ok(())
+}
+
+fn unwrap_runtime_value(value: Value) -> Result<Value, anyhow::Error> {
+    if value.get("subtype").and_then(Value::as_str) == Some("error") {
+        let class_name = value
+            .get("className")
+            .and_then(Value::as_str)
+            .unwrap_or("JavaScriptError");
+        let description = value
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("页面脚本未返回详情");
+        return Err(anyhow::anyhow!("猎聘页面脚本异常：{class_name}: {description}"));
+    }
+    Ok(value.get("value").cloned().unwrap_or(value))
+}
+
+fn liepin_send_script_source() -> String {
+    include_str!("../send_text.js")
+        .replace("export { markLiepinChatInput, runLiepinSend };", "")
+}
+
+fn build_mark_chat_input_script() -> String {
+    let mut script = String::from("(() => {\n");
+    script.push_str(&liepin_send_script_source());
+    script.push_str("\nreturn markLiepinChatInput(document);\n})()");
+    script
 }
 
 fn build_send_text_script(text: &str) -> String {
     let text_json = serde_json::to_string(text).unwrap_or_else(|_| "\"\"".to_string());
-    format!(
+    let mut script = String::from("(async () => {\n");
+    script.push_str(&liepin_send_script_source());
+    script.push_str(&format!(
         r#"
-        (async () => {{
-            const message = {text_json};
-            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-            const visible = (el) => {{
-                if (!el) return false;
-                const rect = el.getBoundingClientRect();
-                const style = window.getComputedStyle(el);
-                return rect.width > 0 && rect.height > 0
-                    && style.visibility !== "hidden"
-                    && style.display !== "none";
-            }};
-            const setNativeValue = (el, value) => {{
-                const proto = el instanceof HTMLTextAreaElement
-                    ? HTMLTextAreaElement.prototype
-                    : HTMLInputElement.prototype;
-                const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
-                if (descriptor && descriptor.set) {{
-                    descriptor.set.call(el, value);
-                }} else {{
-                    el.value = value;
-                }}
-            }};
-            const dispatch = (el) => {{
-                el.dispatchEvent(new InputEvent("input", {{ bubbles: true, inputType: "insertText", data: message }}));
-                el.dispatchEvent(new Event("change", {{ bubbles: true }}));
-                el.dispatchEvent(new KeyboardEvent("keyup", {{ bubbles: true, key: "Enter" }}));
-            }};
-            const inputValue = (el) => (el.isContentEditable ? el.textContent : el.value) || "";
-            const isDisabled = (el) => {{
-                const className = el.getAttribute("class") || "";
-                const ariaDisabled = el.getAttribute("aria-disabled");
-                return Boolean(el.disabled)
-                    || ariaDisabled === "true"
-                    || className.includes("disabled")
-                    || className.includes("ant-im-btn-disabled");
-            }};
-
-            // 等状态而不是等时间：条件成立立刻继续，页面慢就自动多等，
-            // 超时只是异常上限，不参与正常判定
-            const waitFor = async (getter, timeoutMs, label) => {{
-                const deadline = performance.now() + timeoutMs;
-                for (;;) {{
-                    const found = getter();
-                    if (found) return found;
-                    if (performance.now() >= deadline) {{
-                        return null;
-                    }}
-                    await sleep(150);
-                }}
-            }};
-            const findInput = () => Array
-                .from(document.querySelectorAll("textarea, input[type='text'], div[contenteditable='true'], [contenteditable='true']"))
-                .filter(visible)
-                .find((el) => !el.disabled && !el.readOnly);
-            const findSendButton = () => {{
-                const antImButtons = Array.from(document.querySelectorAll(".ant-im-btn"));
-                const preferred = antImButtons[1];
-                if (preferred && visible(preferred) && !isDisabled(preferred)) {{
-                    return preferred;
-                }}
-                return Array
-                    .from(document.querySelectorAll("button.im-ui-basic-send-btn, button.ant-im-btn-primary, button, a, div[role='button'], span[role='button'], .btn-send, .send-btn, [class*='send'], [class*='Send']"))
-                    .filter(visible)
-                    .find((el) => {{
-                        const text = (el.innerText || el.textContent || "").trim();
-                        const className = el.getAttribute("class") || "";
-                        return (text === "发送"
-                                || text.includes("发送")
-                                || className.includes("im-ui-basic-send-btn")
-                                || className.includes("ant-im-btn-primary")
-                                || /(^|\s)(btn-send|send-btn)(\s|$)/.test(className)
-                                || /send|Send/.test(className))
-                            && !isDisabled(el);
-                    }});
-            }};
-
-            // 聊天窗可能还在加载，等它出现而不是查一次就判死
-            const input = await waitFor(findInput, {INPUT_READY_TIMEOUT_MS});
-            if (!input) {{
-                return {{
-                    success: false,
-                    message: "聊天输入框在 {INPUT_READY_TIMEOUT_MS} 毫秒内未出现"
-                }};
-            }}
-
-            input.focus();
-            if (input.isContentEditable) {{
-                input.textContent = message;
-            }} else {{
-                setNativeValue(input, message);
-            }}
-            dispatch(input);
-
-            // 填入内容后按钮才会由 disabled 变可用，同样等状态
-            const button = await waitFor(findSendButton, {SEND_BUTTON_READY_TIMEOUT_MS});
-            if (!button) {{
-                return {{
-                    success: false,
-                    message: "发送按钮在 {SEND_BUTTON_READY_TIMEOUT_MS} 毫秒内未变为可用",
-                    inputText: inputValue(input)
-                }};
-            }}
-
-            button.scrollIntoView({{ block: "center", inline: "center" }});
-            button.click();
-
-            // 发出去的标志是输入框被清空，等这个状态，别按固定时长猜
-            const cleared = await waitFor(
-                () => !inputValue(input).includes(message) || null,
-                {INPUT_CLEARED_TIMEOUT_MS}
-            );
-
-            return {{
-                success: Boolean(cleared),
-                message: cleared ? "输入框已清空" : "已点击发送按钮，但输入框内容未清空",
-                inputText: inputValue(input),
-                buttonText: (button.innerText || button.textContent || "").trim(),
-                buttonClass: button.getAttribute("class") || ""
-            }};
+        return await runLiepinSend(document, {{
+            message: {text_json},
+            inputTimeoutMs: {INPUT_READY_TIMEOUT_MS},
+            buttonTimeoutMs: {SEND_BUTTON_READY_TIMEOUT_MS},
+            proofTimeoutMs: {INPUT_CLEARED_TIMEOUT_MS},
+            requestSince: performance.now()
+        }});
         }})()
         "#
-    )
+    ));
+    script
 }
 
 /// 按当前任务上下文拼出岗位记录。
 /// 打招呼后落库和「筛选通过即分析」共用它——后者触发时岗位还没入库，只能拿这份内存数据去分析。
-fn build_job_detail(job: &RpaJob, config: &AppRuntimeConfig) -> JobDetail {
+fn build_job_detail(job: &RpaJob, config: &AppRuntimeConfig, resume_sent: bool) -> JobDetail {
     let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let active = config.active_job_profile.as_ref();
     JobDetail {
@@ -1214,15 +1195,15 @@ fn build_job_detail(job: &RpaJob, config: &AppRuntimeConfig) -> JobDetail {
         salary: job.salary.clone(),
         location: job.location.clone(),
         is_reply: false,
-        is_send_resume: false,
+        is_send_resume: resume_sent,
         created_at: now.clone(),
-        resume_sent_at: None,
+        resume_sent_at: resume_sent.then(|| now.clone()),
         updated_at: now,
     }
 }
 
-fn save_job_detail(job: &RpaJob, config: &AppRuntimeConfig) -> JobDetail {
-    let job_detail = build_job_detail(job, config);
+fn save_job_detail(job: &RpaJob, config: &AppRuntimeConfig, resume_sent: bool) -> JobDetail {
+    let job_detail = build_job_detail(job, config, resume_sent);
 
     if let Err(e) = job_detail_dao::create(job_detail.clone()) {
         let _ = logger::warning(format!("保存猎聘岗位数据失败: {}", e));
@@ -1264,14 +1245,42 @@ pub(crate) fn text_from_first(page: &Page, selectors: &[&str]) -> Result<String,
 const CLICKABLE_READY_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// 等待任一选择器出现并点击：命中立刻返回，没出现就继续等到上限。
-pub(crate) fn click_first(page: &Page, selectors: &[&str]) -> Result<(), anyhow::Error> {
+fn entry_sends_resume(selector: &str) -> bool {
+    selector.contains("apply") && !selector.contains("apply-ats")
+}
+
+fn resume_delivery_label_confirmed(label: &str) -> bool {
+    matches!(label.trim(), "已投递" | "已投递简历" | "已申请")
+}
+
+fn confirm_resume_delivery(page: &Page) -> Result<bool, anyhow::Error> {
+    // Clicking the application entry can merely open a dialog. Only the
+    // job's own application status is evidence of delivery.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        if let Some(entry) = page.ele("a[data-selector='apply-job']")? {
+            if resume_delivery_label_confirmed(&entry.text_content()?) {
+                return Ok(true);
+            }
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+pub(crate) fn click_first<'a>(
+    page: &Page,
+    selectors: &'a [&'a str],
+) -> Result<&'a str, anyhow::Error> {
     let deadline = Instant::now() + CLICKABLE_READY_TIMEOUT;
     loop {
         for selector in selectors {
             // 页面正在导航时 ele 会短暂报错，这属于“还没就绪”而不是失败
             if let Ok(Some(ele)) = page.ele(selector) {
                 ele.click()?;
-                return Ok(());
+                return Ok(selector);
             }
         }
 
@@ -1435,13 +1444,14 @@ mod tests {
         let script = build_send_text_script("你好，想进一步沟通");
 
         assert!(script.contains("InputEvent(\"input\""));
-        assert!(script.contains("text.includes(\"发送\")"));
+        assert!(script.contains("textOf(node).includes(\"发送\")"));
         assert!(script.contains("button.im-ui-basic-send-btn"));
         assert!(script.contains("button.ant-im-btn-primary"));
-        assert!(script.contains("ariaDisabled === \"true\""));
-        assert!(script.contains("document.querySelectorAll(\".ant-im-btn\")"));
-        assert!(script.contains("antImButtons[1]"));
-        assert!(script.contains("button.click()"));
+        assert!(script.contains("im-ui-msg-list-content"));
+        assert!(!script.contains("antImButtons[1]"));
+        assert!(!script.contains("[class*='send']"));
+        assert!(script.contains("activeButton.click()"));
+        assert!(script.contains("send-push"));
     }
 
     #[test]
@@ -1450,20 +1460,132 @@ mod tests {
         let script = build_send_text_script("你好");
 
         assert!(!script.contains("await sleep(500)"));
-        assert!(script.contains("waitFor(findInput"));
-        assert!(script.contains("waitFor(findSendButton"));
-        assert!(script.contains("聊天输入框在 15000 毫秒内未出现"));
-        assert!(script.contains("发送按钮在 15000 毫秒内未变为可用"));
+        assert!(script.contains("inputTimeoutMs: 15000"));
+        assert!(script.contains("buttonTimeoutMs: 15000"));
+        assert!(script.contains("proofTimeoutMs: 8000"));
+        assert!(script.contains("observeSendState"));
     }
 
     #[test]
     fn send_text_script_confirms_delivery_by_waiting_for_the_input_to_clear() {
         let script = build_send_text_script("你好");
 
-        assert!(script.contains("inputValue(input).includes(message)"));
-        assert!(script.contains("已点击发送按钮，但输入框内容未清空"));
-        assert!(script.contains("输入框已清空"));
+        assert!(script.contains("inputCleared"));
+        assert!(script.contains("requestSucceeded"));
+        assert!(script.contains("input-cleared-without-proof"));
     }
+
+    #[test]
+    fn send_text_script_does_not_choose_buttons_by_page_order() {
+        let script = build_send_text_script("你好");
+
+        assert!(!script.contains("antImButtons[1]"));
+        assert!(!script.contains("[class*='send']"));
+        assert!(script.contains("im-ui-msg-list-content"));
+    }
+
+    #[test]
+    fn greeting_is_generated_before_opening_the_chat_window() {
+        let source = include_str!("position_say_hello.rs");
+        let decision = source.find("match build_greet_resources").unwrap();
+        let click = source[decision..].find("click_first").unwrap() + decision;
+
+        assert!(decision < click);
+    }
+
+    #[test]
+    fn send_text_resource_checks_stop_after_human_input() {
+        let source = include_str!("position_say_hello.rs");
+        let start = source.find("fn send_text_resource").unwrap();
+        let end = source[start..].find("fn build_send_text_script").unwrap() + start;
+        let body = &source[start..end];
+        let typed = body.find("human_input::type_text").unwrap();
+        let stopped = body[typed..]
+            .find("is_job_task_stop_requested")
+            .unwrap()
+            + typed;
+        let send = body[stopped..].find("build_send_text_script").unwrap() + stopped;
+
+        assert!(typed < stopped && stopped < send);
+    }
+
+    #[test]
+    fn main_search_page_is_restored_before_detail_tab_cleanup() {
+        let source = include_str!("position_say_hello.rs");
+        let start = source.find("async fn greet_job").unwrap();
+        let end = source[start..].find("fn greet_failure_message").unwrap() + start;
+        let body = &source[start..end];
+        let restore = body.find("Page.bringToFront").unwrap();
+        let close = body.find("let close_result = page.close()").unwrap();
+
+        assert!(restore < close);
+    }
+
+    #[test]
+    fn generated_send_scripts_are_scoped_independently() {
+        let mark = build_mark_chat_input_script();
+        let send = build_send_text_script("你好");
+
+        assert!(mark.trim_start().starts_with("(() => {"));
+        assert!(mark.trim_end().ends_with("})()"));
+        assert!(send.trim_start().starts_with("(async () => {"));
+        assert!(send.trim_end().ends_with("})()"));
+    }
+
+    #[test]
+    fn runtime_errors_keep_the_cdp_description() {
+        let error = unwrap_runtime_value(serde_json::json!({
+            "type": "object",
+            "subtype": "error",
+            "className": "SyntaxError",
+            "description": "SyntaxError: Identifier already declared"
+        }))
+        .unwrap_err();
+
+        assert!(error.to_string().contains("SyntaxError"));
+        assert!(error.to_string().contains("already declared"));
+    }
+
+    #[test]
+    fn contact_entry_selectors_prefer_chat_and_exclude_external_apply() {
+        assert_eq!(LIEPIN_CONTACT_ENTRY_SELECTORS[0], "a[data-selector='apply-job']");
+        assert_eq!(LIEPIN_CONTACT_ENTRY_SELECTORS[1], "a[data-selector='chat-chat']");
+        assert_eq!(LIEPIN_EXTERNAL_APPLY_SELECTOR, "a[data-selector='apply-ats']");
+    }
+
+    #[test]
+    fn only_apply_entries_are_resume_attempts() {
+        assert!(entry_sends_resume("a[data-selector='apply-job']"));
+        assert!(entry_sends_resume(".btn-apply"));
+        assert!(!entry_sends_resume("a[data-selector='chat-chat']"));
+        assert!(!entry_sends_resume("a.btn-chat"));
+    }
+
+    #[test]
+    fn resume_delivery_requires_an_explicit_completed_status() {
+        for label in ["投简历", "继续聊", "投递中", "投递失败", "", "未投递"] {
+            assert!(!resume_delivery_label_confirmed(label), "{label}");
+        }
+        for label in ["已投递", "已投递简历", " 已申请 "] {
+            assert!(resume_delivery_label_confirmed(label), "{label}");
+        }
+    }
+
+    #[test]
+    fn applied_job_records_resume_delivery_time() {
+        let candidate = LiepinJobCandidate {
+            link_text: "AI应用工程师 【 深圳 】 15-25k 应届 本科".to_string(),
+            card_text: "AI应用工程师 【 深圳 】 15-25k 应届 本科 示例公司".to_string(),
+            href: "https://www.liepin.com/lptjob/12345678".to_string(),
+        };
+        let job = candidate_to_rpa_job(candidate).unwrap();
+
+        let detail = build_job_detail(&job, &default_app_config(), true);
+
+        assert!(detail.is_send_resume);
+        assert!(detail.resume_sent_at.is_some());
+    }
+
 
     #[test]
     fn job_card_selectors_exclude_hot_job_category_items() {
