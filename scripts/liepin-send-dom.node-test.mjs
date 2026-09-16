@@ -97,6 +97,65 @@ test("do not mistake chat drawer history for a priority modal", async () => {
   assert.equal(result.success, true);
 });
 
+test("find chat composer when Liepin changes the container class", async () => {
+  const document = makeDocument(`
+    <section class="im-panel-v2">
+      <div class="im-ui-msg-list-content-v2">
+        <textarea></textarea>
+        <button class="ant-im-btn">发送</button>
+      </div>
+    </section>
+  `);
+  const requestRecords = [];
+  const input = document.querySelector("textarea");
+  document.querySelector(".ant-im-btn").addEventListener("click", () => {
+    input.value = "";
+    requestRecords.push({
+      url: "https://api-c.liepin.com/api/com.liepin.im.c.chat.send-push",
+      status: 200,
+    });
+  });
+
+  const result = await runLiepinSend(document, {
+    message: "你好",
+    requestRecords,
+    sleep: async () => {},
+  });
+
+  assert.equal(result.success, true);
+});
+
+test("ignore login text in chat history when the chat panel is a dialog", async () => {
+  const document = makeDocument(`
+    <div role="dialog" class="chat-drawer-v2">
+      <header>我的沟通</header>
+      <div>不支持此消息查看，请登录“猎聘APP”查看消息内容！</div>
+      <div class="im-ui-msg-list-content-v2">
+        <textarea></textarea>
+        <button class="ant-im-btn">发送</button>
+      </div>
+    </div>
+  `);
+  const requestRecords = [];
+  const input = document.querySelector("textarea");
+  document.querySelector(".ant-im-btn").addEventListener("click", () => {
+    input.value = "";
+    requestRecords.push({
+      url: "https://api-c.liepin.com/api/com.liepin.im.c.chat.send-push",
+      status: 200,
+    });
+  });
+
+  const result = await runLiepinSend(document, {
+    message: "你好",
+    requestRecords,
+    sleep: async () => {},
+  });
+
+  assert.equal(result.blockedModal, false);
+  assert.equal(result.success, true);
+});
+
 test("close only visible priority communication modal before sending", async () => {
   const document = makeDocument(`
     <div class="ant-modal" data-modal="priority">

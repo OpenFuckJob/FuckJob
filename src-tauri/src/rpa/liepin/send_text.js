@@ -91,7 +91,7 @@ async function closePriorityModal(modal, document, sleep) {
 }
 
 function classifyModal(modal) {
-  if (modal.querySelector(CHAT_CONTAINER_SELECTOR)) return "other";
+  if (findChatContainer(modal)) return "other";
   const text = textOf(modal);
   const hasPriorityTitle = Array.from(modal.querySelectorAll("h1, h2, h3, [class*='title'], [class*='header'], div, span"))
     .some((node) => textOf(node) === "优先沟通");
@@ -136,19 +136,6 @@ async function handleKnownModal(document, sleep) {
   };
 }
 
-function findChatContainer(document) {
-  const marker = findVisible(Array.from(document.querySelectorAll(CHAT_CONTAINER_SELECTOR)));
-  if (!marker) return null;
-  let candidate = marker;
-  for (let container = marker; container && container !== document.body; container = container.parentElement) {
-    if (findChatInput(container)) {
-      candidate = container;
-      if (findAnySendButton(container)) return container;
-    }
-  }
-  return candidate;
-}
-
 function findAnySendButton(container) {
   return container
     ? Array.from(container.querySelectorAll(SEND_BUTTON_SELECTOR))
@@ -161,6 +148,42 @@ function findChatInput(container) {
   if (!container) return null;
   const inputs = Array.from(container.querySelectorAll(INPUT_SELECTOR)).filter(isVisible);
   return inputs.find((node) => !node.disabled && !node.readOnly) || null;
+}
+
+function findInputContainer(input, boundary) {
+  for (let container = input?.parentElement; container; container = container.parentElement) {
+    if (findAnySendButton(container)) return container;
+    if (container === boundary) break;
+  }
+  return null;
+}
+
+function findChatContainer(root) {
+  const document = root.nodeType === 9 ? root : root.ownerDocument;
+  const boundary = root.nodeType === 9 ? document.body : root;
+  const marker = findVisible(Array.from(root.querySelectorAll(CHAT_CONTAINER_SELECTOR)));
+  if (marker) {
+    let candidate = marker;
+    for (let container = marker; container && container !== boundary; container = container.parentElement) {
+      if (findChatInput(container)) {
+        candidate = container;
+        if (findAnySendButton(container)) return container;
+      }
+    }
+    return candidate;
+  }
+
+  const markedInput = findVisible(Array.from(root.querySelectorAll(`[${CHAT_INPUT_MARKER}]`)));
+  const inputs = Array.from(root.querySelectorAll(INPUT_SELECTOR)).filter((node) => isVisible(node)
+    && !node.disabled && !node.readOnly);
+  if (markedInput) {
+    inputs.unshift(markedInput);
+  }
+  for (const input of inputs) {
+    const container = findInputContainer(input, boundary);
+    if (container) return container;
+  }
+  return null;
 }
 
 function markLiepinChatInput(document) {
