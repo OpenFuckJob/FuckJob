@@ -48,7 +48,7 @@ describe("useAppConfig", () => {
     vi.mocked(api.loadAppConfig).mockResolvedValue({
       ...config,
       onboarding_completed: true,
-      llm_config: { provider: "openai", base_url: "https://api.openai.com/v1", model: "" },
+      llm_config: { provider: "openai", base_url: "https://api.openai.com/v1", model: "", insecure: false },
     });
     const { result } = renderHook(() => useAppConfig());
 
@@ -134,7 +134,7 @@ describe("useAppConfig", () => {
 
     act(() => result.current.updateConfig((current) => ({
       ...current,
-      llm_config: { provider: "openai", base_url: "https://api.openai.com/v1", model: "  " },
+      llm_config: { provider: "openai", base_url: "https://api.openai.com/v1", model: "  ", insecure: false },
     })));
 
     expect(result.current.dirty).toBe(true);
@@ -154,7 +154,7 @@ describe("useAppConfig", () => {
 
     act(() => result.current.updateConfig((current) => ({
       ...current,
-      llm_config: { provider: "openai", base_url: "https://api.openai.com/v1", model: "" },
+      llm_config: { provider: "openai", base_url: "https://api.openai.com/v1", model: "", insecure: false },
     })));
     expect(result.current.status).toBe("error");
 
@@ -183,6 +183,7 @@ describe("useAppConfig", () => {
         provider: "deepseek" as const,
         base_url: "https://api.deepseek.com",
         model: "",
+        insecure: false,
         enabled: false,
       }],
     };

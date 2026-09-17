@@ -2,7 +2,7 @@ use crate::command::base::CommandResult;
 use crate::config::{LlmChainLink, LlmProviderPreset, PRIMARY_LLM_ENTRY_ID};
 use crate::credential::{self, CredentialStatus, EffectiveCredentialSource, ResolvedCredential};
 use crate::error::AppError;
-use crate::llm::service::{normalize_provider_base_url, provider_requires_key, LlmService};
+use crate::llm::service::{http_client_for, normalize_provider_base_url, provider_requires_key, LlmService};
 use crate::llm::types::ConnectionReport;
 use rig::client::ModelListingClient;
 use rig::model::{Model, ModelList, ModelListingError};
@@ -177,17 +177,18 @@ pub async fn test_llm_entry_connection(
     }
 }
 
-/// 界面上正在编辑的服务参数。两项齐备才算数：只传一半无从判断该配哪个客户端，
-/// 与其猜一个，不如退回已落盘的配置。
+/// 界面上正在编辑的服务参数。三项齐备才算数：只传一半无从判断该配哪个客户端，
+/// 与其猜一个，不如退回已落盘的配置。insecure 缺省时视为关闭。
 fn draft_override(
     provider: Option<LlmProviderPreset>,
     base_url: Option<String>,
-) -> Option<(LlmProviderPreset, String)> {
+    insecure: Option<bool>,
+) -> Option<(LlmProviderPreset, String, bool)> {
     let base_url = base_url.map(|url| url.trim().to_string())?;
     if base_url.is_empty() {
         return None;
     }
-    Some((provider?, base_url))
+    Some((provider?, base_url, insecure.unwrap_or(false)))
 }
 
 /// 列出降级链中某个服务可用的模型。
@@ -202,18 +203,19 @@ pub async fn list_llm_models_for(
     entry_id: String,
     provider: Option<LlmProviderPreset>,
     base_url: Option<String>,
+    insecure: Option<bool>,
 ) -> CommandResult<Vec<String>> {
-    let (provider, base_url, credential) = match draft_override(provider, base_url) {
-        Some((provider, base_url)) => match credential::resolve_for_entry(&entry_id) {
-            Ok(credential) => (provider, base_url, credential),
+    let (provider, base_url, insecure, credential) = match draft_override(provider, base_url, insecure) {
+        Some((provider, base_url, insecure)) => match credential::resolve_for_entry(&entry_id) {
+            Ok(credential) => (provider, base_url, insecure, credential),
             Err(error) => return CommandResult::err(error),
         },
         None => match resolve_chain_entry(app_handle, &entry_id) {
-            Ok((link, credential)) => (link.provider, link.base_url, credential),
+            Ok((link, credential)) => (link.provider, link.base_url, link.insecure, credential),
             Err(error) => return CommandResult::err(error),
         },
     };
-    to_command_result(fetch_model_list_with_credential(provider, &base_url, &credential).await)
+    to_command_result(fetch_model_list_with_credential(provider, &base_url, &credential, insecure).await)
 }
 
 fn validate_llm_base_url(base_url: &str) -> Result<(), AppError> {
@@ -236,9 +238,10 @@ const MODEL_LIST_TIMEOUT_SECONDS: u64 = 30;
 async fn fetch_model_list(
     provider: LlmProviderPreset,
     base_url: &str,
+    insecure: bool,
 ) -> Result<Vec<String>, AppError> {
     let credential = credential::resolve_for_entry(PRIMARY_LLM_ENTRY_ID)?;
-    fetch_model_list_with_credential(provider, base_url, &credential).await
+    fetch_model_list_with_credential(provider, base_url, &credential, insecure).await
 }
 
 /// 用指定服务自己的密钥拉取模型列表。
@@ -247,6 +250,7 @@ async fn fetch_model_list_with_credential(
     provider: LlmProviderPreset,
     base_url: &str,
     credential: &ResolvedCredential,
+    insecure: bool,
 ) -> Result<Vec<String>, AppError> {
     validate_llm_base_url(base_url)?;
     if provider_requires_key(&provider) && credential.secret().is_none() {
@@ -260,12 +264,14 @@ async fn fetch_model_list_with_credential(
             "noop"
         });
     let base_url = normalize_provider_base_url(&provider, base_url);
+    let http_client = http_client_for(insecure)?;
 
     let models = match provider {
         LlmProviderPreset::Anthropic => {
             let client = rig::providers::anthropic::Client::builder()
                 .api_key(api_key)
                 .base_url(&base_url)
+                .http_client(http_client.clone())
                 .build()
                 .map_err(|error| {
                     AppError::configuration("无法创建大模型客户端").with_detail(error.to_string())
@@ -278,11 +284,12 @@ async fn fetch_model_list_with_credential(
             .map_err(|_| AppError::network("获取模型列表超时"))?
             .map_err(map_model_listing_error)?
         }
-        LlmProviderPreset::DeepSeek => fetch_openai_compatible_models(&base_url, api_key).await?,
+        LlmProviderPreset::DeepSeek => fetch_openai_compatible_models(&base_url, api_key, insecure).await?,
         LlmProviderPreset::OpenAi | LlmProviderPreset::OpenAiResponses => {
             let client = rig::providers::openai::Client::builder()
                 .api_key(api_key)
                 .base_url(&base_url)
+                .http_client(http_client.clone())
                 .build()
                 .map_err(|error| {
                     AppError::configuration("无法创建大模型客户端").with_detail(error.to_string())
@@ -295,7 +302,7 @@ async fn fetch_model_list_with_credential(
             .map_err(|_| AppError::network("获取模型列表超时"))?
             {
                 Ok(models) => models,
-                Err(rig_error) => fetch_openai_compatible_models(&base_url, api_key)
+                Err(rig_error) => fetch_openai_compatible_models(&base_url, api_key, insecure)
                     .await
                     .map_err(|fallback_error| {
                         let rig_error = map_model_listing_error(rig_error);
@@ -320,6 +327,7 @@ async fn fetch_model_list_with_credential(
             let client = rig::providers::ollama::Client::builder()
                 .api_key(api_key)
                 .base_url(&base_url)
+                .http_client(http_client.clone())
                 .build()
                 .map_err(|error| {
                     AppError::configuration("无法创建大模型客户端").with_detail(error.to_string())
@@ -336,6 +344,7 @@ async fn fetch_model_list_with_credential(
             let client = rig::providers::openrouter::Client::builder()
                 .api_key(api_key)
                 .base_url(&base_url)
+                .http_client(http_client.clone())
                 .build()
                 .map_err(|error| {
                     AppError::configuration("无法创建大模型客户端").with_detail(error.to_string())
@@ -352,6 +361,7 @@ async fn fetch_model_list_with_credential(
             let client = rig::providers::xiaomimimo::Client::builder()
                 .api_key(api_key)
                 .base_url(&base_url)
+                .http_client(http_client.clone())
                 .build()
                 .map_err(|error| {
                     AppError::configuration("无法创建大模型客户端").with_detail(error.to_string())
@@ -383,11 +393,13 @@ fn openai_compatible_models_url(base_url: &str) -> String {
 async fn fetch_openai_compatible_models(
     base_url: &str,
     api_key: &str,
+    insecure: bool,
 ) -> Result<ModelList, AppError> {
     let url = openai_compatible_models_url(base_url);
+    let client = http_client_for(insecure)?;
     let response = timeout(
         Duration::from_secs(MODEL_LIST_TIMEOUT_SECONDS),
-        reqwest::Client::new()
+        client
             .get(&url)
             .bearer_auth(api_key)
             .header(reqwest::header::ACCEPT, "application/json")
@@ -498,8 +510,9 @@ fn map_model_listing_error(error: ModelListingError) -> AppError {
 pub async fn list_llm_models(
     provider: LlmProviderPreset,
     base_url: String,
+    insecure: Option<bool>,
 ) -> CommandResult<Vec<String>> {
-    match fetch_model_list(provider, &base_url).await {
+    match fetch_model_list(provider, &base_url, insecure.unwrap_or(false)).await {
         Ok(models) => CommandResult::ok(models),
         Err(error) => CommandResult::err(error),
     }
@@ -534,6 +547,7 @@ mod tests {
             provider: LlmProviderPreset::OpenAi,
             base_url: "https://llm.example.test/v1".to_string(),
             model: model.to_string(),
+            insecure: false,
         }
     }
 
@@ -592,13 +606,15 @@ mod tests {
         let draft = draft_override(
             Some(LlmProviderPreset::DeepSeek),
             Some("  https://api.deepseek.com  ".to_string()),
+            Some(true),
         );
 
         assert_eq!(
             draft,
             Some((
                 LlmProviderPreset::DeepSeek,
-                "https://api.deepseek.com".to_string()
+                "https://api.deepseek.com".to_string(),
+                true
             ))
         );
     }
@@ -606,16 +622,16 @@ mod tests {
     #[test]
     fn draft_override_falls_back_to_saved_config_when_incomplete() {
         // 只传一半、空串、全不传，都退回已落盘的配置，不去猜另一半
-        assert_eq!(draft_override(Some(LlmProviderPreset::OpenAi), None), None);
+        assert_eq!(draft_override(Some(LlmProviderPreset::OpenAi), None, None), None);
         assert_eq!(
-            draft_override(None, Some("https://api.openai.com/v1".to_string())),
+            draft_override(None, Some("https://api.openai.com/v1".to_string()), None),
             None
         );
         assert_eq!(
-            draft_override(Some(LlmProviderPreset::OpenAi), Some("   ".to_string())),
+            draft_override(Some(LlmProviderPreset::OpenAi), Some("   ".to_string()), None),
             None
         );
-        assert_eq!(draft_override(None, None), None);
+        assert_eq!(draft_override(None, None, Some(true)), None);
     }
 
     #[test]

@@ -61,6 +61,7 @@ describe("LLM config validation", () => {
     provider: "openai" as const,
     base_url: "https://llm.example.test/v1",
     model: "custom-model",
+    insecure: false,
   };
 
   it("accepts a service address and model without advanced parameters", () => {
@@ -121,22 +122,23 @@ describe("降级链排序", () => {
 });
 
 describe("设为主用", () => {
-  const primary: LlmConfig = { provider: "openai", base_url: "https://primary.test/v1", model: "primary-model" };
+  const primary: LlmConfig = { provider: "openai", base_url: "https://primary.test/v1", model: "primary-model", insecure: false };
   const fallbacks: LlmProviderEntry[] = [
-    { id: "backup-a", label: "备用甲", provider: "deepseek", base_url: "https://a.test", model: "model-a", enabled: true },
-    { id: "backup-b", label: null, provider: "moonshot", base_url: "https://b.test", model: "model-b", enabled: false },
+    { id: "backup-a", label: "备用甲", provider: "deepseek", base_url: "https://a.test", model: "model-a", insecure: false, enabled: true },
+    { id: "backup-b", label: null, provider: "moonshot", base_url: "https://b.test", model: "model-b", insecure: false, enabled: false },
   ];
 
   it("主用槽位与被提升的备用槽位对调内容，标识随槽位保持不变", () => {
     const result = promoteFallbackToPrimary(primary, fallbacks, 0);
 
-    expect(result?.primary).toEqual({ provider: "deepseek", base_url: "https://a.test", model: "model-a" });
+    expect(result?.primary).toEqual({ provider: "deepseek", base_url: "https://a.test", model: "model-a", insecure: false });
     expect(result?.fallbacks[0]).toEqual({
       id: "backup-a",
       label: null,
       provider: "openai",
       base_url: "https://primary.test/v1",
       model: "primary-model",
+      insecure: false,
       enabled: true,
     });
     // 密钥由后端按这两个标识一并对调，因此被降级的服务沿用原标识即可，
@@ -185,6 +187,7 @@ const primaryConfig: LlmConfig = {
   provider: "openai",
   base_url: "https://api.openai.com/v1",
   model: "gpt-test",
+  insecure: false,
 };
 
 function Harness({
@@ -238,6 +241,7 @@ const fallbackEntry = (id: string, model: string): LlmProviderEntry => ({
   provider: "deepseek",
   base_url: "https://api.deepseek.com",
   model,
+  insecure: false,
   enabled: true,
 });
 
@@ -284,6 +288,7 @@ describe("LlmConfigPanel 降级链界面", () => {
     expect(vi.mocked(invoke)).toHaveBeenCalledWith("list_llm_models", {
       provider: "openai",
       baseUrl: "https://api.openai.com/v1",
+      insecure: false,
     });
   });
 
@@ -335,6 +340,7 @@ describe("LlmConfigPanel 降级链界面", () => {
       entryId: "backup-a",
       provider: "deepseek",
       baseUrl: "https://api.deepseek.com",
+      insecure: false,
     });
   }, 30_000);
 
@@ -492,7 +498,7 @@ describe("LlmConfigPanel 降级链界面", () => {
       }
       return Promise.resolve({ success: true, data: { configured: false, source: "none" }, error: null });
     });
-    render(<Harness initialConfig={{ provider: "deepseek", base_url: "https://api.deepseek.com", model: "" }} />);
+    render(<Harness initialConfig={{ provider: "deepseek", base_url: "https://api.deepseek.com", model: "", insecure: false }} />);
 
     const modelInput = await screen.findByLabelText(`${PRIMARY_LLM_ENTRY_ID} 模型`);
     fireEvent.click(screen.getByRole("button", { name: "刷新primary模型列表" }));

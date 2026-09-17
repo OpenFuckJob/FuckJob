@@ -138,6 +138,7 @@ mod tests {
                 provider: LlmProviderPreset::DeepSeek,
                 base_url: "https://api.deepseek.com".to_string(),
                 model: "deepseek-chat".to_string(),
+                insecure: false,
             });
         }
         config

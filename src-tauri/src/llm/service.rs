@@ -79,11 +79,15 @@ impl LlmService {
             "noop"
         });
 
+        // 自签证书场景下跳过 TLS 校验的开关：默认关闭，仅对 insecure=true 的服务生效
+        let http_client = http_client_for(link.insecure)?;
+
         let backend = match provider {
             LlmProviderPreset::Anthropic => LlmBackend::Anthropic(
                 rig::providers::anthropic::Client::builder()
                     .api_key(api_key)
                     .base_url(&base_url)
+                    .http_client(http_client.clone())
                     .build()
                     .map_err(|e| {
                         AppError::configuration("无法创建大模型客户端").with_detail(e.to_string())
@@ -93,6 +97,7 @@ impl LlmService {
                 rig::providers::deepseek::Client::builder()
                     .api_key(api_key)
                     .base_url(&base_url)
+                    .http_client(http_client.clone())
                     .build()
                     .map_err(|e| {
                         AppError::configuration("无法创建大模型客户端").with_detail(e.to_string())
@@ -105,6 +110,7 @@ impl LlmService {
                     rig::providers::openai::CompletionsClient::builder()
                         .api_key(api_key)
                         .base_url(&base_url)
+                        .http_client(http_client.clone())
                         .build()
                         .map_err(|e| {
                             AppError::configuration("无法创建大模型客户端")
@@ -116,6 +122,7 @@ impl LlmService {
                 rig::providers::openai::Client::builder()
                     .api_key(api_key)
                     .base_url(&base_url)
+                    .http_client(http_client.clone())
                     .build()
                     .map_err(|e| {
                         AppError::configuration("无法创建大模型客户端").with_detail(e.to_string())
@@ -125,6 +132,7 @@ impl LlmService {
                 rig::providers::minimax::Client::builder()
                     .api_key(api_key)
                     .base_url(&base_url)
+                    .http_client(http_client.clone())
                     .build()
                     .map_err(|e| {
                         AppError::configuration("无法创建大模型客户端").with_detail(e.to_string())
@@ -134,6 +142,7 @@ impl LlmService {
                 rig::providers::moonshot::Client::builder()
                     .api_key(api_key)
                     .base_url(&base_url)
+                    .http_client(http_client.clone())
                     .build()
                     .map_err(|e| {
                         AppError::configuration("无法创建大模型客户端").with_detail(e.to_string())
@@ -143,6 +152,7 @@ impl LlmService {
                 rig::providers::ollama::Client::builder()
                     .api_key(api_key)
                     .base_url(&base_url)
+                    .http_client(http_client.clone())
                     .build()
                     .map_err(|e| {
                         AppError::configuration("无法创建大模型客户端").with_detail(e.to_string())
@@ -152,6 +162,7 @@ impl LlmService {
                 rig::providers::openrouter::Client::builder()
                     .api_key(api_key)
                     .base_url(&base_url)
+                    .http_client(http_client.clone())
                     .build()
                     .map_err(|e| {
                         AppError::configuration("无法创建大模型客户端").with_detail(e.to_string())
@@ -161,6 +172,7 @@ impl LlmService {
                 rig::providers::xiaomimimo::Client::builder()
                     .api_key(api_key)
                     .base_url(&base_url)
+                    .http_client(http_client.clone())
                     .build()
                     .map_err(|e| {
                         AppError::configuration("无法创建大模型客户端").with_detail(e.to_string())
@@ -170,6 +182,7 @@ impl LlmService {
                 rig::providers::zai::Client::builder()
                     .api_key(api_key)
                     .base_url(&base_url)
+                    .http_client(http_client.clone())
                     .build()
                     .map_err(|e| {
                         AppError::configuration("无法创建大模型客户端").with_detail(e.to_string())
@@ -826,6 +839,20 @@ where
     }
 }
 
+/// 按配置构建大模型请求用的 HTTP 客户端。
+///
+/// `insecure` 仅用于自签证书的内网/自建服务：开启后跳过 TLS 证书校验
+/// （等价于 curl --insecure），默认关闭。注意该开关同时影响证书链校验与
+/// 主机名校验，开启后中间人可窃取传输内容（含 API Key）。
+pub(crate) fn http_client_for(insecure: bool) -> Result<reqwest::Client, AppError> {
+    reqwest::ClientBuilder::new()
+        .danger_accept_invalid_certs(insecure)
+        .build()
+        .map_err(|error| {
+            AppError::configuration("无法创建 HTTP 客户端").with_detail(error.to_string())
+        })
+}
+
 pub(crate) fn normalize_provider_base_url(provider: &LlmProviderPreset, base_url: &str) -> String {
     let base_url = base_url.trim().trim_end_matches('/');
     if matches!(provider, LlmProviderPreset::Ollama) {
@@ -1074,6 +1101,7 @@ mod tests {
             provider,
             base_url,
             model: "local-model".to_string(),
+            insecure: false,
         });
         let credential = resolve_with_environment(&EmptyCredentialBackend, Some("secret")).unwrap();
         LlmService::from_runtime(&config, &credential).unwrap()
@@ -1345,6 +1373,7 @@ mod tests {
             provider: LlmProviderPreset::Ollama,
             base_url: url,
             model: "llama3.2".to_string(),
+            insecure: false,
         });
         let credential = resolve_with_environment(&EmptyCredentialBackend, None).unwrap();
         let result = tauri::async_runtime::block_on(
@@ -1371,6 +1400,7 @@ mod tests {
             provider: LlmProviderPreset::DeepSeek,
             base_url: "https://api.deepseek.com".to_string(),
             model: "deepseek-chat".to_string(),
+            insecure: false,
         });
         let credential = resolve_with_environment(&EmptyCredentialBackend, None).unwrap();
         let error = LlmService::from_runtime(&config, &credential).unwrap_err();
@@ -1503,6 +1533,7 @@ mod tests {
             provider: LlmProviderPreset::OpenAi,
             base_url: "http://127.0.0.1:1/v1".to_string(),
             model: format!("{id}-model"),
+            insecure: false,
         }
     }
 
@@ -1669,6 +1700,7 @@ mod tests {
             provider: LlmProviderPreset::OpenAi,
             base_url: "http://127.0.0.1:1/v1".to_string(),
             model: "backup-model".to_string(),
+            insecure: false,
             enabled: true,
         }];
 
@@ -1685,6 +1717,7 @@ mod tests {
             provider: LlmProviderPreset::OpenAi,
             base_url: "http://127.0.0.1:1/v1".to_string(),
             model: "primary-model".to_string(),
+            insecure: false,
         });
         config.llm_enabled = Some(false);
 
@@ -1702,6 +1735,7 @@ mod tests {
             provider: LlmProviderPreset::OpenAi,
             base_url: "http://127.0.0.1:1/v1".to_string(),
             model: "primary-model".to_string(),
+            insecure: false,
         });
         config.llm_fallbacks = vec![LlmProviderEntry {
             id: "backup-1".to_string(),
@@ -1709,6 +1743,7 @@ mod tests {
             provider: LlmProviderPreset::DeepSeek,
             base_url: "https://api.deepseek.com".to_string(),
             model: "deepseek-chat".to_string(),
+            insecure: false,
             enabled: true,
         }];
         config.llm_retry_config = retry_config(4, 800);
@@ -1730,6 +1765,7 @@ mod tests {
             provider: LlmProviderPreset::OpenAi,
             base_url: "http://127.0.0.1:1/v1".to_string(),
             model: "primary-model".to_string(),
+            insecure: false,
         });
         config.llm_retry_config = retry_config(1, 250);
         let credential = resolve_with_environment(&EmptyCredentialBackend, Some("secret")).unwrap();

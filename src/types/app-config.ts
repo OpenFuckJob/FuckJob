@@ -112,6 +112,8 @@ export interface LlmConfig {
   provider: LlmProviderPreset;
   base_url: string;
   model: string;
+  /** 是否跳过 TLS 证书校验。仅用于自签证书的内网/自建服务，默认关闭 */
+  insecure: boolean;
 }
 
 /** 主用服务在降级链中的保留标识，其 API Key 沿用旧的存储条目 */
@@ -126,6 +128,8 @@ export interface LlmProviderEntry {
   provider: LlmProviderPreset;
   base_url: string;
   model: string;
+  /** 是否跳过 TLS 证书校验。仅用于自签证书的内网/自建服务，默认关闭 */
+  insecure: boolean;
   /** 是否参与降级链 */
   enabled: boolean;
 }

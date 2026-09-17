@@ -58,7 +58,7 @@ export const LLM_PRESETS: Record<LlmProviderPreset, { label: string; baseUrl: st
 };
 
 /** 一条降级链条目在界面上需要的最小字段，主用服务与备用服务共用同一套编辑控件 */
-type LlmServiceFields = Pick<LlmConfig, "provider" | "base_url" | "model">;
+type LlmServiceFields = Pick<LlmConfig, "provider" | "base_url" | "model" | "insecure">;
 
 const resultError = (error: CommandError | null, fallback: string) => error ? `[${error.code}] ${error.message}` : fallback;
 export const isValidLlmConfig = (value: LlmServiceFields | null) => isLlmServiceUsable(value);
@@ -80,6 +80,7 @@ export const createFallbackEntry = (provider: LlmProviderPreset): LlmProviderEnt
   provider,
   base_url: LLM_PRESETS[provider].baseUrl,
   model: "",
+  insecure: false,
   enabled: true,
 });
 
@@ -112,10 +113,11 @@ export const promoteFallbackToPrimary = (
     provider: primary.provider,
     base_url: primary.base_url,
     model: primary.model,
+    insecure: primary.insecure ?? false,
     enabled: true,
   };
   return {
-    primary: { provider: target.provider, base_url: target.base_url, model: target.model },
+    primary: { provider: target.provider, base_url: target.base_url, model: target.model, insecure: target.insecure ?? false },
     fallbacks: fallbacks.map((item, i) => (i === index ? demoted : item)),
     swappedId: target.id,
   };
@@ -157,6 +159,33 @@ export interface LlmConfigPanelProps {
   dirty?: boolean;
   /** 保存整份配置，测试备用服务前必须先落盘 */
   onPersistAll?: () => Promise<boolean>;
+}
+
+/** 跳过 TLS 证书校验开关：主用服务与备用条目共用同一份 UI，风险提示写死在组件里 */
+function TlsInsecureSwitch({
+  entryId,
+  checked,
+  onChange,
+}: {
+  entryId: string;
+  checked: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <div className="mb-4 flex items-start justify-between gap-3">
+      <div>
+        <Typography.Text>跳过 TLS 证书校验</Typography.Text>
+        <Typography.Paragraph type="secondary" className="!mb-0 text-xs">
+          仅用于自签证书的内网/自建服务。开启后中间人可窃取传输内容（含 API Key），切勿对公网服务开启。
+        </Typography.Paragraph>
+      </div>
+      <Switch
+        aria-label={`${entryId} 跳过 TLS 证书校验`}
+        checked={checked}
+        onChange={onChange}
+      />
+    </div>
+  );
 }
 
 export function LlmConfigPanel({
@@ -326,7 +355,7 @@ export function LlmConfigPanel({
     try {
       // 一律按界面上的当前值取列表，不读已落盘的配置：
       // 用户刚改完地址就想看新服务有哪些模型，这时磁盘上还是旧的那份。
-      const draft = { provider: service.provider, base_url: baseUrl };
+      const draft = { provider: service.provider, base_url: baseUrl, insecure: service.insecure ?? false };
       const result = entryId === PRIMARY_LLM_ENTRY_ID
         ? await listLlmModels(draft)
         : await listLlmModelsFor(entryId, draft);
@@ -554,19 +583,26 @@ export function LlmConfigPanel({
   };
 
   const renderServiceFields = (entryId: string, service: LlmServiceFields) => (
-    <div className="grid grid-cols-1 gap-x-4 md:grid-cols-2">
-      <Form.Item label="服务地址" validateStatus={service.base_url.trim() ? undefined : "error"}>
-        <Input
-          aria-label={`${entryId} 服务地址`}
-          value={service.base_url}
-          placeholder="服务 API 地址，可按需自定义 BaseURL"
-          onChange={(e) => patchEntry(entryId, { base_url: e.target.value })}
-        />
-      </Form.Item>
-      <Form.Item label="模型" validateStatus={service.model.trim() ? undefined : "error"}>
-        {renderModelField(entryId, service)}
-      </Form.Item>
-    </div>
+    <>
+      <div className="grid grid-cols-1 gap-x-4 md:grid-cols-2">
+        <Form.Item label="服务地址" validateStatus={service.base_url.trim() ? undefined : "error"}>
+          <Input
+            aria-label={`${entryId} 服务地址`}
+            value={service.base_url}
+            placeholder="服务 API 地址，可按需自定义 BaseURL"
+            onChange={(e) => patchEntry(entryId, { base_url: e.target.value })}
+          />
+        </Form.Item>
+        <Form.Item label="模型" validateStatus={service.model.trim() ? undefined : "error"}>
+          {renderModelField(entryId, service)}
+        </Form.Item>
+      </div>
+      <TlsInsecureSwitch
+        entryId={entryId}
+        checked={service.insecure ?? false}
+        onChange={(next) => patchEntry(entryId, { insecure: next })}
+      />
+    </>
   );
 
   const renderCredentialFields = (entryId: string) => {
@@ -644,6 +680,7 @@ export function LlmConfigPanel({
                   provider,
                   base_url: LLM_PRESETS[provider].baseUrl,
                   model: "",
+                  insecure: false,
                 })}
               />
             </Form.Item>
@@ -686,6 +723,11 @@ export function LlmConfigPanel({
                   onChange={(e) => patchEntry(PRIMARY_LLM_ENTRY_ID, { base_url: e.target.value })}
                 />
               </Form.Item>
+              <TlsInsecureSwitch
+                entryId={PRIMARY_LLM_ENTRY_ID}
+                checked={config.insecure ?? false}
+                onChange={(next) => patchEntry(PRIMARY_LLM_ENTRY_ID, { insecure: next })}
+              />
               {renderCredentialFields(PRIMARY_LLM_ENTRY_ID)}
               {!isLlmServiceUsable(config) && (
                 <Alert
