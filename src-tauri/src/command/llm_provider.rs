@@ -2,7 +2,10 @@ use crate::command::base::CommandResult;
 use crate::config::{LlmChainLink, LlmProviderPreset, PRIMARY_LLM_ENTRY_ID};
 use crate::credential::{self, CredentialStatus, EffectiveCredentialSource, ResolvedCredential};
 use crate::error::AppError;
-use crate::llm::service::{http_client_for, normalize_provider_base_url, provider_requires_key, LlmService};
+use crate::llm::service::{
+    http_client_for, normalize_provider_base_url, provider_requires_key, rig_http_client_for,
+    LlmService,
+};
 use crate::llm::types::ConnectionReport;
 use rig::client::ModelListingClient;
 use rig::model::{Model, ModelList, ModelListingError};
@@ -264,7 +267,7 @@ async fn fetch_model_list_with_credential(
             "noop"
         });
     let base_url = normalize_provider_base_url(&provider, base_url);
-    let http_client = http_client_for(insecure)?;
+    let http_client = rig_http_client_for(insecure)?;
 
     let models = match provider {
         LlmProviderPreset::Anthropic => {

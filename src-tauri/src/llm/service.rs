@@ -80,7 +80,7 @@ impl LlmService {
         });
 
         // 自签证书场景下跳过 TLS 校验的开关：默认关闭，仅对 insecure=true 的服务生效
-        let http_client = http_client_for(link.insecure)?;
+        let http_client = rig_http_client_for(link.insecure)?;
 
         let backend = match provider {
             LlmProviderPreset::Anthropic => LlmBackend::Anthropic(
@@ -847,6 +847,24 @@ where
 pub(crate) fn http_client_for(insecure: bool) -> Result<reqwest::Client, AppError> {
     reqwest::ClientBuilder::new()
         .danger_accept_invalid_certs(insecure)
+        .build()
+        .map_err(|error| {
+            AppError::configuration("无法创建 HTTP 客户端").with_detail(error.to_string())
+        })
+}
+
+/// 供 rig 0.40 `ClientBuilder::http_client` 使用的客户端构造。
+///
+/// rig-core 0.40 依赖 reqwest 0.13，而本项目直接依赖 reqwest 0.12——两个版本
+/// 的 `Client` 是不同的类型；`HttpClientExt` 只为 rig 内部的 reqwest 0.13
+/// `Client` 实现，因此不能把本项目的 0.12 client 传给 `.http_client()`（E0599）。
+/// 这里直接用 rig 重新导出的 `ReqwestClient`（即 reqwest 0.13 的 `Client`）
+/// 构造，`insecure` 开关的 TLS 行为保持不变。
+pub(crate) fn rig_http_client_for(
+    insecure: bool,
+) -> Result<rig::http_client::ReqwestClient, AppError> {
+    rig::http_client::ReqwestClient::builder()
+        .tls_danger_accept_invalid_certs(insecure)
         .build()
         .map_err(|error| {
             AppError::configuration("无法创建 HTTP 客户端").with_detail(error.to_string())
