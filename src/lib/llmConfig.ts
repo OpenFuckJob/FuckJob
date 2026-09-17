@@ -5,7 +5,7 @@ import type { LlmCommandResult, LlmConnectionReport, LlmCredentialStatus, LlmEnt
 export const getLlmCredentialStatus = () => invoke<LlmCommandResult<LlmCredentialStatus>>('get_llm_credential_status')
 export const setLlmApiKey = (apiKey: string) => invoke<LlmCommandResult<LlmCredentialStatus>>('set_llm_api_key', { apiKey })
 export const clearLlmApiKey = () => invoke<LlmCommandResult<LlmCredentialStatus>>('clear_llm_api_key')
-export const listLlmModels = (config: Pick<LlmConfig, 'provider' | 'base_url'>) => invoke<LlmCommandResult<string[]>>('list_llm_models', { provider: config.provider, baseUrl: config.base_url })
+export const listLlmModels = (config: Pick<LlmConfig, 'provider' | 'base_url' | 'insecure'>) => invoke<LlmCommandResult<string[]>>('list_llm_models', { provider: config.provider, baseUrl: config.base_url, insecure: config.insecure })
 export const testLlmConnection = () => invoke<LlmCommandResult<LlmConnectionReport>>('test_llm_connection')
 
 // 以下命令按降级链条目标识读写：密钥独立存储，互不覆盖。
@@ -18,11 +18,12 @@ export const listLlmCredentialStatus = (entryIds: string[]) => invoke<LlmCommand
 // 密钥明文不允许离开 Rust，调整主用/备用顺序时的密钥对调只能整体交给后端完成
 export const swapLlmCredentials = (entryA: string, entryB: string) => invoke<LlmCommandResult<LlmEntryCredentialStatus[]>>('swap_llm_credentials', { entryA, entryB })
 export const testLlmEntryConnection = (entryId: string) => invoke<LlmCommandResult<LlmConnectionReport>>('test_llm_entry_connection', { entryId })
-// 传入界面上正在编辑的 provider / base_url，未保存的备用服务也能取模型列表；
+// 传入界面上正在编辑的 provider / base_url / insecure，未保存的备用服务也能取模型列表；
 // 省略时后端退回读已落盘的配置。密钥始终由后端按 entryId 解析。
-export const listLlmModelsFor = (entryId: string, draft?: Pick<LlmConfig, 'provider' | 'base_url'>) =>
+export const listLlmModelsFor = (entryId: string, draft?: Pick<LlmConfig, 'provider' | 'base_url' | 'insecure'>) =>
   invoke<LlmCommandResult<string[]>>('list_llm_models_for', {
     entryId,
     provider: draft?.provider ?? null,
     baseUrl: draft?.base_url ?? null,
+    insecure: draft?.insecure ?? null,
   })

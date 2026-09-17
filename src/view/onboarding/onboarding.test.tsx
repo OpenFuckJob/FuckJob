@@ -52,6 +52,7 @@ describe("Onboarding", () => {
         provider: "deepseek" as const,
         base_url: "https://api.deepseek.com",
         model: "",
+        insecure: false,
         enabled: true,
       }],
     };
@@ -69,10 +70,10 @@ describe("Onboarding", () => {
     const onFinish = vi.fn().mockResolvedValue(true);
     const configured = {
       ...config,
-      llm_config: { provider: "openai" as const, base_url: "https://api.openai.com/v1", model: "gpt-test" },
+      llm_config: { provider: "openai" as const, base_url: "https://api.openai.com/v1", model: "gpt-test", insecure: false },
       llm_fallbacks: [
-        { id: "backup-ok", label: null, provider: "deepseek" as const, base_url: "https://api.deepseek.com", model: "deepseek-chat", enabled: true },
-        { id: "backup-draft", label: null, provider: "deepseek" as const, base_url: "https://api.deepseek.com", model: "", enabled: true },
+        { id: "backup-ok", label: null, provider: "deepseek" as const, base_url: "https://api.deepseek.com", model: "deepseek-chat", enabled: true, insecure: false },
+        { id: "backup-draft", label: null, provider: "deepseek" as const, base_url: "https://api.deepseek.com", model: "", enabled: true, insecure: false },
       ],
     };
     render(<Onboarding config={configured} onFinish={onFinish} />);
@@ -90,7 +91,7 @@ describe("Onboarding", () => {
   it("automatically saves a pending API key before entering the app", async () => {
     const configured = {
       ...config,
-      llm_config: { provider: "openai" as const, base_url: "https://api.openai.com/v1", model: "gpt-test" },
+      llm_config: { provider: "openai" as const, base_url: "https://api.openai.com/v1", model: "gpt-test", insecure: false },
     };
     const onFinish = vi.fn().mockResolvedValue(true);
     render(<Onboarding config={configured} onFinish={onFinish} />);

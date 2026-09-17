@@ -16,6 +16,7 @@ describe("app config save validation", () => {
     provider: "openai" as const,
     base_url: "https://api.openai.com/v1",
     model: "gpt-test",
+    insecure: false,
   };
   const fallback = {
     id: "backup-a",
@@ -23,6 +24,7 @@ describe("app config save validation", () => {
     provider: "deepseek" as const,
     base_url: "https://api.deepseek.com",
     model: "deepseek-chat",
+    insecure: false,
     enabled: true,
   };
 

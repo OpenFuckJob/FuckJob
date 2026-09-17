@@ -340,6 +340,8 @@ struct RawLlmConfig {
     base_url: Option<String>,
     #[serde(default)]
     model: Option<String>,
+    #[serde(default)]
+    insecure: Option<bool>,
 }
 
 fn parse_llm_config(
@@ -369,6 +371,7 @@ fn parse_llm_config(
         provider,
         base_url,
         model,
+        insecure: raw.insecure.unwrap_or(false),
     };
     normalize_llm_config(&mut config);
     Ok(Some(config))
@@ -840,6 +843,10 @@ pub struct LlmConfig {
     pub provider: LlmProviderPreset,
     pub base_url: String,
     pub model: String,
+    /// 是否跳过 TLS 证书校验。仅用于自签证书的内网/自建服务，默认关闭；
+    /// 开启后中间人可窃取传输内容（含 API Key），切勿对公网服务开启。
+    #[serde(default)]
+    pub insecure: bool,
 }
 
 /// 一个大模型服务是否填写完整、可以真正发起调用。
@@ -876,6 +883,11 @@ pub struct LlmProviderEntry {
     pub base_url: String,
 
     pub model: String,
+
+    /// 是否跳过 TLS 证书校验。仅用于自签证书的内网/自建服务，默认关闭；
+    /// 开启后中间人可窃取传输内容（含 API Key），切勿对公网服务开启。
+    #[serde(default)]
+    pub insecure: bool,
 
     /// 是否参与降级链。关闭后保留配置但不再被调用
     #[serde(default = "default_true")]
@@ -948,6 +960,8 @@ pub struct LlmChainLink {
     pub provider: LlmProviderPreset,
     pub base_url: String,
     pub model: String,
+    /// 是否跳过 TLS 证书校验（来自主用配置或备用条目的 insecure 字段）
+    pub insecure: bool,
 }
 
 impl LlmChainLink {
@@ -1018,6 +1032,7 @@ impl AppRuntimeConfig {
             provider: primary.provider.clone(),
             base_url: primary.base_url.clone(),
             model: primary.model.clone(),
+            insecure: primary.insecure,
         });
 
         chain.extend(
@@ -1031,6 +1046,7 @@ impl AppRuntimeConfig {
                     provider: entry.provider.clone(),
                     base_url: entry.base_url.clone(),
                     model: entry.model.clone(),
+                    insecure: entry.insecure,
                 }),
         );
 
@@ -2055,6 +2071,7 @@ mod tests {
             provider: LlmProviderPreset::Ollama,
             base_url: "  http://127.0.0.1:11434/v1///  ".to_string(),
             model: "  qwen3  ".to_string(),
+            insecure: false,
         }
     }
 
@@ -2094,6 +2111,7 @@ mod tests {
                 provider: LlmProviderPreset::OpenAi,
                 base_url: base_url.to_string(),
                 model: model.to_string(),
+                insecure: false,
             });
 
             let yaml = serde_yaml::to_string(&config).unwrap();
@@ -3010,6 +3028,7 @@ job_profiles: []
             provider: LlmProviderPreset::OpenAi,
             base_url: "https://llm.example.test/v1".to_string(),
             model: model.to_string(),
+            insecure: false,
             enabled: true,
         }
     }
@@ -3031,6 +3050,7 @@ job_profiles: []
             provider: LlmProviderPreset::DeepSeek,
             base_url: "https://api.deepseek.com".to_string(),
             model: "deepseek-chat".to_string(),
+            insecure: false,
         });
         let mut disabled = fallback_entry("backup-b", "gpt-4o-mini");
         disabled.enabled = false;
@@ -3060,6 +3080,7 @@ job_profiles: []
             provider: LlmProviderPreset::DeepSeek,
             base_url: "https://api.deepseek.com".to_string(),
             model: "deepseek-chat".to_string(),
+            insecure: false,
         });
         config.llm_enabled = Some(false);
 
@@ -3074,6 +3095,7 @@ job_profiles: []
             provider: LlmProviderPreset::OpenAi,
             base_url: "https://llm.example.test/v1".to_string(),
             model: "primary-model".to_string(),
+            insecure: false,
         });
         let mut labeled = fallback_entry("backup-a", "qwen-max");
         labeled.label = Some("阿里备用".to_string());
@@ -3145,6 +3167,7 @@ job_profiles: []
             provider: LlmProviderPreset::OpenAi,
             base_url: "https://api.openai.com/v1".to_string(),
             model: "gpt-4o".to_string(),
+            insecure: false,
         });
         let mut blank = fallback_entry("backup-blank", "");
         blank.base_url = "   ".to_string();

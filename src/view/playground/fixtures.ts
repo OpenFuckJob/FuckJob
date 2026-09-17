@@ -34,7 +34,7 @@ export function makeConfig(profiles: JobProfile[] = [makeProfile()]): AppRuntime
   return {
     schema_version: 1,
     onboarding_completed: true,
-    llm_config: { provider: "openai", base_url: "https://example.test", model: "gpt-x" },
+    llm_config: { provider: "openai", base_url: "https://example.test", model: "gpt-x", insecure: false },
     llm_enabled: true,
     llm_fallbacks: [],
     llm_retry_config: { network_retry_attempts: 1, retry_base_delay_ms: 200, request_timeout_seconds: 120 },
