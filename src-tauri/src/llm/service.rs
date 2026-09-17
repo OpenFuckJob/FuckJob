@@ -853,15 +853,22 @@ pub(crate) fn http_client_for(insecure: bool) -> Result<reqwest::Client, AppErro
         })
 }
 
-/// 供 rig 0.40 `ClientBuilder::http_client` 使用的包装。
+/// 供 rig 0.40 `ClientBuilder::http_client` 使用的客户端构造。
 ///
-/// `http_client` 要求参数实现 `HttpClientExt`，原生 `reqwest::Client` 不满足该
-/// 约束（编译报 E0599），故用官方 `rig::http_client::ReqwestClient` 包一层。
-/// 底层仍是同一个 client，`insecure` 开关的 TLS 行为保持不变。
+/// rig-core 0.40 依赖 reqwest 0.13，而本项目直接依赖 reqwest 0.12——两个版本
+/// 的 `Client` 是不同的类型；`HttpClientExt` 只为 rig 内部的 reqwest 0.13
+/// `Client` 实现，因此不能把本项目的 0.12 client 传给 `.http_client()`（E0599）。
+/// 这里直接用 rig 重新导出的 `ReqwestClient`（即 reqwest 0.13 的 `Client`）
+/// 构造，`insecure` 开关的 TLS 行为保持不变。
 pub(crate) fn rig_http_client_for(
     insecure: bool,
 ) -> Result<rig::http_client::ReqwestClient, AppError> {
-    http_client_for(insecure).map(rig::http_client::ReqwestClient::new)
+    rig::http_client::ReqwestClient::builder()
+        .tls_danger_accept_invalid_certs(insecure)
+        .build()
+        .map_err(|error| {
+            AppError::configuration("无法创建 HTTP 客户端").with_detail(error.to_string())
+        })
 }
 
 pub(crate) fn normalize_provider_base_url(provider: &LlmProviderPreset, base_url: &str) -> String {
