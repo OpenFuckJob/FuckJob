@@ -80,7 +80,7 @@ impl LlmService {
         });
 
         // 自签证书场景下跳过 TLS 校验的开关：默认关闭，仅对 insecure=true 的服务生效
-        let http_client = http_client_for(link.insecure)?;
+        let http_client = rig_http_client_for(link.insecure)?;
 
         let backend = match provider {
             LlmProviderPreset::Anthropic => LlmBackend::Anthropic(
@@ -851,6 +851,17 @@ pub(crate) fn http_client_for(insecure: bool) -> Result<reqwest::Client, AppErro
         .map_err(|error| {
             AppError::configuration("无法创建 HTTP 客户端").with_detail(error.to_string())
         })
+}
+
+/// 供 rig 0.40 `ClientBuilder::http_client` 使用的包装。
+///
+/// `http_client` 要求参数实现 `HttpClientExt`，原生 `reqwest::Client` 不满足该
+/// 约束（编译报 E0599），故用官方 `rig::http_client::ReqwestClient` 包一层。
+/// 底层仍是同一个 client，`insecure` 开关的 TLS 行为保持不变。
+pub(crate) fn rig_http_client_for(
+    insecure: bool,
+) -> Result<rig::http_client::ReqwestClient, AppError> {
+    http_client_for(insecure).map(rig::http_client::ReqwestClient::new)
 }
 
 pub(crate) fn normalize_provider_base_url(provider: &LlmProviderPreset, base_url: &str) -> String {
