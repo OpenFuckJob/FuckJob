@@ -150,39 +150,205 @@ fn js(page: &Page, expression: &str) -> Result<Value> {
     Ok(value.get("value").cloned().unwrap_or(value))
 }
 
+const MAX_AUTOMATIC_SLIDER_ATTEMPTS: u8 = 3;
+const MAX_EXPIRED_SLIDER_REFRESHES: u8 = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManualSliderAction {
+    Passed,
+    Refresh,
+    Wait,
+    Stop,
+}
+
+#[derive(Debug, Default)]
+struct SliderRecovery {
+    attempts: u8,
+    expired_refreshes: u8,
+    manual_timeout_refreshed: bool,
+}
+
+impl SliderRecovery {
+    fn expired(&mut self) -> bool {
+        self.expired_refreshes = self.expired_refreshes.saturating_add(1);
+        self.expired_refreshes >= MAX_EXPIRED_SLIDER_REFRESHES
+    }
+
+    fn failed(&mut self) -> bool {
+        self.expired_refreshes = 0;
+        self.attempts = self.attempts.saturating_add(1);
+        self.attempts >= MAX_AUTOMATIC_SLIDER_ATTEMPTS
+    }
+
+    fn manual_action(
+        &mut self,
+        stop_requested: bool,
+        passed: bool,
+        state: Option<&str>,
+    ) -> ManualSliderAction {
+        if stop_requested {
+            return ManualSliderAction::Stop;
+        }
+        if passed {
+            return ManualSliderAction::Passed;
+        }
+        match state {
+            Some("blocked") => {
+                self.manual_timeout_refreshed = false;
+                ManualSliderAction::Wait
+            }
+            Some("blocked_timeout") if !self.manual_timeout_refreshed => {
+                self.manual_timeout_refreshed = true;
+                ManualSliderAction::Refresh
+            }
+            Some("login" | "limit") => ManualSliderAction::Stop,
+            _ => ManualSliderAction::Wait,
+        }
+    }
+}
+
+fn native_slider_coordinates(geometry: &Value, viewport: &Value) -> Result<(i32, i32, i32, i32)> {
+    let number = |value: &Value, key: &str| {
+        value[key]
+            .as_f64()
+            .filter(|number| number.is_finite())
+            .with_context(|| format!("51job 原生滑动缺少有效字段 {key}"))
+    };
+    let x = number(geometry, "x")?;
+    let y = number(geometry, "y")?;
+    let rail_right = number(geometry, "end")? + number(geometry, "width")? / 2.0;
+    let rail_width = number(geometry, "outerWidth")?;
+    let rail_height = number(geometry, "outerHeight")?;
+    let screen_x = number(viewport, "screenX")?;
+    let screen_y = number(viewport, "screenY")?;
+    let outer_width = number(viewport, "outerWidth")?;
+    let outer_height = number(viewport, "outerHeight")?;
+    let inner_width = number(viewport, "innerWidth")?;
+    let inner_height = number(viewport, "innerHeight")?;
+    let border = (outer_width - inner_width) / 2.0;
+    let content_top = outer_height - inner_height - border;
+    if rail_width <= 0.0 || rail_height <= 0.0 || border < 0.0 || content_top < 0.0 {
+        bail!("51job 原生滑动页面几何无效");
+    }
+    let start_x = (screen_x + border + x).round() as i32;
+    let start_y = (screen_y + content_top + y).round() as i32;
+    let end_x = (screen_x + border + rail_right + rail_width * 2.0 / 3.0).round() as i32;
+    let end_y = (screen_y + content_top + y + rail_height).round() as i32;
+    if end_x <= start_x {
+        bail!("51job 原生滑动终点无效");
+    }
+    Ok((start_x, start_y, end_x, end_y))
+}
+
+fn native_slider_script() -> Vec<u8> {
+    let mut script = vec![0xef, 0xbb, 0xbf];
+    script.extend_from_slice(include_bytes!("native_slider.ps1"));
+    script
+}
+
+#[cfg(target_os = "windows")]
+fn run_native_slider(coordinates: (i32, i32, i32, i32)) -> Result<()> {
+    use std::os::windows::process::CommandExt;
+    let directory = tempfile::tempdir().context("创建 51job 原生滑动临时目录失败")?;
+    let script = directory.path().join("slider.ps1");
+    std::fs::write(&script, native_slider_script())
+        .context("写入 51job 原生滑动脚本失败")?;
+    let status = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
+        .arg(&script)
+        .args([
+            coordinates.0.to_string(),
+            coordinates.1.to_string(),
+            coordinates.2.to_string(),
+            coordinates.3.to_string(),
+        ])
+        .creation_flags(0x08000000)
+        .status()
+        .context("启动 51job 原生滑动失败")?;
+    if !status.success() {
+        bail!("51job 原生滑动失败：PowerShell 退出码 {:?}", status.code());
+    }
+    Ok(())
+}
+
+fn refresh_slider_page(page: &Page) -> Result<()> {
+    if js(page, "markSliderRefresh51(document)")? == true {
+        page.click("[data-fj-51-slider-refresh='1']")?;
+    } else {
+        page.refresh()?;
+    }
+    Ok(())
+}
+
+async fn refresh_stale_slider_pages(connection: &ChromiumPage) -> Result<()> {
+    for page in connection.tabs()? {
+        if js(&page, "sliderStale51(document,30000)").ok() != Some(Value::Bool(true)) {
+            continue;
+        }
+        logger::info("51job 检测到上次任务遗留的陈旧验证页，正在先刷新")?;
+        refresh_slider_page(&page)?;
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+    }
+    Ok(())
+}
+
+async fn wait_for_manual_slider(page: &Page, recovery: &mut SliderRecovery) -> Result<bool> {
+    logger::warning("51job 正在等待验证结果；如页面仍显示验证，请手动完成，任务将自动恢复")?;
+    loop {
+        let action = if is_job_task_stop_requested() {
+            recovery.manual_action(true, false, None)
+        } else {
+            let passed = js(page, "sliderPassed51(document)")? == true;
+            let state = js(page, "applyState51(document, '')")?;
+            recovery.manual_action(false, passed, state["kind"].as_str())
+        };
+        match action {
+            ManualSliderAction::Passed => {
+                logger::info("51job 人工验证已通过，恢复当前任务")?;
+                return Ok(true);
+            }
+            ManualSliderAction::Refresh => {
+                logger::info("51job 验证会话已超时，正在刷新后等待人工验证...")?;
+                refresh_slider_page(page)?;
+                tokio::time::sleep(Duration::from_millis(2500)).await;
+                continue;
+            }
+            ManualSliderAction::Wait => {}
+            ManualSliderAction::Stop => return Ok(false),
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
 /// 自动滑动解锁 51job 访问验证（阿里云盾滑动验证码）
 pub async fn resolve_slider(page: &Page) -> Result<bool> {
-    for attempt in 1..=3 {
+    let mut recovery = SliderRecovery::default();
+    'automatic: loop {
         if is_job_task_stop_requested() {
             return Ok(false);
         }
 
-        // 确保窗口处于正常激活状态并置顶
-        if let Ok(window) = page.run_cdp(
-            "Browser.getWindowForTarget",
-            Some(json!({"targetId": page.tab_id()})),
-        ) {
-            if window.get("bounds").and_then(|b| b.get("windowState")).and_then(|s| s.as_str()) == Some("minimized") {
-                if let Some(window_id) = window.get("windowId") {
-                    let _ = page.run_cdp(
-                        "Browser.setWindowBounds",
-                        Some(json!({"windowId": window_id, "bounds": {"windowState": "normal"}})),
-                    );
-                }
-            }
+        // CDP targets this page directly; keep the user's window state and focus.
+
+        if js(page, "sliderPassed51(document)")? == true {
+            return Ok(true);
         }
-        let _ = page.run_cdp("Page.bringToFront", None);
 
         // 检测是否出现“验证超时，请点击刷新/重试”界面；若出现则立即刷新界面
         let is_timeout = js(page, "isSliderTimeout51(document)")?.as_bool().unwrap_or(false);
         if is_timeout {
+            if recovery.expired() {
+                break 'automatic;
+            }
             logger::info("51job 出现验证超时界面，正在自动刷新界面...")?;
-            page.refresh()?;
+            refresh_slider_page(page)?;
             tokio::time::sleep(Duration::from_millis(2500)).await;
+            continue;
         }
 
         // 等待滑块几何元素就绪
         let mut geometry = Value::Null;
+        let mut expired_before_drag = false;
         for _ in 0..25 {
             if is_job_task_stop_requested() {
                 return Ok(false);
@@ -191,9 +357,7 @@ pub async fn resolve_slider(page: &Page) -> Result<bool> {
                 return Ok(true);
             }
             if js(page, "isSliderTimeout51(document)")?.as_bool().unwrap_or(false) {
-                logger::info("51job 检测到验证超时提示，正在自动刷新界面...")?;
-                page.refresh()?;
-                tokio::time::sleep(Duration::from_millis(2500)).await;
+                expired_before_drag = true;
                 break;
             }
             let res = js(page, "sliderGeometry51(document)")?;
@@ -204,21 +368,50 @@ pub async fn resolve_slider(page: &Page) -> Result<bool> {
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
 
-        let Some(start_x) = geometry.get("x").and_then(Value::as_f64) else {
-            let state = js(page, "applyState51(document, '')")?;
-            if !matches!(state["kind"].as_str(), Some("blocked" | "blocked_timeout")) || attempt == 3 {
-                return Ok(false);
+        if expired_before_drag {
+            if recovery.expired() {
+                break 'automatic;
             }
-            // 未找到滑块且仍处于验证页，主动刷新界面
+            logger::info("51job 检测到验证超时提示，正在自动刷新界面...")?;
+            refresh_slider_page(page)?;
+            tokio::time::sleep(Duration::from_millis(2500)).await;
+            continue;
+        }
+
+        let Some(_) = geometry.get("x").and_then(Value::as_f64) else {
+            let state = js(page, "applyState51(document, '')")?;
+            if !matches!(state["kind"].as_str(), Some("blocked" | "blocked_timeout")) {
+                break 'automatic;
+            }
+            if recovery.expired() {
+                break 'automatic;
+            }
             logger::info("51job 界面未展示有效滑块，正在刷新页面重新加载...")?;
-            page.refresh()?;
+            refresh_slider_page(page)?;
             tokio::time::sleep(Duration::from_millis(2500)).await;
             continue;
         };
-        let start_y = geometry.get("y").and_then(Value::as_f64).unwrap_or(0.0);
-        let end_x = geometry.get("end").and_then(Value::as_f64).unwrap_or(start_x + 300.0);
+        let attempt = recovery.attempts + 1;
 
         logger::info(format!("51job 触发访问验证，正在执行第 {attempt} 次自动滑动解锁..."))?;
+
+        #[cfg(target_os = "windows")]
+        {
+            page.run_cdp("Page.bringToFront", None)?;
+            let viewport = js(page, "({screenX,screenY,outerWidth,outerHeight,innerWidth,innerHeight})")?;
+            let coordinates = native_slider_coordinates(&geometry, &viewport)?;
+            logger::info("51job 将短暂激活验证页并使用系统鼠标完成滑动")?;
+            if let Err(error) = run_native_slider(coordinates) {
+                logger::warning(format!("51job 原生滑动不可用，转入人工验证：{error}"))?;
+                break 'automatic;
+            }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+        let start_x = geometry.get("x").and_then(Value::as_f64).unwrap_or(0.0);
+        let start_y = geometry.get("y").and_then(Value::as_f64).unwrap_or(0.0);
+        let end_x = geometry.get("end").and_then(Value::as_f64).unwrap_or(start_x + 300.0);
 
         // 移至滑块
         page.run_cdp("Input.dispatchMouseEvent", Some(json!({
@@ -280,6 +473,7 @@ pub async fn resolve_slider(page: &Page) -> Result<bool> {
             "buttons": 0,
             "clickCount": 1
         })));
+        }
 
         // 只有正常职位内容加载后才确认通过，跳转中的空白页不算成功。
         for _ in 0..40 {
@@ -296,17 +490,21 @@ pub async fn resolve_slider(page: &Page) -> Result<bool> {
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
         let state = js(page, "applyState51(document, '')")?;
-        if attempt == 3 || !matches!(state["kind"].as_str(), Some("blocked" | "blocked_timeout")) {
-            logger::warning("51job 未确认验证通过，保留当前页面等待处理")?;
+        if matches!(state["kind"].as_str(), Some("login" | "limit")) {
             return Ok(false);
         }
-
+        if !matches!(state["kind"].as_str(), Some("blocked" | "blocked_timeout")) {
+            break 'automatic;
+        }
+        if recovery.failed() {
+            break 'automatic;
+        }
         logger::warning(format!("51job 第 {attempt} 次滑动验证未通过或超时，正在刷新界面重试..."))?;
-        page.refresh()?;
+        refresh_slider_page(page)?;
         tokio::time::sleep(Duration::from_millis(2500)).await;
     }
 
-    Ok(false)
+    wait_for_manual_slider(page, &mut recovery).await
 }
 
 pub async fn login_check() -> Result<Value> {
@@ -438,6 +636,7 @@ pub async fn deliver_on_page(
     {
         bail!("51job直接投递需要配置模型与简历正文");
     }
+    refresh_stale_slider_pages(connection).await?;
     let mut queries = search_queries(query);
     if queries.is_empty() {
         bail!("岗位关键词为空，请填写至少一个关键词");
@@ -922,6 +1121,62 @@ fn build_record(job: &RpaJob, config: &AppRuntimeConfig) -> JobDetail {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_slider_coordinates_match_the_calibrated_manual_gesture() {
+        let geometry = json!({"x":755.6666870117188,"y":307.10418701171875,"end":1075.6666870117188,
+            "width":40.0,"outerWidth":360.0,"outerHeight":40.0});
+        let viewport = json!({"screenX":1.0,"screenY":1.0,"outerWidth":1706.0,"outerHeight":1018.0,
+            "innerWidth":1691.0,"innerHeight":923.0});
+
+        assert_eq!(native_slider_coordinates(&geometry, &viewport).unwrap(), (764,396,1344,436));
+    }
+
+    #[test]
+    fn native_slider_script_has_a_utf8_bom_for_windows_powershell() {
+        let script = native_slider_script();
+        assert!(script.starts_with(&[0xef, 0xbb, 0xbf]));
+        assert!(std::str::from_utf8(&script[3..]).unwrap().contains("滑动验证页面"));
+    }
+
+    #[test]
+    fn expired_challenge_refresh_does_not_spend_an_automatic_attempt() {
+        let mut recovery = SliderRecovery::default();
+        assert_eq!([recovery.expired(), recovery.expired(), recovery.expired()], [false, false, true]);
+        assert_eq!(recovery.attempts, 0);
+    }
+
+    #[test]
+    fn third_automatic_failure_waits_for_manual_and_manual_pass_resumes() {
+        let mut recovery = SliderRecovery::default();
+        assert_eq!([recovery.failed(), recovery.failed(), recovery.failed()], [false, false, true]);
+        assert_eq!(recovery.manual_action(false, true, Some("unknown")), ManualSliderAction::Passed);
+    }
+
+    #[test]
+    fn manual_wait_refreshes_each_expired_session_once() {
+        let mut recovery = SliderRecovery::default();
+        assert_eq!(
+            [
+                recovery.manual_action(false, false, Some("blocked_timeout")),
+                recovery.manual_action(false, false, Some("blocked_timeout")),
+                recovery.manual_action(false, false, Some("blocked")),
+                recovery.manual_action(false, false, Some("blocked_timeout")),
+            ],
+            [ManualSliderAction::Refresh, ManualSliderAction::Wait,
+                ManualSliderAction::Wait, ManualSliderAction::Refresh]
+        );
+    }
+
+    #[test]
+    fn manual_wait_passed_resumes_and_stop_cancels() {
+        let mut recovery = SliderRecovery::default();
+        assert_eq!(
+            [recovery.manual_action(false, true, Some("unknown")),
+                recovery.manual_action(true, false, Some("blocked"))],
+            [ManualSliderAction::Passed, ManualSliderAction::Stop]
+        );
+    }
 
     #[test]
     fn retained_detail_must_match_the_exact_job_and_official_https_host() {

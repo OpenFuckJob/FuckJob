@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { JSDOM } from 'jsdom';
-import { collectJobs51, listedJobIds51, captureMarkedJobUrl51, markQrEntry51, qrDataUrl51, applyState51, markApply51, readSelection51, markSelection51, sliderGeometry51, sliderPassed51 } from '../src-tauri/src/rpa/job51/ui.js';
+import { collectJobs51, listedJobIds51, captureMarkedJobUrl51, markQrEntry51, qrDataUrl51, applyState51, markApply51, readSelection51, markSelection51, markSliderRefresh51, sliderGeometry51, sliderPassed51, sliderStale51 } from '../src-tauri/src/rpa/job51/ui.js';
 const doc = html => new JSDOM(html, {url:'https://jobs.51job.com/shenzhen/123.html'}).window.document;
 
 test('slider stops with the handle inside the rail instead of dragging a full rail width',()=>{
@@ -13,6 +13,7 @@ test('slider stops with the handle inside the rail instead of dragging a full ra
   d.querySelector('#aliyunCaptcha-sliding-text-box').getBoundingClientRect=()=>({x:140,y:200,width:320,height:40,right:460});
   assert.equal(sliderGeometry51(d).x,120);
   assert.equal(sliderGeometry51(d).end,440);
+  assert.equal(sliderGeometry51(d).outerHeight,40);
   d.querySelector('#aliyunCaptcha-sliding-text-box').remove();
   assert.equal(sliderGeometry51(d).end,440);
   slider.style.display='none';
@@ -60,6 +61,23 @@ test('blocks a slider verification page even before its body loads',()=>{
 test('detects verification on the search page despite its normal page title',()=>{
   const d=doc('<title>【后端,深圳招聘，求职】-前程无忧</title><div>安全验证：请按住滑块</div>');
   assert.equal(applyState51(d,'').kind,'blocked');
+});
+test('marks only a visible Aliyun slider refresh control',()=>{
+  const d=doc('<span id="aliyunCaptcha-sliding-refresh" style="display:none">刷新</span><button>重试</button>');
+  assert.equal(markSliderRefresh51(d),true);
+  assert.equal(d.querySelector('[data-fj-51-slider-refresh]').textContent,'重试');
+  d.querySelector('button').style.display='none';
+  assert.equal(markSliderRefresh51(d),false);
+});
+test('treats an existing verification page as stale after thirty seconds',()=>{
+  const d=doc('<div id="tips_title">访问验证</div><div id="newTraceid">请求时间: 2026-11-01 18:00:00</div>');
+  assert.equal(sliderStale51(d,30_000,Date.parse('2026-11-01T18:00:29+08:00')),false);
+  assert.equal(sliderStale51(d,30_000,Date.parse('2026-11-01T18:00:30+08:00')),true);
+});
+test('refreshes a verification page stuck loading without a request timestamp',()=>{
+  const d=doc('<title>滑动验证页面</title><div>验证加载中</div>');
+  Object.defineProperty(d.defaultView.performance,'now',{value:()=>30_000});
+  assert.equal(sliderStale51(d),true);
 });
 test('marks the official QR login switch on the default phone login page',()=>{
   const d=doc(`<input type="password"><i class="passIcon" data-sensor-id="sensor_login_wechatScan"></i><button>登录 / 注册</button>`);

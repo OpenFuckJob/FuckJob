@@ -526,7 +526,7 @@ pub async fn execute_rpa_flow(
     plan: Option<PeriodicPlan>,
     config: &AppRuntimeConfig,
 ) -> Result<(), anyhow::Error> {
-    if has_managed_job_task_context() {
+    if has_managed_job_task_context() && !mode.is_long_running() {
         let config = config.clone();
         return crate::browser::with_task_browser(|connection, main_tab| {
             Box::pin(async move {
@@ -593,14 +593,14 @@ pub async fn execute_rpa_flow_with_browser(
             let plan =
                 schedule::resolve_plan(plan, Local::now()).map_err(|e| anyhow::anyhow!(e))?;
             periodic_job_hunting(
-                &PeriodicTarget::OwnedTab(connection, main_tab, platform),
+                &PeriodicTarget::NewTab(platform),
                 config,
                 &plan,
             )
             .await
         }
         FlowMode::PollingReply => {
-            polling_reply(&ReplyTarget::OwnedTab(main_tab, platform), config).await
+            polling_reply(&ReplyTarget::NewTab(platform), config).await
         }
     }
 }
@@ -618,28 +618,24 @@ async fn execute_job_hunting(
     config: &AppRuntimeConfig,
     budget: RoundBudget,
 ) -> Result<(), anyhow::Error> {
-    match platform {
-        PlatformKind::Boss => boss::handler::position_say_hello(config, budget).await,
-        PlatformKind::Liepin => liepin::handler::position_say_hello(config, budget).await,
-        PlatformKind::Job51 => job51::deliver(config, budget).await,
-    }
+    let config = config.clone();
+    crate::browser::with_task_browser(|connection, main_tab| {
+        Box::pin(async move {
+            execute_job_hunting_on_page(connection, main_tab, platform, &config, budget).await
+        })
+    })
+    .await
 }
 
 async fn execute_reply_unread(
     platform: PlatformKind,
     config: &AppRuntimeConfig,
 ) -> Result<(), anyhow::Error> {
-    match platform {
-        PlatformKind::Boss => {
-            boss::handler::reply_unread(config).await?;
-            Ok(())
-        }
-        PlatformKind::Liepin => {
-            liepin::handler::reply_unread(config).await?;
-            Ok(())
-        }
-        PlatformKind::Job51 => anyhow::bail!("51job 不支持聊天任务"),
-    }
+    let config = config.clone();
+    crate::browser::with_task_browser(|_, main_tab| {
+        Box::pin(async move { execute_reply_unread_on_page(main_tab, platform, &config).await })
+    })
+    .await
 }
 
 async fn execute_job_hunting_on_page(
@@ -677,17 +673,12 @@ async fn execute_reply_unread_on_page(
     Ok(())
 }
 
-/// 一轮回复要跑在哪个标签页上。
-///
-/// 队列任务持有自己的主标签页，兼容入口则每轮新开一个。两条路径的轮询节奏
-/// 完全一致，只有这一处不同，所以差异收在这里而不是复制两份循环
-enum ReplyTarget<'a> {
+enum ReplyTarget {
     NewTab(PlatformKind),
-    OwnedTab(&'a Page, PlatformKind),
 }
 
 async fn run_reply_round(
-    target: &ReplyTarget<'_>,
+    target: &ReplyTarget,
     config: &AppRuntimeConfig,
 ) -> Result<(), anyhow::Error> {
     // 回复同样要拟人：给 HR 打字这件事比投递更该像人，对面是个真人在看。
@@ -696,9 +687,6 @@ async fn run_reply_round(
     let _persona = humanize::scoped_persona(humanize::Persona::today(&config.humanize_config, 0));
     match target {
         ReplyTarget::NewTab(platform) => execute_reply_unread(*platform, config).await,
-        ReplyTarget::OwnedTab(main_tab, platform) => {
-            execute_reply_unread_on_page(main_tab, *platform, config).await
-        }
     }
 }
 
@@ -707,7 +695,7 @@ async fn run_reply_round(
 /// 单轮失败不终止整个轮询：会话页加载超时、平台偶发风控这类错误下一轮多半就好了，
 /// 为此让用户重新点一次开始任务并不合理
 async fn polling_reply(
-    target: &ReplyTarget<'_>,
+    target: &ReplyTarget,
     config: &AppRuntimeConfig,
 ) -> Result<(), anyhow::Error> {
     // 不在活跃时段时每分钟醒一次重新判断。每次都打日志的话，挂一夜就是几百条噪声，
@@ -753,21 +741,15 @@ async fn polling_reply(
 /// 就好了。但连着失败就不是偶发，多半是登录失效或触发了安全验证，再转下去只是空转
 const MAX_CONSECUTIVE_ROUND_FAILURES: u32 = 3;
 
-/// 一轮周期投递跑在哪里。
-///
-/// 队列任务持有自己的连接和主标签页，兼容入口则每次新开。投递、回复、同步历史
-/// 三件事在两条路径上的差异全都收在这里，主循环只有一份
-enum PeriodicTarget<'a> {
+enum PeriodicTarget {
     NewTab(PlatformKind),
-    OwnedTab(&'a ChromiumPage, &'a Page, PlatformKind),
 }
 
-impl<'a> PeriodicTarget<'a> {
-    fn supports_chat(&self) -> bool { !matches!(self, Self::NewTab(PlatformKind::Job51) | Self::OwnedTab(_, _, PlatformKind::Job51)) }
-    fn reply_target(&self) -> ReplyTarget<'a> {
+impl PeriodicTarget {
+    fn supports_chat(&self) -> bool { !matches!(self, Self::NewTab(PlatformKind::Job51)) }
+    fn reply_target(&self) -> ReplyTarget {
         match self {
             Self::NewTab(platform) => ReplyTarget::NewTab(*platform),
-            Self::OwnedTab(_, main_tab, platform) => ReplyTarget::OwnedTab(main_tab, *platform),
         }
     }
 
@@ -778,21 +760,19 @@ impl<'a> PeriodicTarget<'a> {
     ) -> Result<(), anyhow::Error> {
         match self {
             Self::NewTab(platform) => execute_job_hunting(*platform, config, budget).await,
-            Self::OwnedTab(connection, main_tab, platform) => {
-                execute_job_hunting_on_page(connection, main_tab, *platform, config, budget).await
-            }
         }
     }
 
     async fn sync_chat_history(&self) -> Result<(), anyhow::Error> {
         match self {
             Self::NewTab(PlatformKind::Boss) => {
-                boss::handler::sync_chat_history().await?;
-                Ok(())
-            }
-            Self::OwnedTab(_, main_tab, PlatformKind::Boss) => {
-                boss::handler::sync_chat_history_on_page(main_tab).await?;
-                Ok(())
+                crate::browser::with_task_browser(|_, main_tab| {
+                    Box::pin(async move {
+                        boss::handler::sync_chat_history_on_page(main_tab).await?;
+                        Ok(())
+                    })
+                })
+                .await
             }
             _ => Ok(()),
         }
@@ -804,7 +784,7 @@ impl<'a> PeriodicTarget<'a> {
 /// 每次转到循环顶部都重新问一遍计划「现在该干嘛」，而不是自己记状态：任务可能
 /// 一挂就是几天，跨过午夜、跨过投递时段边界，靠增量推算迟早会算歪
 async fn periodic_job_hunting(
-    target: &PeriodicTarget<'_>,
+    target: &PeriodicTarget,
     config: &AppRuntimeConfig,
     plan: &PeriodicPlan,
 ) -> Result<(), anyhow::Error> {
@@ -902,7 +882,7 @@ async fn periodic_job_hunting(
 /// 每个还带拟人延迟），倒扣的写法把这段耗时算在周期之外，实际周期会被撑成
 /// 「间隔 + N×回复耗时」，投递节奏跟着漂。返回 false 表示中途收到停止请求
 async fn idle_until(
-    target: &PeriodicTarget<'_>,
+    target: &PeriodicTarget,
     config: &AppRuntimeConfig,
     deadline: DateTime<Local>,
 ) -> Result<bool, anyhow::Error> {

@@ -156,7 +156,7 @@ pub async fn position_say_hello_on_page(
                 "猎聘处理岗位：{} - {}",
                 job.title, job.company_name
             ))?;
-            let greeted = match greet_job(connection, page, job.clone(), config.clone()).await {
+            let greeted = match greet_job(connection, job.clone(), config.clone()).await {
                 Ok(GreetOutcome::Held) => {
                     stats.skipped_hold += 1;
                     consecutive_greet_failures = 0;
@@ -187,6 +187,9 @@ pub async fn position_say_hello_on_page(
                     true
                 }
                 Err(error) => {
+                    if browser::is_browser_disconnected_error(&error) {
+                        return Err(error.context("猎聘浏览器连接已断开，当前消息发送状态未确认；下一次操作重新连接"));
+                    }
                     if error.to_string().contains("猎聘安全验证") {
                         logger::warning("猎聘出现安全验证，已停止本轮并保留验证页面；完成验证后请手动恢复任务")?;
                         return Ok(());
@@ -673,7 +676,6 @@ enum GreetOutcome {
 
 async fn greet_job(
     browser_page: &ChromiumPage,
-    main_page: &Page,
     mut job: RpaJob,
     config: AppRuntimeConfig,
 ) -> Result<GreetOutcome, anyhow::Error> {
@@ -771,9 +773,6 @@ async fn greet_job(
         Ok(GreetOutcome::Greeted)
     }
     .await;
-    if let Err(error) = main_page.run_cdp("Page.bringToFront", None) {
-        let _ = logger::warning(format!("猎聘恢复主搜索页失败，继续清理详情页：{error}"));
-    }
     let close_result = page.close();
 
     match (result, close_result) {
@@ -1586,15 +1585,15 @@ mod tests {
     }
 
     #[test]
-    fn main_search_page_is_restored_before_detail_tab_cleanup() {
+    fn greeting_cleanup_does_not_raise_the_browser_window() {
         let source = include_str!("position_say_hello.rs");
         let start = source.find("async fn greet_job").unwrap();
         let end = source[start..].find("fn greet_failure_message").unwrap() + start;
         let body = &source[start..end];
-        let restore = body.find("Page.bringToFront").unwrap();
-        let close = body.find("let close_result = page.close()").unwrap();
-
-        assert!(restore < close);
+        assert!(!body.contains("Page.bringToFront"));
+        assert!(!body.contains("Target.activateTarget"));
+        assert!(body.contains("let close_result = page.close()"));
+        assert!(body.contains("match (result, close_result)"));
     }
 
     #[test]

@@ -143,6 +143,9 @@ pub async fn position_say_hello_on_page(
                         continue;
                     }
                     Err(error) => {
+                        if browser::is_browser_disconnected_error(&error) {
+                            return Err(error.context("BOSS 浏览器连接已断开，本轮结束；下一次操作重新连接"));
+                        }
                         stats.read_failed += 1;
                         logger::warning(card_failure_message(&error))?;
                         continue;
@@ -197,8 +200,16 @@ pub async fn position_say_hello_on_page(
                 &app_runtime_config,
             );
             match handle_greet(connection, greet_job.clone(), app_runtime_config.clone()).await {
-                Ok(()) => consecutive_greet_failures = 0,
+                Ok(true) => consecutive_greet_failures = 0,
+                Ok(false) => {
+                    consecutive_greet_failures = 0;
+                    processed_job_ids.insert(greet_job.platform_job_id.clone());
+                    continue;
+                }
                 Err(error) => {
+                    if browser::is_browser_disconnected_error(&error) {
+                        return Err(error.context("BOSS 浏览器连接已断开，当前消息发送状态未确认；下一次操作重新连接"));
+                    }
                     stats.greet_failed += 1;
                     consecutive_greet_failures += 1;
                     logger::warning(greet_failure_message(
@@ -1340,7 +1351,7 @@ async fn handle_greet(
     browser_page: &ChromiumPage,
     greet_job: GreetJob,
     config: AppRuntimeConfig,
-) -> Result<(), anyhow::Error> {
+) -> Result<bool, anyhow::Error> {
     // 工作标签直接打开已知岗位详情，避免重新定位列表中的分页卡片。
     let work_page = browser::new_stealth_tab(browser_page)?;
     let result = async {
@@ -1353,9 +1364,9 @@ async fn handle_greet(
     let close_result = work_page.close();
 
     match (result, close_result) {
-        (Ok(()), Ok(())) => Ok(()),
+        (Ok(sent), Ok(())) => Ok(sent),
         (Err(error), _) => Err(error),
-        (Ok(()), Err(error)) => Err(error.into()),
+        (Ok(_), Err(error)) => Err(error.into()),
     }
 }
 
@@ -1368,7 +1379,7 @@ async fn handle_greet_on_work_tab(
     work_page: &Page,
     greet_job: GreetJob,
     config: AppRuntimeConfig,
-) -> Result<(), anyhow::Error> {
+) -> Result<bool, anyhow::Error> {
     // 1. 在工作标签的岗位详情页中等待并匹配沟通按钮
     let mut current_job_ready = false;
     let mut target_btn = None;
@@ -1404,14 +1415,14 @@ async fn handle_greet_on_work_tab(
         .unwrap_or(false);
     if data_isfriend {
         logger::info("岗位已打过招呼 跳过")?;
-        return Ok(());
+        return Ok(false);
     }
 
     // 2. BOSS 的建联按钮使用站内 JavaScript 路由，会将当前工作标签切换到聊天页。
     human_input::click(work_page, &btn)?;
     if is_job_task_stop_requested() {
         logger::info("求职任务已结束")?;
-        return Ok(());
+        return Ok(false);
     }
 
     // 3. 在岗位详情页处理确认弹窗（例如“继续沟通”、“确定”、“好”）
@@ -1421,7 +1432,7 @@ async fn handle_greet_on_work_tab(
     for _ in 0..15 {
         if is_job_task_stop_requested() {
             logger::info("求职任务已结束")?;
-            return Ok(());
+            return Ok(false);
         }
 
         // BOSS 可能直接将当前工作标签导航到聊天页，并不会给出二次确认
@@ -1500,14 +1511,14 @@ async fn handle_greet_on_work_tab(
 
     if is_job_task_stop_requested() {
         logger::info("求职任务已结束")?;
-        return Ok(());
+        return Ok(false);
     }
 
     // 已显示成功提示但站点没有跳转聊天页时，默认招呼已经真实发出；不能误判为失败。
     if greet_success_seen {
         logger::info("站点已确认向 BOSS 发送消息，未跳转聊天页，当前岗位视为建联成功")?;
         save_job_detail(&greet_job.platform_job_id, &greet_job, &config);
-        return Ok(());
+        return Ok(true);
     }
 
     // 4. 当前页未自动进入聊天时，使用按钮真实提供的聊天地址打开新 Tab。
@@ -1533,9 +1544,9 @@ async fn handle_greet_on_work_tab(
     let close_result = page.close();
 
     match (result, close_result) {
-        (Ok(()), Ok(())) => Ok(()),
+        (Ok(sent), Ok(())) => Ok(sent),
         (Err(error), _) => Err(error),
-        (Ok(()), Err(error)) => Err(error.into()),
+        (Ok(_), Err(error)) => Err(error.into()),
     }
 }
 
@@ -1543,10 +1554,10 @@ async fn handle_send_message_on_chat_page(
     page: &Page,
     greet_job: GreetJob,
     config: AppRuntimeConfig,
-) -> Result<(), anyhow::Error> {
+) -> Result<bool, anyhow::Error> {
     if is_job_task_stop_requested() {
         logger::info("求职任务已结束")?;
-        return Ok(());
+        return Ok(false);
     }
 
     // 等待聊天输入区与发送按钮加载完成
@@ -1563,10 +1574,12 @@ async fn handle_send_message_on_chat_page(
                 "跳过 {}，未发送任何内容：{reason}",
                 greet_job.title
             ))?;
-            return Ok(());
+            return Ok(false);
         }
         SendVerdict::Send(resources) => {
-            send_if_any(resources, |resources| send_messages(page, resources))?;
+            if !send_if_any(resources, |resources| send_messages(page, resources))? {
+                return Ok(false);
+            }
         }
     }
 
@@ -1576,7 +1589,7 @@ async fn handle_send_message_on_chat_page(
 
     sleep_random_ms(1200, 2000);
 
-    Ok(())
+    Ok(true)
 }
 
 fn send_if_any<F>(resources: Vec<ReplyResource>, send: F) -> Result<bool, anyhow::Error>
@@ -1586,7 +1599,10 @@ where
     if resources.is_empty() {
         return Ok(false);
     }
-    send(resources)
+    if !send(resources)? {
+        anyhow::bail!("BOSS 消息发送未确认，保留未投递状态");
+    }
+    Ok(true)
 }
 
 /// 一次滚动前后的页面高度，作为“是否加载了新内容”的辅助信号
@@ -2314,5 +2330,14 @@ mod tests {
 
         assert!(!sent);
         assert_eq!(calls.get(), 0);
+    }
+
+    #[test]
+    fn unconfirmed_message_send_is_an_error() {
+        let resource = ReplyResource {
+            resource_type: crate::config::ReplayResourceType::Text,
+            content: "你好".to_string(),
+        };
+        assert!(send_if_any(vec![resource], |_| Ok(false)).is_err());
     }
 }

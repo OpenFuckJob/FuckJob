@@ -1023,17 +1023,48 @@ fn reuse_browser_session_after_error(error: &anyhow::Error) -> bool {
     !is_browser_disconnected_error(error)
 }
 
-fn is_browser_disconnected_error(error: &anyhow::Error) -> bool {
-    let message = error.to_string();
-    message.contains("Connection closed")
-        || message.contains("Trying to work with closed connection")
-        || message.contains("Session with given id not found")
-        || message.contains("code=-32001")
+pub fn is_browser_disconnected_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        if matches!(
+            cause.downcast_ref::<rust_drission::cdp::CdpError>(),
+            Some(rust_drission::cdp::CdpError::Send(_)
+                | rust_drission::cdp::CdpError::Recv(_)
+                | rust_drission::cdp::CdpError::Connect(_))
+        ) {
+            return true;
+        }
+        let message = cause.to_string().to_ascii_lowercase();
+        [
+            "connection closed",
+            "closed connection",
+            "connection reset",
+            "broken pipe",
+            "os error 10053",
+            "os error 10054",
+            "session with given id not found",
+            "code=-32001",
+        ]
+        .iter()
+        .any(|pattern| message.contains(pattern))
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transport_errors_discard_browser_session_even_when_wrapped() {
+        for message in [
+            "你的主机中的软件中止了一个已建立的连接。 (os error 10053)",
+            "远程主机强迫关闭了一个现有的连接。 (os error 10054)",
+            "Connection reset without closing handshake",
+        ] {
+            let error = anyhow::Error::new(rust_drission::cdp::CdpError::Send(message.into()))
+                .context("打开沟通页面失败");
+            assert!(!reuse_browser_session_after_error(&error), "{error:#}");
+        }
+    }
 
     #[test]
     fn disconnected_connection_errors_discard_browser_session() {

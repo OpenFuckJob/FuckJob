@@ -1,0 +1,7 @@
+[
+  {"id": 1, "prompt": "补环境Cookie生成成功了但请求还是400，有遇到过吗？", "expected": "引用案例1(瑞数6)：检查Function.toString和Canvas指纹真实性，400不是缺API而是返回值不真实"},
+  {"id": 2, "prompt": "签名算法已经还原正确了，但接口返回环境异常，怎么排查？", "expected": "引用案例2(Boss直聘)+决策树：优先检查登录态Cookie→Headers→TLS指纹，签名算法排查优先级最低"},
+  {"id": 3, "prompt": "遇到一个若依框架的站点，密码怎么加密的？", "expected": "引用案例5+模式A：先搜情报('若依 逆向')→AST反混淆→搜encrypt/secretKey，通常是AES-CBC+RSA"},
+  {"id": 4, "prompt": "curl_cffi是什么时候用的？什么场景需要？", "expected": "引用案例3(5014风控)：当风控检测TLS指纹(JA3)时，必须用curl_cffi对齐浏览器TLS特征"},
+  {"id": 5, "prompt": "瑞数6补环境用vm.createContext还是全局执行？", "expected": "引用案例6+最佳实践表：瑞数/JSVMP必须用eval()全局作用域，VM沙箱会打断闭包变量链"}
+]

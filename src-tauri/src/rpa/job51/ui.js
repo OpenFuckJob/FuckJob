@@ -161,7 +161,8 @@ export function sliderGeometry51(doc) {
     y: r.y + r.height / 2,
     end,
     width: r.width,
-    outerWidth: q.width
+    outerWidth: q.width,
+    outerHeight: q.height
   };
 }
 
@@ -169,4 +170,23 @@ export function isSliderTimeout51(doc) {
   const body = text51(doc.body);
   const title = text51(doc.getElementById('tips_title'));
   return /验证超时|请点击刷新|请点击重试|请刷新页面|验证失败|网络不给力/.test(doc.title + ' ' + body + ' ' + title);
+}
+
+export function markSliderRefresh51(doc) {
+  doc.querySelectorAll('[data-fj-51-slider-refresh]').forEach(el=>el.removeAttribute('data-fj-51-slider-refresh'));
+  const candidates=[doc.getElementById('aliyunCaptcha-sliding-refresh'),
+    ...doc.querySelectorAll('button,a,span,[role="button"]')];
+  const el=candidates.find(el=>visible51(el) && (el?.id==='aliyunCaptcha-sliding-refresh' || /刷新|重试/.test(text51(el))));
+  if (!el) return false;
+  el.setAttribute('data-fj-51-slider-refresh','1');
+  return true;
+}
+
+export function sliderStale51(doc, maxAgeMs=30000, now=Date.now()) {
+  if (!['jobs.51job.com','we.51job.com'].includes(doc.location.hostname)) return false;
+  if (!['blocked','blocked_timeout'].includes(applyState51(doc,'').kind)) return false;
+  const match=text51(doc.getElementById('newTraceid')).match(/(?:请求时间|TIME)\s*[:：]\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/i);
+  if (!match) return (doc.defaultView?.performance?.now?.() ?? 0)>=maxAgeMs;
+  const requested=Date.parse(match[1].replace(' ','T')+'+08:00');
+  return Number.isFinite(requested) && now>=requested && now-requested>=maxAgeMs;
 }

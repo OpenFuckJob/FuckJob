@@ -1,0 +1,5 @@
+[
+  {"id": 1, "prompt": "网易易盾IR SDK加载报window is not defined，怎么补环境？", "expected": "提供Level 1基础环境模板+SDK专用模板路径(sites/dun_163_com/env/browser.js)"},
+  {"id": 2, "prompt": "京东jcap WASM滑块SDK加载需要什么环境？", "expected": "完整WASM桥接环境+vm.runInContext+D实例复用要点"},
+  {"id": 3, "prompt": "补完环境后SDK还是检测到不是浏览器，可能是什么原因？", "expected": "排查Function.toString检测、指纹一致性、navigator.userAgentData等增强级API"}
+]
