@@ -676,7 +676,9 @@ pub async fn deliver_on_page(
                 {
                     continue;
                 }
-                let result = process_job(connection, page, &mut job, config).await;
+                let result = abort_round_on_browser_disconnect(
+                    process_job(connection, page, &mut job, config).await,
+                )?;
                 if preview_full() { return Ok(()); }
                 match result {
                     Ok(true) => {
@@ -737,6 +739,15 @@ pub async fn deliver_on_page(
 }
 fn result_is_success(result: &Result<bool>) -> bool {
     matches!(result, Ok(true))
+}
+
+fn abort_round_on_browser_disconnect(result: Result<bool>) -> Result<Result<bool>> {
+    match result {
+        Err(error) if browser::is_browser_disconnected_error(&error) => Err(error.context(
+            "51Job 浏览器连接已断开，本轮结束；下一次操作重新连接",
+        )),
+        result => Ok(result),
+    }
 }
 
 fn round_finished(budget: &RoundBudget, delivered: u32, started: Instant, failures: u32) -> Result<bool> {
@@ -817,8 +828,27 @@ async fn process_job(
     if reused { logger::info(format!("51job复用已打开的岗位详情：{}",job.title))?; }
     let result = process_detail(&tab, job, config, !reused).await;
     let pending=job_detail_dao::get_by_id(&format!("51job:{}",job.platform_job_id))?.is_some_and(|record|record.resume_delivery_pending);
-    if !reused && !is_job_task_stop_requested() && !pending {
-        let _ = tab.close();
+    if should_close_detail_tab(reused, is_job_task_stop_requested(), pending) {
+        return preserve_job_result_after_cleanup(
+            result,
+            browser::close_task_target(&tab),
+            |message| logger::warning(message),
+        );
+    }
+    result
+}
+
+fn should_close_detail_tab(reused: bool, stopped: bool, pending: bool) -> bool {
+    !reused && !stopped && !pending
+}
+
+fn preserve_job_result_after_cleanup(
+    result: Result<bool>,
+    cleanup: Result<()>,
+    warn: impl FnOnce(String) -> Result<()>,
+) -> Result<bool> {
+    if let Err(error) = cleanup {
+        let _ = warn(format!("51job详情页回收失败：{error}"));
     }
     result
 }
@@ -1121,6 +1151,49 @@ fn build_record(job: &RpaJob, config: &AppRuntimeConfig) -> JobDetail {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_disconnect_aborts_the_round_with_its_error_chain() {
+        let error = abort_round_on_browser_disconnect(Err(anyhow::anyhow!(
+            "Trying to work with closed connection"
+        )))
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "51Job 浏览器连接已断开，本轮结束；下一次操作重新连接"
+        );
+        assert!(browser::is_browser_disconnected_error(&error));
+    }
+
+    #[test]
+    fn ordinary_job_errors_stay_in_the_job_failure_path() {
+        let result = abort_round_on_browser_disconnect(Err(anyhow::anyhow!("职位职责未加载")))
+            .unwrap();
+
+        assert_eq!(result.unwrap_err().to_string(), "职位职责未加载");
+    }
+
+    #[test]
+    fn detail_tab_cleanup_preserves_reused_stopped_and_pending_tabs() {
+        assert!(should_close_detail_tab(false, false, false));
+        assert!(!should_close_detail_tab(true, false, false));
+        assert!(!should_close_detail_tab(false, true, false));
+        assert!(!should_close_detail_tab(false, false, true));
+    }
+
+    #[test]
+    fn cleanup_warning_failure_preserves_the_original_disconnect() {
+        let result = preserve_job_result_after_cleanup(
+            Err(anyhow::anyhow!("Trying to work with closed connection")),
+            Err(anyhow::anyhow!("fallback close failed")),
+            |_| Err(anyhow::anyhow!("log write failed")),
+        );
+
+        let error = result.unwrap_err();
+        assert_eq!(error.to_string(), "Trying to work with closed connection");
+        assert!(browser::is_browser_disconnected_error(&error));
+    }
 
     #[test]
     fn native_slider_coordinates_match_the_calibrated_manual_gesture() {

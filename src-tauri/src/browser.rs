@@ -958,11 +958,44 @@ fn attach_background_target(browser: &ChromiumPage, url: &str, target_id: &str) 
     }
 }
 
-fn close_target(client: &CdpClient, target_id: &str) {
-    let _ = client.send(
+fn close_target(client: &CdpClient, target_id: &str) -> Result<()> {
+    let response = client.send(
         "Target.closeTarget",
         Some(serde_json::json!({ "targetId": target_id })),
-    );
+    )?;
+    if response.get("success").and_then(serde_json::Value::as_bool) == Some(true) {
+        Ok(())
+    } else {
+        Err(anyhow!("Chrome 未确认关闭后台标签页 {target_id}"))
+    }
+}
+
+pub(crate) fn close_managed_target(target_id: &str) -> Result<()> {
+    let port = ACTIVE_DEBUG_PORT
+        .read()
+        .map_err(|e| anyhow!("获取浏览器调试端口读锁失败: {}", e))?
+        .ok_or_else(|| anyhow!("浏览器调试端口未知，无法回收后台标签页"))?;
+    close_target(&connect_browser_cdp(port)?, target_id)
+}
+
+fn close_target_with_fallback(
+    target_id: &str,
+    primary: impl FnOnce() -> Result<()>,
+    fallback: impl FnOnce(&str) -> Result<()>,
+) -> Result<()> {
+    match primary() {
+        Ok(()) => Ok(()),
+        Err(_) => fallback(target_id),
+    }
+}
+
+pub(crate) fn close_task_target(page: &Page) -> Result<()> {
+    let target_id = page.tab_id().to_owned();
+    close_target_with_fallback(
+        &target_id,
+        || page.close().map_err(anyhow::Error::from),
+        close_managed_target,
+    )
 }
 
 /// 创建一个不会被激活的业务标签，并在首个文档加载前注册反检测脚本。
@@ -981,12 +1014,12 @@ pub fn new_stealth_tab(browser: &ChromiumPage) -> Result<Page> {
     let tab = match attach_background_target(browser, &target_url, &target_id) {
         Ok(tab) => tab,
         Err(error) => {
-            close_target(&client, &target_id);
+            let _ = close_target(&client, &target_id);
             return Err(error);
         }
     };
     if let Err(error) = stealth_inject(&tab) {
-        close_target(&client, &target_id);
+        let _ = close_target(&client, &target_id);
         return Err(error.into());
     }
     Ok(tab)
@@ -1052,6 +1085,40 @@ pub fn is_browser_disconnected_error(error: &anyhow::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_target_close_skips_fallback_after_primary_success() {
+        let mut fallback_calls = 0;
+
+        close_target_with_fallback(
+            "target-1",
+            || Ok(()),
+            |_| {
+                fallback_calls += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(fallback_calls, 0);
+    }
+
+    #[test]
+    fn task_target_close_falls_back_once_with_the_exact_target_id() {
+        let mut fallback_ids = Vec::new();
+
+        close_target_with_fallback(
+            "target-42",
+            || Err(anyhow!("task connection closed")),
+            |target_id| {
+                fallback_ids.push(target_id.to_string());
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(fallback_ids, vec!["target-42"]);
+    }
 
     #[test]
     fn transport_errors_discard_browser_session_even_when_wrapped() {
