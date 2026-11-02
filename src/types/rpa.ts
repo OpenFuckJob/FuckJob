@@ -2,7 +2,7 @@ import type { DailyWindow, PeriodicDeliveryConfig } from "./app-config";
 
 export type { DailyWindow };
 
-export type PlatformKind = "boss" | "liepin";
+export type PlatformKind = "boss" | "liepin" | "51job";
 
 export type EnvCheckStep = "browser" | "platform_login" | "completed";
 export type EnvCheckStatus = "login_required" | "completed";

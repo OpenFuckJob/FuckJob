@@ -55,6 +55,7 @@ import type { JobDetail } from "../../types/job-detail";
 import ManualReviewDrawer, { useManualReview } from "./manual-review-drawer";
 import {
   getDefaultJobProfile,
+  DEFAULT_MAX_PARALLEL_TASKS,
   getJobProfiles,
   getPeriodicDeliveryConfig,
   getReplyPollingConfig,
@@ -124,6 +125,7 @@ function resolveStepStatus(
 }
 
 const PLATFORM_META: Record<PlatformKind, PlatformMeta> = {
+  "51job": { label: "前程无忧", shortLabel: "51job", accent: "#ff6000", description: "按岗位匹配度和投递置信度直接申请，支持单轮和周期投递。" },
   boss: {
     label: "BOSS 直聘",
     shortLabel: "BOSS",
@@ -219,7 +221,7 @@ const TASK_STATE_ORDER: Record<JobTaskInfo["status"], number> = {
   succeeded: 2,
 };
 
-const PLATFORM_ORDER: PlatformKind[] = ["boss", "liepin"];
+const PLATFORM_ORDER: PlatformKind[] = ["boss", "liepin", "51job"];
 
 export function sortTasksForQueue(tasks: JobTaskInfo[]): JobTaskInfo[] {
   return [...tasks].sort((left, right) => {
@@ -319,12 +321,13 @@ const WorkspacePage = ({
   >({
     boss: { phase: "idle", result: null, message: "" },
     liepin: { phase: "idle", result: null, message: "" },
+    "51job": { phase: "idle", result: null, message: "" },
   });
   const [taskOverview, setTaskOverview] = useState<JobTaskOverview>({
     tasks: [],
     running_count: 0,
     queued_count: 0,
-    max_parallel_tasks: 2,
+    max_parallel_tasks: DEFAULT_MAX_PARALLEL_TASKS,
   });
   const [logContent, setLogContent] = useState("");
   const [startModalOpen, setStartModalOpen] = useState(false);
@@ -878,6 +881,7 @@ const WorkspacePage = ({
                 { value: "all", label: "全部" },
                 { value: "boss", label: "BOSS" },
                 { value: "liepin", label: "猎聘" },
+                { value: "51job", label: "前程无忧" },
               ]}
               onChange={setQueueFilter}
             />
@@ -1004,7 +1008,7 @@ const WorkspacePage = ({
           style={{ width: "100%", paddingTop: 4 }}
         >
           {FLOW_MODE_OPTIONS.filter(
-            (option) => modalPlatform === "boss" || option.key !== "sync_chat_history",
+            (option) => modalPlatform === "51job" ? ["job_hunting", "periodic_job_hunting"].includes(option.key) : modalPlatform === "boss" || option.key !== "sync_chat_history",
           ).map((option) => {
             const selected = selectedMode === option.key;
             return (
@@ -1026,7 +1030,7 @@ const WorkspacePage = ({
                   <Typography.Text strong={selected}>{option.label}</Typography.Text>
                 </Radio>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {option.description}
+                  {modalPlatform === "51job" && option.key === "periodic_job_hunting" ? "按设定间隔直接投递，等待期间不执行聊天。" : option.description}
                 </Typography.Text>
               </div>
             );

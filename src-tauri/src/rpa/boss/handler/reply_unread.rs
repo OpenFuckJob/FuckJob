@@ -68,6 +68,7 @@ pub async fn reply_unread_on_page(
         .max_conversations_per_round
         .max(1);
     loop {
+        crate::rpa::resume_delivery::cleanup(page, PLATFORM)?;
         if is_job_task_stop_requested() {
             logger::info("沟通任务已结束")?;
             return Ok(Vec::new());
@@ -120,13 +121,13 @@ pub async fn reply_unread_on_page(
         user_card_ele.click()?;
         sleep_random_ms(500, 800);
 
-        let job_id = match boss_data_listener.wait(Duration::from_secs(10)) {
+        let boss_data = match boss_data_listener.wait(Duration::from_secs(10)) {
             Ok(Some(packet)) => packet
                 .body
-                .and_then(|body| String::from_utf8(body).ok())
-                .and_then(|body| parse_encrypt_job_id(&body)),
+                .and_then(|body| String::from_utf8(body).ok()),
             _ => None,
         };
+        let job_id = boss_data.as_deref().and_then(parse_encrypt_job_id);
 
         let packet = match history_listener.wait(Duration::from_secs(10)) {
             Ok(Some(p)) => p,
@@ -148,7 +149,7 @@ pub async fn reply_unread_on_page(
 
         // 处理这一个会话时出的错不该让整轮未读中断：后面还有别的会话等着
         if let Err(error) =
-            handle_conversation(page, &app_runtime_config, job_id.as_deref(), &key, fresh).await
+            handle_conversation(page, &app_runtime_config, job_id.as_deref(), &key, fresh, boss_data.as_deref()).await
         {
             logger::warning(format!("处理会话失败，跳过该会话继续：{error}"))?;
         }
@@ -242,6 +243,7 @@ async fn handle_conversation(
     job_id: Option<&str>,
     card_key: &str,
     fresh: Vec<ChatMessage>,
+    boss_data: Option<&str>,
 ) -> Result<(), anyhow::Error> {
     let Some(job_id) = job_id else {
         // 拿不到 jobId 就没有稳定的会话标识，落库和历史合并都无从谈起。
@@ -275,7 +277,8 @@ async fn handle_conversation(
 
     let job = job_detail_dao::find_by_platform_job_id(PLATFORM, job_id)
         .ok()
-        .flatten();
+        .flatten()
+        .or_else(|| boss_data.and_then(|body| super::sync_chat_history::live_job_context(job_id, body)));
     let (conversation_config, source) =
         profile_snapshot_dao::resolve_for_job(app_runtime_config, job.as_ref())
             .map_err(anyhow::Error::msg)?;
@@ -319,7 +322,7 @@ async fn handle_conversation(
     )
     .unwrap_or(0);
 
-    let context = ConversationContext {
+    let mut context = ConversationContext {
         platform: PlatformKind::Boss,
         conversation_id: job_id.to_string(),
         job,
@@ -353,15 +356,23 @@ async fn handle_conversation(
         GateVerdict::Proceed => {}
     }
 
-    // 对方主动索要简历就同意——这是既定策略，不占模型的决策位。
-    // 放在闸门之后：闸门拦下的正是诈骗特征那类会话，那时把简历发出去最不该
-    if resume_state == ResumeState::RequestedByPeer {
+    let mut resume_delivered = false;
+    if crate::rpa::resume_delivery::explicit_request(&context) {
         if limits.dry_run {
-            logger::info("[演练] 对方索要简历，实际运行时会自动同意")?;
-        } else if actions.accept_resume_request(page)? {
-            logger::info("对方索要简历，已同意并发送")?;
+            logger::info("演练模式：识别到简历请求，正式运行时会选择附件并核对投递结果")?;
+        } else if limits.allow_auto_send_resume {
+            resume_delivered = crate::rpa::resume_delivery::deliver(
+                page, PLATFORM, conversation_config.resume_config.boss_attachment_resume_name.as_deref(),
+                &conversation_config, &context,
+            ).await?;
+            if !resume_delivered { return Ok(()); }
             mark_resume_sent(job_id);
             record_auto_send(PLATFORM, job_id, job_id, AutoReplyAction::Resume, 0);
+            context.resume_state = ResumeState::Unavailable;
+            context.messages.push(crate::rpa::common::ChatMessage {
+                mid: 0, received: false, time: 0, from_name: String::new(),
+                text: "系统执行结果：附件简历已发送，已由本次新增简历卡片确认。".into(),
+            });
         }
     }
 
@@ -371,6 +382,12 @@ async fn handle_conversation(
         ReplyRoute::Template(hit) => {
             let rule = hit.display_name();
             let count = hit.resources.len();
+            if !resume_delivered && hit.resources.iter().any(|resource|
+                crate::rpa::resume_delivery::claims_delivery(&resource.content)) {
+                hold_for_review(PLATFORM, job_id, conversation::review_draft(context.job.as_ref(), &context.messages),
+                    ManualReviewReason::ResumeDelivery, "模板包含简历已发送，但本次投递尚未确认".into());
+                return Ok(());
+            }
             if limits.dry_run {
                 logger::info(format!(
                     "[演练] 命中回复规则「{rule}」，本应发送 {count} 条内容"
@@ -396,7 +413,7 @@ async fn handle_conversation(
         .run(&ReplyDecisionTask::new(&conversation_config, &context))
         .await?;
     let decision = outcome.output;
-    let action = conversation::reconcile(&decision, resume_state, &limits);
+    let action = conversation::reconcile(&decision, context.resume_state, &limits);
 
     // 决策理由不含求职者隐私，可以完整记；正文不能记
     logger::info(format!(
@@ -427,6 +444,12 @@ async fn handle_conversation(
         }
     };
 
+    if !resume_delivered && crate::rpa::resume_delivery::claims_delivery(&text) {
+        hold_for_review(PLATFORM, job_id, conversation::review_draft(context.job.as_ref(), &context.messages),
+            ManualReviewReason::ResumeDelivery, "回复包含简历已发送，但本次投递尚未确认".into());
+        return Ok(());
+    }
+
     if limits.dry_run {
         logger::info(format!(
             "[演练] 将发送 {} 字回复，不实际投递",
@@ -446,17 +469,6 @@ async fn handle_conversation(
     }
     logger::info(format!("回复已发送（{} 字）", text.chars().count()))?;
     record_auto_send(PLATFORM, job_id, job_id, AutoReplyAction::Reply, text.chars().count());
-
-    if action == ReplyAction::ReplyAndSendResume {
-        sleep_random_ms(800, 1200);
-        if actions.send_resume(page)? {
-            logger::info("已主动投递简历")?;
-            mark_resume_sent(job_id);
-            record_auto_send(PLATFORM, job_id, job_id, AutoReplyAction::Resume, 0);
-        } else {
-            logger::warning("简历投递入口不可用，本轮只发送了回复")?;
-        }
-    }
 
     Ok(())
 }

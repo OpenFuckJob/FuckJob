@@ -1,6 +1,8 @@
-export type JobPlatform = "boss" | "liepin";
+export type JobPlatform = "boss" | "liepin" | "51job";
 
 export interface JobDetail {
+  source_url?: string | null;
+  resume_delivery_pending?: boolean;
   id: string;
   platform?: JobPlatform | "";
   title: string;

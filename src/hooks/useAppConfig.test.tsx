@@ -23,7 +23,7 @@ const config: AppRuntimeConfig = {
   greet_config: { enable_llm: false, reply_prompt: null, default_template: [] },
   replay_config: { enable_template_reply: false, templates: [], enable_llm: false, reply_prompt: null, background_context: null, enable_auto_send_resume: true, max_auto_replies: 5, max_reply_chars: 200, dry_run: false },
   browser_config: { user_data_dir: "profile", chrome_exe_path: null, max_parallel_tasks: 2 },
-  resume_config: { inject_llm_context: false, resume_path: null, resume_content: null },
+  resume_config: { inject_llm_context: false, resume_path: null, resume_content: null, liepin_attachment_resume_name: null, boss_attachment_resume_name: null },
 };
 
 describe("useAppConfig", () => {

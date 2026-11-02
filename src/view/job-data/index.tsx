@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
   Input,
@@ -17,6 +17,7 @@ import {
   DeleteOutlined,
   EyeOutlined,
   InboxOutlined,
+  LinkOutlined,
   MessageOutlined,
   RobotOutlined,
   SearchOutlined,
@@ -36,6 +37,7 @@ import { DEFAULT_HIGH_MATCH_SCORE } from "../../types/app-config";
 import AnalysisReport from "./AnalysisReport";
 import ChatThreadModal from "./ChatThread";
 import JobBrief from "./JobBrief";
+import { useJobDataRefresh } from "../../hooks/useJobDataRefresh";
 import "./style.css";
 
 /** 与 Rust 侧 BatchAnalysisResult 对应 */
@@ -46,7 +48,8 @@ interface BatchAnalysisResult {
   failures: string[];
 }
 
-const getJobPlatform = (job: JobDetail): "boss" | "liepin" =>
+const getJobPlatform = (job: JobDetail): "boss" | "liepin" | "51job" =>
+  job.platform === "51job" || job.id.startsWith("51job:") ? "51job" :
   job.platform === "liepin" || job.id.startsWith("liepin:")
     ? "liepin"
     : "boss";
@@ -213,7 +216,7 @@ function JobKanbanCard({
         <span
           className="platform-dot"
           style={{ background: platform === "liepin" ? "#722ed1" : "#52c41a" }}
-          title={platform === "liepin" ? "猎聘" : "BOSS 直聘"}
+          title={platform === "51job" ? "前程无忧" : platform === "liepin" ? "猎聘" : "BOSS 直聘"}
         />
         <span>{job.company_name}</span>
       </div>
@@ -346,13 +349,17 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
   const [selectedJobIds, setSelectedJobIds] = useState<React.Key[]>([]);
   const [batchAnalyzing, setBatchAnalyzing] = useState(false);
   const [messageApi, contextHolder] = message.useMessage();
+  const jobsRequest = useRef(0);
+  const analysesRequest = useRef(0);
 
-  const loadJobs = useCallback(async () => {
-    setLoading(true);
+  const loadJobs = useCallback(async (showLoading = true) => {
+    const request = ++jobsRequest.current;
+    if (showLoading) setLoading(true);
     try {
       const result = await invoke<CommandResult<JobListItem[]>>(
         "job_list_with_status",
       );
+      if (request !== jobsRequest.current) return;
       if (!result.success || result.data === null) {
         messageApi.error(
           commandErrorMessage(result.error, "加载岗位数据失败"),
@@ -363,27 +370,35 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
         b.created_at.localeCompare(a.created_at),
       );
       setJobs(sorted);
+      setCurrentJob(current => current ? sorted.find(job => job.id === current.id) ?? current : null);
     } catch (error: unknown) {
+      if (request !== jobsRequest.current) return;
       messageApi.error(
         error instanceof Error ? error.message : "加载岗位数据失败",
       );
     } finally {
-      setLoading(false);
+      if (request === jobsRequest.current) setLoading(false);
     }
   }, [messageApi]);
 
   /// 分析结果只是列表上的附加信息，取不到不该影响岗位管理本身
   const loadAnalyses = useCallback(async () => {
+    const request = ++analysesRequest.current;
     try {
       const result = await invoke<CommandResult<InterviewJobAnalysis[]>>("analysis_list");
+      if (request !== analysesRequest.current) return;
       if (!result.success || !result.data) return;
       setAnalyses(
         Object.fromEntries(result.data.map((item) => [item.job_id, item])),
       );
     } catch {
-      setAnalyses({});
+      if (request === analysesRequest.current) setAnalyses({});
     }
   }, []);
+
+  useJobDataRefresh(useCallback(async () => {
+    await Promise.all([loadJobs(false), loadAnalyses()]);
+  }, [loadAnalyses, loadJobs]));
 
   useEffect(() => {
     void loadJobs();
@@ -531,7 +546,7 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
       key: "platform",
       width: 90,
       render: (_: unknown, record: JobListItem) =>
-        getJobPlatform(record) === "liepin" ? (
+        getJobPlatform(record) === "51job" ? <Tag color="orange">51job</Tag> : getJobPlatform(record) === "liepin" ? (
           <Tag color="purple">猎聘</Tag>
         ) : (
           <Tag color="green">BOSS</Tag>
@@ -573,7 +588,7 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
     {
       title: "操作",
       key: "action",
-      width: 350,
+      width: 440,
       fixed: "right",
       render: (_: unknown, record: JobListItem) => (
         <Space size={4}>
@@ -615,6 +630,14 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
               删除
             </Button>
           </Popconfirm>
+          <Button type="link" size="small" icon={<LinkOutlined />}
+            disabled={!record.source_url}
+            title={record.source_url || "该历史岗位未保存原始JD链接"}
+            onClick={() => void invoke<CommandResult<void>>("job_open_source", { id: record.id })
+              .then(result => { if (!result.success) messageApi.error(commandErrorMessage(result.error, "打开原始JD失败")); })
+              .catch(error => messageApi.error(String(error)))}>
+            原始 JD
+          </Button>
         </Space>
       ),
     },
@@ -754,7 +777,7 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
                 key: "brief",
                 label: "岗位详情",
                 children: (
-                  <JobBrief job={currentJob} analysis={analyses[currentJob.id]} />
+                  <JobBrief job={currentJob} analysis={analyses[currentJob.id]} onDeliveryResolved={updated => { setCurrentJob(updated); void loadJobs(); }} />
                 ),
               },
               {

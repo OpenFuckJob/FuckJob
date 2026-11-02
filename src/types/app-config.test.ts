@@ -70,7 +70,7 @@ describe("job profile compatibility", () => {
       name: "默认求职方案",
       archived: false,
       job_filter_config: { query: "Rust" },
-      resume_config: { resume_content: "resume" },
+    resume_config: { resume_content: "resume" },
     });
     expect(getDefaultJobProfile(legacyConfig)).toStrictEqual(profiles[0]);
   });

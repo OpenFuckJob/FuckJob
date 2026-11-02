@@ -199,6 +199,8 @@ fn to_rpa_job(job: &PlaygroundJob) -> RpaJob {
 
 fn to_job_detail(job: &PlaygroundJob) -> JobDetail {
     JobDetail {
+        resume_delivery_pending: false,
+        source_url: None,
         id: PLAYGROUND_ID.to_string(),
         platform: "boss".to_string(),
         source_task_id: None,

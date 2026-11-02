@@ -79,9 +79,21 @@ export interface BossFilterConfig {
 export interface PlatformFilterConfig {
   boss: BossFilterConfig;
   liepin: LiepinFilterConfig;
+  job51?: Job51FilterConfig;
 }
 
+export interface Job51FilterConfig {
+  salary: string[];
+  functions: string[];
+  company_size: string[];
+}
+
+export const DEFAULT_JOB51_FILTER_CONFIG: Job51FilterConfig = {
+  salary: [], functions: [], company_size: [],
+};
+
 export const DEFAULT_PLATFORM_FILTER_CONFIG: PlatformFilterConfig = {
+  job51: DEFAULT_JOB51_FILTER_CONFIG,
   boss: {
     active_filter_enabled: true,
     active_threshold: "this_week",
@@ -408,13 +420,17 @@ export interface BrowserConfig {
   max_parallel_tasks: number;
 }
 
-/** BOSS 与猎聘可各跑一个任务，再多就排队 */
-export const DEFAULT_MAX_PARALLEL_TASKS = 2;
+/** 三个平台可各跑一个任务；同一平台的后续任务排队。 */
+export const DEFAULT_MAX_PARALLEL_TASKS = 3;
 
 export interface ResumeConfig {
   inject_llm_context: boolean;
   resume_path: string | null;
   resume_content: string | null;
+  /** 猎聘聊天中指定投递的附件简历名称；留空时由岗位匹配选择。 */
+  liepin_attachment_resume_name: string | null;
+  /** BOSS 聊天中指定投递的附件简历名称；留空时按附件状态选择。 */
+  boss_attachment_resume_name: string | null;
 }
 
 /** 一套可独立执行的求职方向、简历与沟通策略。 */
@@ -526,6 +542,10 @@ export function getReplyPollingConfig(config: Pick<AppRuntimeConfig, "reply_poll
 
 export function getPlatformFilterConfig(source: Pick<AppRuntimeConfig, "platform_filter_config"> | Pick<JobProfile, "platform_filter_config">): PlatformFilterConfig {
   return {
+    job51: {
+      ...DEFAULT_JOB51_FILTER_CONFIG,
+      ...(source.platform_filter_config?.job51 ?? {}),
+    },
     boss: {
       ...DEFAULT_PLATFORM_FILTER_CONFIG.boss,
       ...(source.platform_filter_config?.boss ?? {}),

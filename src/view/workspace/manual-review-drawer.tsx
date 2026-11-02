@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Button, Drawer, Empty, List, Modal, Space, Tag, Tooltip, Typography, message } from "antd";
+import { Button, Drawer, Empty, List, Modal, Popconfirm, Space, Tag, Tooltip, Typography, message } from "antd";
 import { ExclamationCircleOutlined } from "@ant-design/icons";
 import { invoke } from "@tauri-apps/api/core";
 import type { CommandResult } from "../../types/command";
@@ -99,11 +99,18 @@ export default function ManualReviewDrawer({
   onClear,
   onOpenConversation,
 }: Props) {
+  const resolveDelivery = async (record: ManualReviewRecord, delivered: boolean) => {
+    try {
+      const result = await invoke<CommandResult<unknown>>("job51_resolve_delivery", { id: record.job_id, delivered });
+      if (!result.success) { message.error(commandErrorMessage(result.error, "更新投递状态失败")); return; }
+      onResolve(record);
+    } catch (error) { message.error(String(error)); }
+  };
   const confirmClear = useCallback(() => {
     Modal.confirm({
       title: "清空待处理列表",
       icon: <ExclamationCircleOutlined />,
-      content: `将移除全部 ${records.length} 条记录。这些会话本身不受影响，只是不再提醒你。`,
+      content: `将移除全部 ${records.length} 条提醒。51job结果未确认的岗位仍会暂停自动重投，可在岗位详情中确认结果或允许重试。`,
       okText: "清空",
       okButtonProps: { danger: true },
       cancelText: "取消",
@@ -143,7 +150,14 @@ export default function ManualReviewDrawer({
             <List.Item
               key={record.id}
               actions={[
-                ...(record.job_id && onOpenConversation
+                ...(record.platform === "51job" && record.job_id ? [
+                  <Button key="source" size="small" type="link" onClick={() => void invoke<CommandResult<void>>("job_open_source", { id: record.job_id })
+                    .then(result => { if (!result.success) message.error(commandErrorMessage(result.error, "打开原始JD失败")); })
+                    .catch(error => message.error(String(error)))}>原始 JD</Button>,
+                  <Popconfirm key="confirmed" title="已在51job核实投递成功？" onConfirm={() => void resolveDelivery(record, true)}><Button size="small" type="link">确认已投递</Button></Popconfirm>,
+                  <Popconfirm key="retry" title="允许下次任务重新投递？" description="此前提交结果未确认，重新投递可能重复申请。" onConfirm={() => void resolveDelivery(record, false)}><Button size="small" type="link">允许重试</Button></Popconfirm>,
+                ] : []),
+                ...(record.platform !== "51job" && record.job_id && onOpenConversation
                   ? [
                       <Button
                         key="open"
@@ -155,9 +169,9 @@ export default function ManualReviewDrawer({
                       </Button>,
                     ]
                   : []),
-                <Button key="resolve" size="small" type="link" onClick={() => onResolve(record)}>
+                ...(record.platform === "51job" ? [] : [<Button key="resolve" size="small" type="link" onClick={() => onResolve(record)}>
                   已处理
-                </Button>,
+                </Button>]),
               ]}
             >
               <List.Item.Meta

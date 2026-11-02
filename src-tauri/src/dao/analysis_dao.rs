@@ -27,24 +27,34 @@ pub fn get_by_job_id(job_id: &str) -> Result<Option<InterviewJobAnalysis>> {
 }
 
 pub fn create(analysis: InterviewJobAnalysis) -> Result<()> {
-    store().insert(analysis)
+    store().insert(analysis)?;
+    super::notify_job_data_changed();
+    Ok(())
 }
 
 pub fn update(job_id: &str, analysis: InterviewJobAnalysis) -> Result<bool> {
-    store().update_by_id(job_id, analysis)
+    let changed=store().update_by_id(job_id, analysis)?;
+    if changed { super::notify_job_data_changed(); }
+    Ok(changed)
 }
 
 pub fn delete(job_id: &str) -> Result<bool> {
-    store().delete_by_id(job_id)
+    let changed=store().delete_by_id(job_id)?;
+    if changed { super::notify_job_data_changed(); }
+    Ok(changed)
 }
 
 pub fn batch_upsert<F>(items: Vec<InterviewJobAnalysis>, should_update: F) -> Result<BatchResult>
 where
     F: Fn(&InterviewJobAnalysis, &InterviewJobAnalysis) -> bool,
 {
-    store().batch_upsert(items, should_update)
+    let result=store().batch_upsert(items, should_update)?;
+    super::notify_job_data_changed();
+    Ok(result)
 }
 
 pub fn replace_all(items: Vec<InterviewJobAnalysis>) -> Result<()> {
-    store().replace_all(items)
+    store().replace_all(items)?;
+    super::notify_job_data_changed();
+    Ok(())
 }

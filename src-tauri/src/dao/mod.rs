@@ -10,6 +10,13 @@ pub mod store;
 use anyhow::Result;
 use std::path::Path;
 
+pub(crate) fn notify_job_data_changed() {
+    use tauri::Emitter;
+    if let Some(handle)=crate::browser::app_handle() {
+        let _=handle.emit("job-data-changed",());
+    }
+}
+
 pub fn init(data_dir: &Path) -> Result<()> {
     job_detail_dao::init(data_dir)?;
     analysis_dao::init(data_dir)?;

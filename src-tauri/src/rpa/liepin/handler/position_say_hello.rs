@@ -51,6 +51,8 @@ pub async fn position_say_hello_on_page(
     // 页级 RoundStats 每页都会重置，而预算按整轮算，所以另攒两个整轮计数
     let mut round_greeted = 0u32;
     let mut consecutive_greet_failures = 0u32;
+    let mut consecutive_detail_failures = 0u32;
+    let mut consecutive_pages_without_new_jobs = 0u32;
     let search_url = build_job_search_url(&config);
     let mut processed_job_ids: HashSet<String> = job_detail_dao::list()
         .unwrap_or_default()
@@ -70,6 +72,10 @@ pub async fn position_say_hello_on_page(
     logger::info(format!("正在打开猎聘职位搜索页: {}", search_url))?;
     page.get(&search_url)?;
     sleep_random_ms(1200, 2000);
+    if liepin_security_challenge_present(page)? {
+        logger::warning("猎聘出现安全验证，已停止本轮并保留验证页面；完成验证后请手动恢复任务")?;
+        return Ok(());
+    }
     apply_liepin_filters(page, &config)?;
     sleep_random_ms(1200, 1800);
 
@@ -87,6 +93,10 @@ pub async fn position_say_hello_on_page(
             logger::info(reason)?;
             return Ok(());
         }
+        if liepin_security_challenge_present(page)? {
+            logger::warning("猎聘出现安全验证，已停止本轮并保留验证页面；完成验证后请手动恢复任务")?;
+            return Ok(());
+        }
 
         let jobs = collect_jobs(page)?;
         if jobs.is_empty() {
@@ -96,6 +106,7 @@ pub async fn position_say_hello_on_page(
 
         logger::info(format!("猎聘当前加载到{}条岗位", jobs.len()))?;
         let mut stats = RoundStats::default();
+        let mut found_new_job = false;
         for job in jobs {
             if is_job_task_stop_requested() {
                 logger::info("猎聘求职任务已结束")?;
@@ -116,13 +127,17 @@ pub async fn position_say_hello_on_page(
             let db_id = format!("liepin:{}", job.platform_job_id);
             if processed_job_ids.contains(&db_id)
                 || processed_job_ids.contains(&job.platform_job_id)
-                || seen_job_ids.contains(&job.platform_job_id)
             {
                 // 逐条打会把日志刷满，这里只计数，本页结束时汇总
                 stats.skipped_processed += 1;
                 continue;
             }
+            if seen_job_ids.contains(&job.platform_job_id) {
+                stats.skipped_seen_this_round += 1;
+                continue;
+            }
             seen_job_ids.insert(job.platform_job_id.clone());
+            found_new_job = true;
 
             let filter_decision = verify::filter_decision(&job, &config);
             if !filter_decision.matched {
@@ -141,52 +156,44 @@ pub async fn position_say_hello_on_page(
                 "猎聘处理岗位：{} - {}",
                 job.title, job.company_name
             ))?;
-            if config.job_filter_config.enable_semantic_filter {
-                match crate::llm::evaluate_job_match(&config, &job).await {
-                    Ok(decision) if decision.matched => logger::info(format!(
-                        "猎聘 AI 岗位复核通过（{}分）：{}",
-                        decision.score, decision.reason
-                    ))?,
-                    Ok(decision) => {
-                        stats.skipped_ai += 1;
-                        logger::info(format!(
-                            "猎聘 AI 岗位复核未通过，跳过（{}分）：{}",
-                            decision.score, decision.reason
-                        ))?;
-                        continue;
-                    }
-                    Err(error) => {
-                        stats.skipped_ai += 1;
-                        logger::warning(format!(
-                            "猎聘 AI 岗位复核失败，为避免误投已跳过：{}",
-                            error
-                        ))?;
-                        continue;
-                    }
-                }
-            }
-
-            // 「筛选通过即分析」不关心后面招呼发没发出去，所以在进入打招呼之前就登记
-            auto_analysis::schedule(
-                &build_job_detail(&job, &config, false),
-                AnalysisTrigger::FilterPassed,
-                &config,
-            );
-            let greeted = match greet_job(connection, page, job.clone(), config.clone()).await {
-                Ok(false) => {
+            let greeted = match greet_job(connection, job.clone(), config.clone()).await {
+                Ok(GreetOutcome::Held) => {
                     stats.skipped_hold += 1;
                     consecutive_greet_failures = 0;
                     false
                 }
-                Ok(true) => {
+                Ok(GreetOutcome::DetailMissing) => {
+                    stats.skipped_detail += 1;
+                    consecutive_greet_failures = 0;
+                    consecutive_detail_failures += 1;
+                    if consecutive_detail_failures >= 3 {
+                        logger::warning("猎聘连续 3 个岗位未读取到职责，已停止本轮以避免重复访问")?;
+                        return Ok(());
+                    }
+                    false
+                }
+                Ok(GreetOutcome::SemanticRejected) => {
+                    stats.skipped_ai += 1;
+                    consecutive_greet_failures = 0;
+                    false
+                }
+                Ok(GreetOutcome::Greeted) => {
                     stats.greeted += 1;
                     round_greeted += 1;
                     consecutive_greet_failures = 0;
+                    consecutive_detail_failures = 0;
                     processed_job_ids.insert(format!("liepin:{}", job.platform_job_id));
                     processed_job_ids.insert(job.platform_job_id.clone());
                     true
                 }
                 Err(error) => {
+                    if browser::is_browser_disconnected_error(&error) {
+                        return Err(error.context("猎聘浏览器连接已断开，当前消息发送状态未确认；下一次操作重新连接"));
+                    }
+                    if error.to_string().contains("猎聘安全验证") {
+                        logger::warning("猎聘出现安全验证，已停止本轮并保留验证页面；完成验证后请手动恢复任务")?;
+                        return Ok(());
+                    }
                     stats.greet_failed += 1;
                     consecutive_greet_failures += 1;
                     logger::warning(greet_failure_message(&job.title, &job.company_name, &error))?;
@@ -205,6 +212,16 @@ pub async fn position_say_hello_on_page(
         logger::info(stats.summary())?;
         if let Some(summary) = pacer.summary() {
             logger::info(summary)?;
+        }
+
+        if found_new_job {
+            consecutive_pages_without_new_jobs = 0;
+        } else {
+            consecutive_pages_without_new_jobs += 1;
+            if consecutive_pages_without_new_jobs >= 2 {
+                logger::info("猎聘连续两次滚动未加载新岗位，结束本轮扫描")?;
+                return Ok(());
+            }
         }
 
         if !scroll_next(page)? {
@@ -247,10 +264,12 @@ struct RoundStats {
     scanned: u32,
     /// 本地库已有记录，之前沟通过
     skipped_processed: u32,
+    skipped_seen_this_round: u32,
     /// 确定性规则未通过
     skipped_rule: u32,
     /// AI 语义复核未通过或失败
     skipped_ai: u32,
+    skipped_detail: u32,
     /// 被拟人化随机跳过（「只看不投」）
     skipped_humanize: u32,
     /// 内容通过了复核，但发送前被闸门整轮拦下（例如模型判断不该投）
@@ -262,13 +281,15 @@ struct RoundStats {
 impl RoundStats {
     fn summary(&self) -> String {
         format!(
-            "猎聘本页 {} 条岗位：打招呼成功 {} 条，失败 {} 条；已沟通跳过 {} 条，规则过滤跳过 {} 条，AI 复核跳过 {} 条，拟人化跳过 {} 条，发送闸门拦下 {} 条",
+            "猎聘本页 {} 条岗位：打招呼成功 {} 条，失败 {} 条；已沟通跳过 {} 条，本轮已检查跳过 {} 条，规则过滤跳过 {} 条，AI 复核跳过 {} 条，职责读取失败跳过 {} 条，拟人化跳过 {} 条，发送闸门拦下 {} 条",
             self.scanned,
             self.greeted,
             self.greet_failed,
             self.skipped_processed,
+            self.skipped_seen_this_round,
             self.skipped_rule,
             self.skipped_ai,
+            self.skipped_detail,
             self.skipped_humanize,
             self.skipped_hold
         )
@@ -645,50 +666,89 @@ fn parse_company_from_card_text(card_text: &str, link_text: &str) -> Option<Stri
         .map(str::to_string)
 }
 
-/// 返回 false 表示这一轮被闸门拦下、什么都没发出去。
-/// 区分出来是为了不把「拦下」计成「打招呼成功」，那会让统计骗人
+/// 区分岗位未读到职责、语义复核拒绝和发送闸门拦截，避免统计为已沟通。
+enum GreetOutcome {
+    Held,
+    DetailMissing,
+    SemanticRejected,
+    Greeted,
+}
+
 async fn greet_job(
     browser_page: &ChromiumPage,
-    main_page: &Page,
     mut job: RpaJob,
     config: AppRuntimeConfig,
-) -> Result<bool, anyhow::Error> {
+) -> Result<GreetOutcome, anyhow::Error> {
     if job.detail_url.is_empty() {
         logger::warning("猎聘岗位缺少详情链接，跳过")?;
-        return Ok(false);
+        return Ok(GreetOutcome::DetailMissing);
     }
 
     let page = browser::new_stealth_tab(browser_page)?;
     let result = async {
         page.get(&job.detail_url)?;
         sleep_random_ms(1200, 2000);
-
-        if job.detail.trim().is_empty() {
-            job.detail = text_from_first(
-                &page,
-                &[
-                    ".job-intro-container",
-                    ".job-detail-box",
-                    ".job-description",
-                    "[class*='job-intro']",
-                    "[class*='description']",
-                ],
-            )?;
+        if liepin_security_challenge_present(&page)? {
+            anyhow::bail!("猎聘安全验证")
         }
+
+        job.detail = text_from_first(
+            &page,
+            &[
+                ".job-intro-container",
+                ".job-detail-box",
+                ".job-description",
+                "[class*='job-intro']",
+                "[class*='description']",
+            ],
+        )?;
+        if job.detail.trim().is_empty() {
+            logger::warning(format!("猎聘岗位 {} 未读取到职责，跳过", job.title))?;
+            return Ok(GreetOutcome::DetailMissing);
+        }
+
+        if config.job_filter_config.enable_semantic_filter {
+            match crate::llm::evaluate_job_match(&config, &job).await {
+                Ok(decision) if decision.matched => logger::info(format!(
+                    "猎聘 AI 岗位复核通过（{}分）：{}",
+                    decision.score, decision.reason
+                ))?,
+                Ok(decision) => {
+                    logger::info(format!(
+                        "猎聘 AI 岗位复核未通过，跳过（{}分）：{}",
+                        decision.score, decision.reason
+                    ))?;
+                    return Ok(GreetOutcome::SemanticRejected);
+                }
+                Err(error) => {
+                    logger::warning(format!(
+                        "猎聘 AI 岗位复核失败，为避免误投已跳过：{}",
+                        error
+                    ))?;
+                    return Ok(GreetOutcome::SemanticRejected);
+                }
+            }
+        }
+
+        auto_analysis::schedule(
+            &build_job_detail(&job, &config, false),
+            AnalysisTrigger::FilterPassed,
+            &config,
+        );
 
         if is_external_apply_only(&page)? {
             logger::info(format!(
                 "猎聘跳过 {}，该岗位仅支持外部网申，未生成或发送站内消息",
                 job.title
             ))?;
-            return Ok(false);
+            return Ok(GreetOutcome::Held);
         }
 
         let resume_sent = match build_greet_resources(&config, &job).await? {
             // 整轮取消：既不发文本也不发图片，也不记为已沟通
             SendVerdict::Hold(reason) => {
                 logger::info(format!("猎聘跳过 {}，未发送任何内容：{reason}", job.title))?;
-                return Ok(false);
+                return Ok(GreetOutcome::Held);
             }
             SendVerdict::Send(resources) => {
                 let entry = click_first(
@@ -710,12 +770,9 @@ async fn greet_job(
         let saved = save_job_detail(&job, &config, resume_sent);
         auto_analysis::schedule(&saved, AnalysisTrigger::GreetSent, &config);
         logger::info(format!("猎聘 {} 初次沟通成功", job.title))?;
-        Ok(true)
+        Ok(GreetOutcome::Greeted)
     }
     .await;
-    if let Err(error) = main_page.run_cdp("Page.bringToFront", None) {
-        let _ = logger::warning(format!("猎聘恢复主搜索页失败，继续清理详情页：{error}"));
-    }
     let close_result = page.close();
 
     match (result, close_result) {
@@ -1065,9 +1122,9 @@ const SEND_BUTTON_READY_TIMEOUT_MS: u32 = 15000;
 const INPUT_CLEARED_TIMEOUT_MS: u32 = 8000;
 const CHAT_INPUT_MARKER_SELECTOR: &str = "[data-fj-liepin-chat-input='1']";
 const LIEPIN_CONTACT_ENTRY_SELECTORS: &[&str] = &[
-    "a[data-selector='apply-job']",
     "a[data-selector='chat-chat']",
     "a.btn-chat",
+    "a[data-selector='apply-job']",
     ".btn-apply",
     ".apply-btn",
     "button[class*='apply']",
@@ -1183,6 +1240,8 @@ fn build_job_detail(job: &RpaJob, config: &AppRuntimeConfig, resume_sent: bool) 
     let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let active = config.active_job_profile.as_ref();
     JobDetail {
+        resume_delivery_pending: false,
+        source_url: Some(job.detail_url.clone()),
         id: format!("liepin:{}", job.platform_job_id),
         platform: "liepin".to_string(),
         source_task_id: crate::rpa::run_flow::current_job_task_id(),
@@ -1247,6 +1306,22 @@ const CLICKABLE_READY_TIMEOUT: Duration = Duration::from_secs(15);
 /// 等待任一选择器出现并点击：命中立刻返回，没出现就继续等到上限。
 fn entry_sends_resume(selector: &str) -> bool {
     selector.contains("apply") && !selector.contains("apply-ats")
+}
+
+/// 安全验证出现时不能继续滚动、访问详情页或重试发送。保留页面让用户自行验证。
+fn liepin_security_challenge_present(page: &Page) -> Result<bool, anyhow::Error> {
+    let value = page.run_js_await(
+        r#"(() => {
+            const visible = (el) => {
+                const style = getComputedStyle(el);
+                return !el.hidden && style.display !== "none" && style.visibility !== "hidden";
+            };
+            return Array.from(document.querySelectorAll("[role=dialog], .ant-modal, [class*=captcha], [class*=verify]"))
+                .filter(visible)
+                .some((el) => /(安全验证|滑块|验证码|访问异常)/.test((el.innerText || el.textContent || "").trim()));
+        })()"#,
+    )?;
+    Ok(value.get("value").and_then(|value| value.as_bool()).or_else(|| value.as_bool()).unwrap_or(false))
 }
 
 fn resume_delivery_label_confirmed(label: &str) -> bool {
@@ -1510,15 +1585,15 @@ mod tests {
     }
 
     #[test]
-    fn main_search_page_is_restored_before_detail_tab_cleanup() {
+    fn greeting_cleanup_does_not_raise_the_browser_window() {
         let source = include_str!("position_say_hello.rs");
         let start = source.find("async fn greet_job").unwrap();
         let end = source[start..].find("fn greet_failure_message").unwrap() + start;
         let body = &source[start..end];
-        let restore = body.find("Page.bringToFront").unwrap();
-        let close = body.find("let close_result = page.close()").unwrap();
-
-        assert!(restore < close);
+        assert!(!body.contains("Page.bringToFront"));
+        assert!(!body.contains("Target.activateTarget"));
+        assert!(body.contains("let close_result = page.close()"));
+        assert!(body.contains("match (result, close_result)"));
     }
 
     #[test]
@@ -1548,8 +1623,9 @@ mod tests {
 
     #[test]
     fn contact_entry_selectors_prefer_chat_and_exclude_external_apply() {
-        assert_eq!(LIEPIN_CONTACT_ENTRY_SELECTORS[0], "a[data-selector='apply-job']");
-        assert_eq!(LIEPIN_CONTACT_ENTRY_SELECTORS[1], "a[data-selector='chat-chat']");
+        assert_eq!(LIEPIN_CONTACT_ENTRY_SELECTORS[0], "a[data-selector='chat-chat']");
+        assert_eq!(LIEPIN_CONTACT_ENTRY_SELECTORS[1], "a.btn-chat");
+        assert!(LIEPIN_CONTACT_ENTRY_SELECTORS.contains(&"a[data-selector='apply-job']"));
         assert_eq!(LIEPIN_EXTERNAL_APPLY_SELECTOR, "a[data-selector='apply-ats']");
     }
 
@@ -1723,8 +1799,10 @@ mod tests {
         let stats = RoundStats {
             scanned: 42,
             skipped_processed: 28,
+            skipped_seen_this_round: 3,
             skipped_rule: 8,
             skipped_ai: 3,
+            skipped_detail: 2,
             skipped_humanize: 2,
             skipped_hold: 4,
             greeted: 2,
@@ -1737,8 +1815,10 @@ mod tests {
         assert!(summary.contains("成功 2 条"));
         assert!(summary.contains("失败 1 条"));
         assert!(summary.contains("已沟通跳过 28 条"));
+        assert!(summary.contains("本轮已检查跳过 3 条"));
         assert!(summary.contains("规则过滤跳过 8 条"));
         assert!(summary.contains("AI 复核跳过 3 条"));
+        assert!(summary.contains("职责读取失败跳过 2 条"));
         // 拟人化跳过必须和「规则不匹配」分开记，否则用户会以为自己筛选条件写错了
         assert!(summary.contains("拟人化跳过 2 条"));
         assert!(summary.contains("发送闸门拦下 4 条"));

@@ -10,7 +10,8 @@ export type ManualReviewReason =
   | "risk_keyword"
   | "vet_rejected"
   | "missing_job_id"
-  | "throttle_exhausted";
+  | "throttle_exhausted"
+  | "resume_delivery";
 
 export interface ManualReviewRecord {
   /** 复合主键：{platform}:{conversation_id} */
@@ -37,6 +38,7 @@ export const MANUAL_REVIEW_REASON_LABELS: Record<ManualReviewReason, string> = {
   vet_rejected: "回复未通过体检",
   missing_job_id: "会话标识缺失",
   throttle_exhausted: "自动回复额度用尽",
+  resume_delivery: "简历投递需要确认",
 };
 
 /**
@@ -49,6 +51,7 @@ export const MANUAL_REVIEW_REASON_COLORS: Record<ManualReviewReason, string> = {
   throttle_exhausted: "orange",
   vet_rejected: "gold",
   missing_job_id: "default",
+  resume_delivery: "orange",
 };
 
 /**

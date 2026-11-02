@@ -1,5 +1,5 @@
 use crate::command::base::CommandResult;
-use crate::dao::manual_review_dao;
+use crate::dao::{manual_review_dao, job_detail_dao};
 use crate::dao::model::ManualReviewRecord;
 
 #[tauri::command]
@@ -37,4 +37,15 @@ pub fn manual_review_clear() -> CommandResult<()> {
         Ok(()) => CommandResult::ok(()),
         Err(error) => CommandResult::err(error.to_string()),
     }
+}
+
+/// Resolve the durable 51job submission state only after an explicit human decision.
+#[tauri::command]
+pub fn job51_resolve_delivery(id: String, delivered: bool) -> CommandResult<crate::dao::model::JobDetail> {
+    let result = (|| -> anyhow::Result<crate::dao::model::JobDetail> {
+        let job = job_detail_dao::resolve_job51_delivery(&id, delivered)?;
+        manual_review_dao::resolve("51job", id.trim_start_matches("51job:"))?;
+        Ok(job)
+    })();
+    match result { Ok(job) => CommandResult::ok(job), Err(error) => CommandResult::err(error.to_string()) }
 }

@@ -18,7 +18,7 @@ export function makeProfile(overrides: Partial<JobProfile> = {}): JobProfile {
       boss: { active_filter_enabled: true, active_threshold: "this_week", exclude_headhunter_jobs: false },
       liepin: { dq: null, salary_code: null, pub_time: null, work_year_code: null, comp_tag: [] },
     },
-    resume_config: { inject_llm_context: false, resume_path: null, resume_content: null },
+    resume_config: { inject_llm_context: false, resume_path: null, resume_content: null, liepin_attachment_resume_name: null, boss_attachment_resume_name: null },
     greet_config: { enable_llm: true, reply_prompt: "原打招呼提示词", default_template: [] },
     replay_config: {
       enable_template_reply: false, templates: [], enable_llm: true, reply_prompt: "原回复提示词",

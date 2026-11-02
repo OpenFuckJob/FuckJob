@@ -42,6 +42,7 @@ struct CommunicatedJobCardSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CollectedCommunicatedJob {
+    source_url: Option<String>,
     id: String,
     title: String,
     company_name: String,
@@ -201,6 +202,7 @@ async fn collect_communicated_jobs_from_browser(
                 .unwrap_or_default();
 
             jobs.push(CollectedCommunicatedJob {
+                source_url: normalized_url,
                 id,
                 title,
                 company_name,
@@ -396,6 +398,8 @@ fn merge_collected_job_detail(
 ) -> JobDetail {
     match existing {
         Some(existing) => JobDetail {
+            resume_delivery_pending: false,
+            source_url: collected.source_url.or(existing.source_url),
             id: collected.id,
             platform: "boss".to_string(),
             source_task_id: existing.source_task_id,
@@ -414,6 +418,8 @@ fn merge_collected_job_detail(
             updated_at: collected.captured_at,
         },
         None => JobDetail {
+            resume_delivery_pending: false,
+            source_url: collected.source_url,
             id: collected.id,
             platform: "boss".to_string(),
             source_task_id: None,
@@ -571,6 +577,8 @@ mod tests {
 
     fn existing_job() -> JobDetail {
         JobDetail {
+            resume_delivery_pending: false,
+            source_url: None,
             id: "abc123".to_string(),
             platform: "boss".to_string(),
             source_task_id: None,
@@ -649,6 +657,7 @@ mod tests {
     #[test]
     fn builds_new_replied_job_detail_from_collected_job() {
         let collected = CollectedCommunicatedJob {
+            source_url: Some("https://www.zhipin.com/job_detail/test.html".into()),
             id: "abc123".to_string(),
             title: "后端工程师".to_string(),
             company_name: "示例科技".to_string(),
@@ -671,6 +680,7 @@ mod tests {
     #[test]
     fn updates_existing_job_and_preserves_delivery_fields() {
         let collected = CollectedCommunicatedJob {
+            source_url: None,
             id: "abc123".to_string(),
             title: "新标题".to_string(),
             company_name: "新公司".to_string(),

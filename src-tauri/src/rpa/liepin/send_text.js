@@ -91,7 +91,7 @@ async function closePriorityModal(modal, document, sleep) {
 }
 
 function classifyModal(modal) {
-  if (findChatContainer(modal)) return "other";
+  if (modal.querySelector(".im-ui-contact-list-item, [class*='im-ui-msg-list-content']")) return "other";
   const text = textOf(modal);
   const hasPriorityTitle = Array.from(modal.querySelectorAll("h1, h2, h3, [class*='title'], [class*='header'], div, span"))
     .some((node) => textOf(node) === "优先沟通");
@@ -297,6 +297,11 @@ async function clickSendOnce({
   proofTimeoutMs,
   initialBubbleCount,
 }) {
+  const currentContainer = findChatContainer(input.ownerDocument);
+  if (currentContainer) container = currentContainer;
+  const currentInput = findChatInput(container);
+  if (currentInput) input = currentInput;
+
   if (inputValue(input) !== message) {
     setInputValue(input, message);
   }
@@ -389,15 +394,14 @@ async function runLiepinSend(document, {
   }
   result.popupClosed = modalState.closed;
 
-  let container = findChatContainer(document);
-  if (!container) {
-    return { ...result, reason: "chat-container-missing" };
-  }
+  const composer = await waitFor(() => {
+    const container = findChatContainer(document);
+    const input = findChatInput(container);
+    return container && input ? { container, input } : null;
+  }, inputTimeoutMs, wait);
+  if (!composer) return { ...result, reason: "chat-composer-timeout" };
 
-  let input = await waitFor(() => findChatInput(container), inputTimeoutMs, wait);
-  if (!input) {
-    return { ...result, reason: "chat-input-missing" };
-  }
+  let { container, input } = composer;
 
   let firstAttempt = await clickSendOnce({
     container,

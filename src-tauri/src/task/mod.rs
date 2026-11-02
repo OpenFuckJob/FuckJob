@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    config::AppRuntimeConfig,
+    config::{AppRuntimeConfig, MAX_PARALLEL_TASKS, MIN_PARALLEL_TASKS},
     rpa::{
         run_flow::{self, FlowMode, PlatformKind},
         schedule::PeriodicPlan,
@@ -330,7 +330,7 @@ pub struct TaskManager {
 impl TaskManager {
     fn new() -> Self {
         let inner = Arc::new(TaskManagerInner {
-            state: Mutex::new(SchedulerState::new(2)),
+            state: Mutex::new(SchedulerState::new(3)),
             wake_scheduler: Condvar::new(),
         });
         spawn_scheduler(Arc::clone(&inner));
@@ -453,7 +453,7 @@ fn spawn_worker(inner: Arc<TaskManagerInner>, worker: WorkerInput) {
 }
 
 fn normalize_parallelism(value: usize) -> usize {
-    value.clamp(1, 2)
+    value.clamp(MIN_PARALLEL_TASKS, MAX_PARALLEL_TASKS)
 }
 
 fn timestamp() -> String {
@@ -491,6 +491,25 @@ mod tests {
         assert_eq!(state.take_next_runnable().unwrap().task_id, liepin.task_id);
         assert!(state.take_next_runnable().is_none());
         assert_eq!(state.queue.front(), Some(&boss_second.task_id));
+    }
+
+    #[test]
+    fn scheduler_runs_all_three_platforms_and_isolates_their_stop_flags() {
+        let mut state=SchedulerState::new(3);
+        let boss=enqueue(&mut state,PlatformKind::Boss);
+        let boss_next=enqueue(&mut state,PlatformKind::Boss);
+        let liepin=enqueue(&mut state,PlatformKind::Liepin);
+        let job51=enqueue(&mut state,PlatformKind::Job51);
+        let first=state.take_next_runnable().unwrap();
+        let second=state.take_next_runnable().expect("猎聘必须并发运行");
+        let third=state.take_next_runnable().expect("51job必须成为第三个并发worker");
+        assert_eq!([first.task_id.clone(),second.task_id.clone(),third.task_id.clone()],[boss.task_id.clone(),liepin.task_id,job51.task_id]);
+        assert!(state.take_next_runnable().is_none());
+        assert_eq!(state.queue.front(),Some(&boss_next.task_id));
+        state.request_stop(&boss.task_id).unwrap();
+        assert!(first.cancelled.load(Ordering::SeqCst));
+        assert!(!second.cancelled.load(Ordering::SeqCst));
+        assert!(!third.cancelled.load(Ordering::SeqCst));
     }
 
     #[test]

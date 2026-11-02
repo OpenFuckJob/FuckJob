@@ -8,6 +8,7 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+/target/
 dist
 dist-ssr
 *.local
@@ -32,7 +33,7 @@ settings.local.json
 
 # Tauri updater signing key (never commit the private key)
 .tauri/*.key
-
+output/OfferFlow-jd-fix.exe
 ./docs/updater-release.md
 
 designs/
@@ -44,6 +45,6 @@ designs/
 .playwright-mcp
 # Claude Code 的 agent 工作区，由工具自行管理
 .claude/worktrees/
-
-
+.omc\project-memory.json
+.omc\sessions\92219f8a-08f3-41a6-a593-df6c3467bc40.json
 .pi

@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { Button, Empty, Skeleton, Tag, Typography } from "antd";
+import { Button, Empty, Popconfirm, Skeleton, Space, Tag, Typography, message } from "antd";
+import { invoke } from "@tauri-apps/api/core";
+import { commandErrorMessage, type CommandResult } from "../../types/command";
 import {
   EnvironmentOutlined,
   FileTextOutlined,
@@ -43,13 +45,22 @@ function MetaItem({ label, value }: { label: string; value: React.ReactNode }) {
 const JobBrief = ({
   job,
   analysis,
+  onDeliveryResolved,
 }: {
   job: JobDetail;
   analysis?: InterviewJobAnalysis;
+  onDeliveryResolved?: (updated: JobDetail) => void;
 }) => {
   const [showRaw, setShowRaw] = useState(false);
   const [parsed, setParsed] = useState<ParsedJobDescription | null>(null);
-  const platform = job.platform === "liepin" ? "猎聘" : "BOSS 直聘";
+  const platform = job.platform === "51job" ? "前程无忧" : job.platform === "liepin" ? "猎聘" : "BOSS 直聘";
+  const resolveDelivery = async (delivered: boolean) => {
+    try {
+      const result = await invoke<CommandResult<JobDetail>>("job51_resolve_delivery", { id: job.id, delivered });
+      if (!result.success || !result.data) { message.error(commandErrorMessage(result.error, "更新投递状态失败")); return; }
+      onDeliveryResolved?.(result.data);
+    } catch (error) { message.error(String(error)); }
+  };
 
   useEffect(() => {
     let stale = false;
@@ -80,7 +91,7 @@ const JobBrief = ({
           {job.salary && <div className="brief-salary">{job.salary}</div>}
           <div className="brief-badges">
             <Tag color={job.platform === "liepin" ? "purple" : "green"}>{platform}</Tag>
-            {job.is_send_resume ? <Tag color="blue">已投递</Tag> : <Tag>未投递</Tag>}
+            {job.resume_delivery_pending ? <Tag color="orange">投递待确认</Tag> : job.is_send_resume ? <Tag color="blue">已投递</Tag> : <Tag>未投递</Tag>}
             {job.is_reply && <Tag color="cyan">已回复</Tag>}
             {analysis && !analysis.parse_error && (
               <Tag color={matchTone(analysis.match_score)}>
@@ -90,6 +101,12 @@ const JobBrief = ({
           </div>
         </div>
       </div>
+
+      {job.platform === "51job" && job.resume_delivery_pending && <Space wrap style={{ marginBottom: 16 }}>
+        <Typography.Text type="secondary">此前提交结果未确认，自动重投已暂停。</Typography.Text>
+        <Popconfirm title="已在51job核实投递成功？" onConfirm={() => void resolveDelivery(true)}><Button size="small">确认已投递</Button></Popconfirm>
+        <Popconfirm title="允许下次任务重新投递？" description="此前提交结果未确认，重新投递可能重复申请。" onConfirm={() => void resolveDelivery(false)}><Button size="small">允许重试</Button></Popconfirm>
+      </Space>}
 
       {/* ── 时间线与来源，都是表格里看不全的字段 ── */}
       <div className="brief-meta">

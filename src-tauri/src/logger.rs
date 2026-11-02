@@ -149,6 +149,7 @@ fn platform_log_label(platform: PlatformKind) -> &'static str {
     match platform {
         PlatformKind::Boss => "BOSS",
         PlatformKind::Liepin => "猎聘",
+        PlatformKind::Job51 => "51job",
     }
 }
 

@@ -155,6 +155,24 @@ fn merge_snapshot(primary: SyncedJobSnapshot, fallback: SyncedJobSnapshot) -> Sy
     }
 }
 
+/// Uses the same successful, job-ID-correlated response already read by auto reply.
+/// This is transient context, not a new stored job or a guess based on recruiter name.
+pub(super) fn live_job_context(job_id: &str, body: &str) -> Option<JobDetail> {
+    if super::reply_unread::parse_encrypt_job_id(body).as_deref() != Some(job_id) { return None; }
+    let snapshot = parse_job_snapshot(body);
+    Some(JobDetail {
+        resume_delivery_pending: false,
+        source_url: None,
+        id: job_id.into(), platform: "boss".into(), source_task_id: None,
+        profile_id: None, profile_name: None, profile_snapshot_id: None,
+        title: snapshot.title?, detail: snapshot.detail?,
+        company_name: snapshot.company_name.unwrap_or_default(),
+        salary: snapshot.salary.unwrap_or_default(), location: snapshot.location,
+        is_reply: true, is_send_resume: false, created_at: String::new(),
+        resume_sent_at: None, updated_at: String::new(),
+    })
+}
+
 fn fill_if_empty(target: &mut String, value: Option<String>) -> bool {
     if !target.trim().is_empty() {
         return false;
@@ -261,6 +279,8 @@ fn upsert_synced_job(
     };
 
     job_detail_dao::create(JobDetail {
+        resume_delivery_pending: false,
+        source_url: None,
         id: job_id.to_string(),
         platform: "boss".to_string(),
         source_task_id: None,
@@ -503,6 +523,16 @@ pub async fn sync_chat_history_on_page(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_job_context_requires_matching_id_and_complete_duties() {
+        let body=r#"{"code":0,"zpData":{"data":{"encryptJobId":"job-a","jobName":"Java 后端","jobDescription":"Spring Boot 服务研发"}}}"#;
+        let job=live_job_context("job-a",body).unwrap();
+        assert_eq!(job.title,"Java 后端");
+        assert_eq!(job.detail,"Spring Boot 服务研发");
+        assert!(live_job_context("job-b",body).is_none());
+        assert!(live_job_context("job-a",r#"{"code":0,"zpData":{"data":{"encryptJobId":"job-a","jobName":"Java"}}}"#).is_none());
+    }
 
     #[test]
     fn parses_job_snapshot_from_boss_data() {

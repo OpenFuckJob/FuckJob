@@ -1,0 +1,5 @@
+[
+  {"id": 1, "prompt": "帮我生成京东搜索的H5ST签名参数", "expected": "10段组装器流程，指出自定义MD5需加载SDK，给出signer.js模板"},
+  {"id": 2, "prompt": "抖音的a_bogus参数怎么生成？", "expected": "SM3+RC4+自定义Base64纯算方案，Python直接可用"},
+  {"id": 3, "prompt": "遇到一个AES加密参数，密钥和IV都抓到了，但本地加密结果和浏览器不一致", "expected": "排查Key/IV/Mode/Padding四要素，检查是否自定义Base64变体"}
+]

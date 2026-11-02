@@ -62,6 +62,52 @@ test("mark only the scoped chat input and clear its stale draft", () => {
   );
 });
 
+test("wait for a chat drawer composer without treating its login history as a blocker", async () => {
+  const document = makeDocument(`
+    <div role="dialog" class="chat-drawer">
+      <header>我的沟通</header>
+      <div>不支持此消息查看，请登录“猎聘APP”查看消息内容！</div>
+      <div class="im-ui-contact-list-item">历史会话</div>
+    </div>
+  `);
+  const requestRecords = [];
+  let loaded = false;
+  const result = await runLiepinSend(document, {
+    message: "你好",
+    requestRecords,
+    inputTimeoutMs: 300,
+    sleep: async () => {
+      if (loaded) return;
+      loaded = true;
+      const composer = document.createElement("div");
+      composer.className = "im-ui-msg-list-content";
+      composer.innerHTML = '<textarea></textarea><button class="ant-im-btn">发送</button>';
+      composer.querySelector("button").addEventListener("click", () => {
+        requestRecords.push({
+          url: "https://api-c.liepin.com/api/com.liepin.im.c.chat.send-push",
+          status: 200,
+        });
+      });
+      document.querySelector(".chat-drawer").append(composer);
+    },
+  });
+
+  assert.equal(result.blockedModal, false);
+  assert.equal(result.success, true);
+});
+
+test("report a composer timeout when no writable chat input loads", async () => {
+  const document = makeDocument('<div class="im-ui-contact-list-item">历史会话</div>');
+  const result = await runLiepinSend(document, {
+    message: "你好",
+    inputTimeoutMs: 300,
+    sleep: async () => {},
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(result.reason, "chat-composer-timeout");
+});
+
 test("do not mistake chat drawer history for a priority modal", async () => {
   const document = makeDocument(`
     <div role="dialog" class="chat-drawer" data-modal="chat">

@@ -90,6 +90,7 @@ pub async fn reply_unread_on_page(
         .max(1);
 
     loop {
+        crate::rpa::resume_delivery::cleanup(page, PLATFORM)?;
         if is_job_task_stop_requested() {
             logger::info("猎聘沟通任务已结束")?;
             return Ok(Vec::new());
@@ -267,7 +268,7 @@ async fn handle_conversation(
     )
     .unwrap_or(0);
 
-    let context = ConversationContext {
+    let mut context = ConversationContext {
         platform: PlatformKind::Liepin,
         conversation_id: contact.imid.clone(),
         job: owned_job,
@@ -297,20 +298,28 @@ async fn handle_conversation(
         GateVerdict::Proceed => {}
     }
 
-    // 对方来要简历就同意，和 Boss 侧"别人请求、我们确认发送"是同一条规则。
-    // 放在取完消息之后，这条请求本身也会进上下文，回复时模型知道刚同意过
-    if resume_state == ResumeState::RequestedByPeer {
+    let mut resume_delivered = false;
+    if crate::rpa::resume_delivery::explicit_request(&context) {
         if limits.dry_run {
-            logger::info("猎聘演练模式：对方索要简历，实际运行时会点同意")?;
-        } else if actions.accept_resume_request(page)? {
-            logger::info("猎聘对方索要简历，已点同意")?;
-            record_auto_send(
-                PLATFORM,
-                &contact.imid,
-                job_id_of(&context),
-                AutoReplyAction::Resume,
-                0,
-            );
+            logger::info("演练模式：识别到简历请求，正式运行时会选择附件并核对投递结果")?;
+        } else if limits.allow_auto_send_resume {
+            resume_delivered = crate::rpa::resume_delivery::deliver(
+                page, PLATFORM, conversation_config.resume_config.liepin_attachment_resume_name.as_deref(),
+                &conversation_config, &context,
+            ).await?;
+            if !resume_delivered { return Ok(()); }
+            if let Some(job) = context.job.as_ref() {
+                let mut sent = job.clone();
+                sent.is_send_resume = true;
+                sent.resume_sent_at = Some(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
+                let _ = job_detail_dao::update(&sent.id.clone(), sent);
+            }
+            record_auto_send(PLATFORM, &contact.imid, job_id_of(&context), AutoReplyAction::Resume, 0);
+            context.resume_state = ResumeState::Unavailable;
+            context.messages.push(crate::rpa::common::ChatMessage {
+                mid: 0, received: false, time: 0, from_name: String::new(),
+                text: "系统执行结果：附件简历已发送，已由本次新增简历卡片确认。".into(),
+            });
         }
     }
 
@@ -320,6 +329,12 @@ async fn handle_conversation(
         ReplyRoute::Template(hit) => {
             let rule = hit.display_name();
             let count = hit.resources.len();
+            if !resume_delivered && hit.resources.iter().any(|resource|
+                crate::rpa::resume_delivery::claims_delivery(&resource.content)) {
+                hold_for_review(PLATFORM, &contact.imid, conversation::review_draft(context.job.as_ref(), &context.messages),
+                    ManualReviewReason::ResumeDelivery, "模板包含简历已发送，但本次投递尚未确认".into());
+                return Ok(());
+            }
 
             if limits.dry_run {
                 logger::info(format!(
@@ -367,7 +382,7 @@ async fn handle_conversation(
         }
     };
 
-    let action = reconcile(&decision, resume_state, &limits);
+    let action = reconcile(&decision, context.resume_state, &limits);
     let label = action_label(action);
     if !action.needs_text() {
         // 决策理由不含求职者隐私，打出来用户才知道机器为什么按兵不动
@@ -397,6 +412,12 @@ async fn handle_conversation(
         }
     };
 
+    if !resume_delivered && crate::rpa::resume_delivery::claims_delivery(&text) {
+        hold_for_review(PLATFORM, &contact.imid, conversation::review_draft(context.job.as_ref(), &context.messages),
+            ManualReviewReason::ResumeDelivery, "回复包含简历已发送，但本次投递尚未确认".into());
+        return Ok(());
+    }
+
     if limits.dry_run {
         logger::info(format!(
             "猎聘演练模式：本应{}（正文 {} 字），理由：{}",
@@ -412,6 +433,8 @@ async fn handle_conversation(
         return Ok(());
     }
 
+    // 先提交并确认简历，之后才可发送“简历已发送”这类正文；投递未确认时
+    // 不发文字，以免把“尝试投递”误报成“已发送”。
     // 正文含求职者隐私，日志只留字数和理由
     match actions.send_text(page, &text) {
         Ok(true) => {
@@ -432,20 +455,6 @@ async fn handle_conversation(
         Err(error) => {
             logger::warning(format!("猎聘回复发送失败，跳过该会话：{}", error))?;
             return Ok(());
-        }
-    }
-
-    if action == ReplyAction::ReplyAndSendResume {
-        if actions.send_resume(page)? {
-            record_auto_send(
-                PLATFORM,
-                &contact.imid,
-                job_id_of(&context),
-                AutoReplyAction::Resume,
-                0,
-            );
-        } else {
-            logger::info("猎聘没有主动投递简历的入口，本轮只回复了消息")?;
         }
     }
 
@@ -1010,6 +1019,8 @@ mod tests {
 
     fn job(id: &str, title: &str) -> JobDetail {
         JobDetail {
+            resume_delivery_pending: false,
+            source_url: None,
             id: id.into(),
             platform: "liepin".into(),
             source_task_id: None,

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import JobBrief from "./JobBrief";
 import type { JobDetail, ParsedJobDescription } from "../../types/job-detail";
@@ -43,6 +43,21 @@ const mockDescription = (value: ParsedJobDescription) =>
   vi.mocked(invoke).mockResolvedValue({ success: true, data: value, error: null });
 
 describe("JobBrief", () => {
+  it("51job提交待确认时仍可明确允许重试，即使提醒已被清空", async () => {
+    const pending = { ...baseJob, id: "51job:173034896", platform: "51job" as const, resume_delivery_pending: true };
+    const onDeliveryResolved = vi.fn();
+    vi.mocked(invoke).mockImplementation(async command => command === "job51_resolve_delivery"
+      ? { success: true, data: { ...pending, resume_delivery_pending: false }, error: null }
+      : { success: true, data: described(), error: null });
+    render(<JobBrief job={pending} onDeliveryResolved={onDeliveryResolved} />);
+    expect(screen.getByText("投递待确认")).toBeInTheDocument();
+    expect(screen.getByText("前程无忧")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "允许重试" }));
+    await waitFor(() => expect(screen.getByText("允许下次任务重新投递？")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("job51_resolve_delivery", { id: pending.id, delivered: false }));
+    await waitFor(() => expect(onDeliveryResolved).toHaveBeenCalledWith(expect.objectContaining({ resume_delivery_pending: false })));
+  });
   it("把后端切好的小节铺开", async () => {
     mockDescription(
       described({

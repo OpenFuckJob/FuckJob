@@ -8,6 +8,29 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 #[tauri::command]
+pub fn job_open_source(id: String) -> CommandResult<()> {
+    let result = (|| -> anyhow::Result<()> {
+        let job = job_detail_dao::get_by_id(&id)?.ok_or_else(|| anyhow::anyhow!("岗位不存在"))?;
+        let source = job.source_url.filter(|url| !url.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("该历史岗位未保存原始JD链接"))?;
+        let url = tauri::Url::parse(&source)?;
+        let host = url.host_str().unwrap_or("");
+        if !matches!(url.scheme(), "http" | "https") || !["zhipin.com", "liepin.com", "51job.com"].iter()
+            .any(|domain| host == *domain || host.ends_with(&format!(".{domain}"))) {
+            anyhow::bail!("职位链接不是受支持平台的网页地址");
+        }
+        #[cfg(target_os = "windows")]
+        { std::process::Command::new("rundll32.exe").arg("url.dll,FileProtocolHandler").arg(url.as_str()).spawn()?; }
+        #[cfg(target_os = "macos")]
+        { std::process::Command::new("open").arg(url.as_str()).spawn()?; }
+        #[cfg(target_os = "linux")]
+        { std::process::Command::new("xdg-open").arg(url.as_str()).spawn()?; }
+        Ok(())
+    })();
+    match result { Ok(()) => CommandResult::ok(()), Err(error) => CommandResult::err(error.to_string()) }
+}
+
+#[tauri::command]
 pub fn job_list() -> CommandResult<Vec<JobDetail>> {
     match job_detail_dao::list() {
         Ok(list) => CommandResult::ok(list),
@@ -126,11 +149,15 @@ pub fn job_list_with_status() -> CommandResult<Vec<JobListItem>> {
 
 #[cfg(test)]
 mod communication_status_tests {
-    use super::{build_job_list_items, is_explicit_rejection, CommunicationStatus};
+    use super::{build_job_list_items, is_explicit_rejection, CommunicationStatus, job_list_with_status, build_job_search_overview};
+    use crate::dao::job_detail_dao;
+    use chrono::Local;
     use crate::dao::model::{ChatMessageRecord, JobDetail};
 
     fn job(id: &str) -> JobDetail {
         JobDetail {
+            resume_delivery_pending: false,
+            source_url: None,
             id: id.into(),
             platform: "boss".into(),
             source_task_id: None,
@@ -148,6 +175,32 @@ mod communication_status_tests {
             resume_sent_at: None,
             updated_at: "2026-08-19 09:00:00".into(),
         }
+    }
+
+    #[test]
+    fn three_platform_workers_persist_results_for_both_job_management_and_overview() {
+        let directory=tempfile::tempdir().unwrap();
+        crate::dao::init(directory.path()).unwrap();
+        let barrier=std::sync::Arc::new(std::sync::Barrier::new(3));
+        let now=Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let workers=[("boss","boss-test-00000001"),("liepin","liepin:123456789"),("51job","51job:123456789")].map(|(platform,id)| {
+            let mut record=job(id);
+            record.platform=platform.into();
+            record.source_url=Some(format!("https://example.test/{platform}/jd"));
+            record.is_send_resume=true;
+            record.created_at=now.clone();record.updated_at=now.clone();record.resume_sent_at=Some(now.clone());
+            let barrier=barrier.clone();
+            std::thread::spawn(move || { barrier.wait(); job_detail_dao::create(record).unwrap(); })
+        });
+        for worker in workers { worker.join().unwrap(); }
+        let list=job_list_with_status().data.unwrap();
+        assert_eq!(list.len(),3);
+        assert!(list.iter().all(|item|item.job.is_send_resume && item.job.source_url.is_some()));
+        let overview=build_job_search_overview(0,80).unwrap();
+        assert_eq!(overview.metrics.resume_sent_jobs,3);
+        assert_eq!(overview.metrics.total_jobs,3);
+        assert_eq!(overview.source_distribution.len(),3);
+        assert!(overview.source_distribution.iter().any(|slice|slice.source=="前程无忧" && slice.count==1));
     }
 
     fn message(job_id: &str, mid: i64, received: bool, text: &str, time: i64) -> ChatMessageRecord {
@@ -426,7 +479,9 @@ fn start_of_day(moment: chrono::DateTime<Local>) -> chrono::DateTime<Local> {
 
 /// 岗位来源平台展示名，与岗位管理页的判定保持一致
 fn platform_label(job: &JobDetail) -> &'static str {
-    if job.platform == "liepin" || job.id.starts_with("liepin:") {
+    if job.platform == "51job" || job.id.starts_with("51job:") {
+        "前程无忧"
+    } else if job.platform == "liepin" || job.id.starts_with("liepin:") {
         "猎聘"
     } else {
         "BOSS 直聘"

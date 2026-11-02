@@ -33,7 +33,7 @@ fn clip(text: &str, limit: usize) -> String {
 
 /// 简历注入是用户可关的开关，关掉时要显式告诉模型「没有」，
 /// 而不是留下一个空变量让它自由发挥
-fn resume_text(config: &AppRuntimeConfig) -> String {
+pub(crate) fn resume_text(config: &AppRuntimeConfig) -> String {
     if !config.resume_config.inject_llm_context {
         return MISSING.to_string();
     }

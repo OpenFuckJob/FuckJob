@@ -8,7 +8,6 @@
 use rust_drission::Page;
 
 use crate::rpa::boss::handler::send_message::send_text_message;
-use crate::rpa::boss::handler::send_resume::send_resume;
 use crate::rpa::conversation::{ConversationActions, ResumeState};
 
 pub struct BossActions;
@@ -36,41 +35,6 @@ impl ConversationActions for BossActions {
         send_text_message(page, text)
     }
 
-    fn send_resume(&self, page: &Page) -> Result<bool, anyhow::Error> {
-        send_resume(page)
-    }
-
-    fn accept_resume_request(&self, page: &Page) -> Result<bool, anyhow::Error> {
-        let value = page.run_js_await(MARK_ACCEPT_BUTTON_SCRIPT)?;
-        let raw = value.get("value").cloned().unwrap_or(value);
-        if !raw.as_bool().unwrap_or(false) {
-            return Ok(false);
-        }
-
-        // 先在页面里打标记再用真实点击，比在 JS 里直接 click 更接近人的操作
-        page.click("[data-fj-accept-resume='1']")?;
-        rust_drission::utils::sleep_random_ms(600, 1000);
-
-        // BOSS 同意后通常还有一层确认面板；没有就说明这次不需要，不必等满超时
-        if page.ele(".panel-resume")?.is_some() {
-            confirm_resume_panel(page)?;
-        }
-        Ok(true)
-    }
-}
-
-/// 点掉简历确认面板上的「确定」。
-///
-/// 只认文案，不认位置：面板里同时有「取消」和「确定」，按下标取会随版本漂移。
-pub(crate) fn confirm_resume_panel(page: &Page) -> Result<bool, anyhow::Error> {
-    for candidate in page.elements(".panel-resume .btns span, .panel-resume .btns button")? {
-        if candidate.text_content()?.trim() == "确定" {
-            candidate.click()?;
-            rust_drission::utils::sleep_random_ms(500, 800);
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 /// 读简历入口状态。
@@ -116,39 +80,6 @@ const RESUME_STATE_SCRIPT: &str = r#"
 })()
 "#;
 
-/// 给待确认的「同意」按钮打标记，供后续真实点击定位
-const MARK_ACCEPT_BUTTON_SCRIPT: &str = r#"
-(() => {
-    const text = (el) => ((el && (el.innerText || el.textContent)) || "").trim();
-    const disabled = (el) => {
-        const className = el.getAttribute("class") || "";
-        return Boolean(el.disabled)
-            || el.getAttribute("aria-disabled") === "true"
-            || className.split(/\s+/).includes("unable")
-            || className.includes("disabled");
-    };
-
-    const target = Array.from(
-        document.querySelectorAll("button, span[role='button'], div[role='button'], a")
-    ).find((el) => {
-        const label = text(el);
-        if (label !== "同意" && label !== "接受" && label !== "同意并发送") return false;
-        if (disabled(el)) return false;
-        if (el.closest(".toolbar, .toolbar-btn, .chat-op")) return false;
-        let scope = el;
-        for (let depth = 0; depth < 4 && scope; depth += 1) {
-            if (text(scope).includes("简历")) return true;
-            scope = scope.parentElement;
-        }
-        return false;
-    });
-    if (!target) return false;
-
-    target.setAttribute("data-fj-accept-resume", "1");
-    return true;
-})()
-"#;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,7 +96,7 @@ mod tests {
     /// 「换电话」「换微信」和「发简历」同类名，认错就是把联系方式推给陌生人
     #[test]
     fn accept_scan_never_reaches_the_toolbar() {
-        for script in [RESUME_STATE_SCRIPT, MARK_ACCEPT_BUTTON_SCRIPT] {
+        for script in [RESUME_STATE_SCRIPT] {
             assert!(script.contains(".toolbar, .toolbar-btn, .chat-op"));
             assert!(script.contains(r#"includes("简历")"#));
         }

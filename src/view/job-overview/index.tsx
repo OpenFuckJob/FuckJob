@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useJobDataRefresh } from "../../hooks/useJobDataRefresh";
 import { invoke } from "@tauri-apps/api/core";
 import { Alert, Button, Card, Col, Empty, Row, Segmented, Skeleton, Table, Tooltip, Typography } from "antd";
 import {
@@ -402,27 +403,37 @@ export default function JobOverviewPage({ onNavigate, onOpenConversation }: {
   const [overview, setOverview] = useState<JobSearchOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const reload = useRef<(() => Promise<unknown>) | null>(null);
+  useJobDataRefresh(useCallback(async () => { await reload.current?.(); }, []));
 
   useEffect(() => {
     let active = true;
     setLoading(true);
     setError("");
-    invoke<CommandResult<JobSearchOverview>>("job_search_overview", { days })
+    let latestRequest = 0;
+    const fetchOverview = () => {
+      const request = ++latestRequest;
+      return invoke<CommandResult<JobSearchOverview>>("job_search_overview", { days })
       .then((result) => {
-        if (!active) return;
+        if (!active || request !== latestRequest) return;
         if (!result.success || !result.data) {
           throw new Error(result.error?.message || "加载求职数据失败");
         }
         setOverview(result.data);
+        setError("");
       })
       .catch((reason: unknown) => {
-        if (active) setError(reason instanceof Error ? reason.message : "加载求职数据失败");
+        if (active && request === latestRequest) setError(reason instanceof Error ? reason.message : "加载求职数据失败");
       })
       .finally(() => {
-        if (active) setLoading(false);
+        if (active && request === latestRequest) setLoading(false);
       });
+    };
+    reload.current = fetchOverview;
+    void fetchOverview();
     return () => {
       active = false;
+      reload.current = null;
     };
   }, [days]);
 

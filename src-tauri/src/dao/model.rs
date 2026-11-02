@@ -59,6 +59,12 @@ impl JobProfileSnapshot {
 /// 岗位详情表
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct JobDetail {
+    /// 提交已开始但结果未确认。独立于待办提醒，清空提醒不会允许自动重投。
+    #[serde(default)]
+    pub resume_delivery_pending: bool,
+    /// 实际采集到的原始职位链接；旧记录缺失时保留空值。
+    #[serde(default)]
+    pub source_url: Option<String>,
     /// 岗位唯一ID
     pub id: String,
 
@@ -305,6 +311,8 @@ pub enum ManualReviewReason {
     MissingJobId,
     /// 时间窗内的自动回复额度已用完
     ThrottleExhausted,
+    /// 简历附件无法可靠选择或投递结果无法确认
+    ResumeDelivery,
 }
 
 impl ManualReviewReason {
@@ -314,6 +322,7 @@ impl ManualReviewReason {
             Self::VetRejected => "生成内容未通过体检",
             Self::MissingJobId => "会话标识缺失",
             Self::ThrottleExhausted => "自动回复额度用尽",
+            Self::ResumeDelivery => "简历投递需要确认",
         }
     }
 }

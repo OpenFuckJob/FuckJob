@@ -143,11 +143,6 @@ pub trait ConversationActions {
     /// 发送一条文本消息
     fn send_text(&self, page: &rust_drission::Page, text: &str) -> Result<bool, anyhow::Error>;
 
-    /// 主动发起简历投递。返回 false 表示入口不可用（并非错误）
-    fn send_resume(&self, page: &rust_drission::Page) -> Result<bool, anyhow::Error>;
-
-    /// 同意对方的简历索要请求。返回 false 表示当前没有待处理的请求
-    fn accept_resume_request(&self, page: &rust_drission::Page) -> Result<bool, anyhow::Error>;
 }
 
 /// 自动回复的边界参数。集中一处，两个平台不会各配一套

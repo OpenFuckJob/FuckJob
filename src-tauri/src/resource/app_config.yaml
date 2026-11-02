@@ -112,11 +112,13 @@ analysis_config: &default_analysis
 browser_config:
   user_data_dir: ""
   chrome_exe_path: ""
-  max_parallel_tasks: 2
+  max_parallel_tasks: 3
 resume_config: &default_resume
   inject_llm_context: true
   resume_path: ""
   resume_content: ""
+  liepin_attachment_resume_name: ""
+  boss_attachment_resume_name: ""
 job_profiles:
   - id: default
     name: 默认求职方案

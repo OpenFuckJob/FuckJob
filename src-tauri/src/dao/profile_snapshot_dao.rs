@@ -102,6 +102,8 @@ mod tests {
 
     fn legacy_job(profile_id: Option<&str>) -> JobDetail {
         JobDetail {
+            resume_delivery_pending: false,
+            source_url: None,
             id: "job".into(),
             platform: "boss".into(),
             source_task_id: None,
