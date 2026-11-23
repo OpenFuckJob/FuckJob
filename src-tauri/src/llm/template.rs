@@ -64,10 +64,29 @@ pub fn render(template: &str, params: &Value) -> Result<String, AppError> {
         cursor = whole.end();
     }
     output.push_str(&template[cursor..]);
-    if output.contains("{{{{") || output.contains("}}}}") {
+    if contains_invalid_placeholder(&output) {
         return Err(AppError::validation("提示词包含无效占位符"));
     }
     Ok(output)
+}
+
+fn contains_invalid_placeholder(output: &str) -> bool {
+    let mut cursor = 0;
+    while let Some(relative_open) = output[cursor..].find("{{") {
+        let open = cursor + relative_open + 2;
+        if output[cursor..open].contains("}}") {
+            return true;
+        }
+        let Some(relative_close) = output[open..].find("}}") else {
+            return true;
+        };
+        let close = open + relative_close;
+        if !output[open..close].trim().is_empty() {
+            return true;
+        }
+        cursor = close + 2;
+    }
+    output[cursor..].contains("}}")
 }
 
 #[cfg(test)]
@@ -95,6 +114,13 @@ mod tests {
     fn empty_placeholder_is_a_literal_not_a_missing_variable() {
         assert_eq!(render("不要使用 {{ }}", &json!({})).unwrap(), "不要使用 {{ }}");
         assert!(render("{{   }}", &json!({})).is_ok());
+    }
+
+    #[test]
+    fn rejects_malformed_placeholder_remainders() {
+        for template in ["{{ job_name", "job_name }}", "{{ job name }}"] {
+            assert!(render(template, &json!({})).is_err());
+        }
     }
 
     /// 这是猎聘自动回复全平台失效的根因：模板引用了 job_description，

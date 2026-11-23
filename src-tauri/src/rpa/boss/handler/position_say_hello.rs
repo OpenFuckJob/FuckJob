@@ -65,6 +65,7 @@ pub async fn position_say_hello_on_page(
     let joblist_listener = page.listen_url("wapi/zpgeek/search/joblist.json")?;
 
     for attempt in 1..=JOB_LIST_LOAD_ATTEMPTS {
+        page.get(&search_url)?;
         if page.wait(".rec-job-list", JOB_LIST_WAIT_TIMEOUT).is_ok() {
             break;
         }
@@ -82,7 +83,6 @@ pub async fn position_say_hello_on_page(
             "岗位列表加载超时，正在重载（第 {attempt}/{} 次）",
             JOB_LIST_LOAD_ATTEMPTS
         ))?;
-        page.get(&search_url)?;
     }
 
     // 消费首次 page.get 触发的 joblist 响应，初始化 seen_job_ids
@@ -635,7 +635,11 @@ fn read_job_card(
     human_input::click(page, &job_card_ele)?;
     sleep_random_ms(800, 1200);
 
-    let job_detail_text = wait_for_new_detail_text(page, &previous_detail_text)?;
+    let job_detail_text = wait_for_new_detail_text(
+        page,
+        &previous_detail_text,
+        job_id.as_deref(),
+    )?;
     let job_name = job_card_ele
         .element(".job-name")?
         .ok_or_else(|| anyhow::anyhow!("未找到岗位标题"))?
@@ -682,16 +686,37 @@ fn read_detail_text(page: &Page) -> Result<String, anyhow::Error> {
 fn wait_for_new_detail_text(
     page: &Page,
     previous_detail_text: &str,
+    job_id: Option<&str>,
 ) -> Result<String, anyhow::Error> {
     let deadline = Instant::now() + JOB_DETAIL_REFRESH_TIMEOUT;
     while Instant::now() < deadline {
         let detail_text = read_detail_text(page)?;
-        if !detail_text.trim().is_empty() && detail_text != previous_detail_text {
+        let detail_matches_job = match job_id {
+            Some(job_id) => detail_panel_contains_job(page, job_id)?,
+            None => false,
+        };
+        if !detail_text.trim().is_empty()
+            && (detail_matches_job || detail_text != previous_detail_text)
+        {
             return Ok(detail_text);
         }
         std::thread::sleep(Duration::from_millis(100));
     }
     anyhow::bail!("岗位详情刷新超时，为避免使用上一条岗位的 JD 已跳过")
+}
+
+fn detail_panel_contains_job(page: &Page, job_id: &str) -> Result<bool, anyhow::Error> {
+    let job_id_json = serde_json::to_string(job_id)?;
+    let value = page.run_js_await(&format!(
+        r#"(() => {{
+            const selector = '.job-detail-container a[href], .job-detail-box a[href]';
+            return Array.from(document.querySelectorAll(selector)).some((link) => {{
+                const href = link.getAttribute('href') || '';
+                return href.includes('/job_detail/' + {job_id_json} + '.html');
+            }});
+        }})()"#
+    ))?;
+    Ok(value.as_bool().unwrap_or(false))
 }
 
 fn reject_job(job_id: &str) {
