@@ -8,3 +8,4 @@
 - 2026-11-23 | pnpm worktree | 嵌套 Git worktree 放在上层 pnpm workspace 下会把依赖装到父目录；功能 worktree 放 `/tmp` 或其他 workspace 外目录
 - 2026-11-23 | 自评 PR | `gh pr review --request-changes` 不能对当前凭证自建的 PR 使用；只能留评论说明问题并等作者更新，不能自我 squash 合并
 - 2026-11-23 | rustfmt 范围 | 仓库当前未全量 rustfmt-clean，`cargo fmt --check` 会生成大范围无关 churn；只对本次触碰的文件执行 `rustfmt`，不要全局检查
+- 2026-11-24 | loop 重复交付 | 启动循环时必须同时检查 open PR，否则旧功能分支可能已被 PR 覆盖，误把已交付需求当成新切片
