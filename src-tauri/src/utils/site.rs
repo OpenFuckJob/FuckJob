@@ -5,6 +5,8 @@ use super::common::{CityMatch, CodeName};
 
 const SITE_JSON: &str = include_str!("../resource/site.json");
 
+pub const NATIONWIDE_CITY_CODE: i64 = 100010000;
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SiteModel {
@@ -31,6 +33,10 @@ pub fn get_province_code_by_name(name: &str) -> Option<i64> {
 }
 
 pub fn get_city_code_by_name(name: &str) -> Option<i64> {
+    if name == "全国" {
+        return Some(NATIONWIDE_CITY_CODE);
+    }
+
     all_city_entries()
         .into_iter()
         .find(|entry| entry.name == name)
@@ -38,6 +44,10 @@ pub fn get_city_code_by_name(name: &str) -> Option<i64> {
 }
 
 pub fn get_name_by_code(code: i64) -> Option<String> {
+    if code == NATIONWIDE_CITY_CODE {
+        return Some("全国".to_string());
+    }
+
     if let Some(province) = SITE_DATA.iter().find(|model| model.code == code) {
         return Some(province.name.clone());
     }
@@ -128,6 +138,7 @@ mod tests {
 
     #[test]
     fn get_code_by_city_name() {
+        assert_eq!(get_city_code_by_name("全国"), Some(NATIONWIDE_CITY_CODE));
         assert_eq!(get_city_code_by_name("哈尔滨"), Some(101050100));
         assert_eq!(get_city_code_by_name("齐齐哈尔"), Some(101050200));
         assert_eq!(get_city_code_by_name("北京"), Some(101010100));
@@ -171,6 +182,10 @@ mod tests {
 
     #[test]
     fn get_name_and_path_by_code() {
+        assert_eq!(
+            get_name_by_code(NATIONWIDE_CITY_CODE),
+            Some("全国".to_string())
+        );
         assert_eq!(get_name_by_code(101050100), Some("哈尔滨".to_string()));
         assert_eq!(
             get_city_path_by_code(101050100),

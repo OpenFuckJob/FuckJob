@@ -79,6 +79,7 @@ import {
   stageOptions,
   scaleOptions,
   industryTreeOptions,
+  nationwideCityCode,
   cityTreeOptions,
 } from "@/lib/constants";
 import {
@@ -872,8 +873,10 @@ export function ConfigPage(props: ConfigPageProps) {
     const config = { ...props.config };
     const jobFilter = { ...config.job_filter_config };
 
-    // 还原城市路径 [provinceCode, cityCode]
-    if (jobFilter.city) {
+    // 全国是单层虚拟节点；普通城市仍是 Cascader 路径。
+    if (jobFilter.city === nationwideCityCode) {
+      (jobFilter as any).city = [nationwideCityCode];
+    } else if (jobFilter.city) {
       for (const prov of cityTreeOptions) {
         const city = prov.children?.find((c) => c.value === jobFilter.city);
         if (city) {
