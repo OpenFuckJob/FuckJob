@@ -417,7 +417,155 @@ impl<'a> JobFilterRulesTask<'a> {
     }
 }
 
+#[cfg(test)]
+mod keyword_filter_task_tests {
+    use super::*;
+
+    #[test]
+    fn keyword_prompt_states_the_local_filter_contract() {
+        let prompt = JobKeywordFilterTask::new("岗位要 Java 和 Golang，公司排除外包")
+            .build_prompt()
+            .unwrap();
+
+        assert!(prompt.contains("岗位要 Java 和 Golang，公司排除外包"));
+        assert!(prompt.contains("最多 12 个"));
+        assert!(!prompt.contains("{{__"));
+    }
+
+    #[test]
+    fn keyword_output_is_trimmed_and_deduplicated_without_case_loss() {
+        let task = JobKeywordFilterTask::new("需求");
+        let output = task
+            .parse(
+                r#"{
+                    "keywords":["Java","java"," Golang "],
+                    "exclude_keywords":[" 外包 "],
+                    "company_keywords":[],
+                    "company_exclude_keywords":["保险公司"]
+                }"#,
+            )
+            .unwrap();
+
+        assert_eq!(output.keywords, ["Golang", "Java"]);
+        assert_eq!(output.exclude_keywords, ["外包"]);
+        assert_eq!(output.company_keywords, Vec::<String>::new());
+        assert_eq!(output.company_exclude_keywords, ["保险公司"]);
+        assert!(task.validate(&output).is_ok());
+    }
+
+    #[test]
+    fn empty_or_oversized_keyword_fields_fail_validation() {
+        let task = JobKeywordFilterTask::new("需求");
+        let filters = ParsedKeywordFilters {
+            keywords: Vec::new(),
+            exclude_keywords: Vec::new(),
+            company_keywords: Vec::new(),
+            company_exclude_keywords: Vec::new(),
+        };
+        assert_eq!(task.validate(&filters), Err("没有提取到任何关键词".into()));
+
+        let oversized = ParsedKeywordFilters {
+            keywords: (0..13).map(|index| index.to_string()).collect(),
+            ..filters
+        };
+        assert!(task
+            .validate(&oversized)
+            .unwrap_err()
+            .contains("超过上限 12 个"));
+    }
+}
+
 const MAX_GENERATED_RULES: usize = 12;
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ParsedKeywordFilters {
+    #[serde(default)]
+    pub keywords: Vec<String>,
+    #[serde(default)]
+    pub exclude_keywords: Vec<String>,
+    #[serde(default)]
+    pub company_keywords: Vec<String>,
+    #[serde(default)]
+    pub company_exclude_keywords: Vec<String>,
+}
+
+const MAX_GENERATED_KEYWORDS_PER_FIELD: usize = 12;
+
+/// 只解析本地关键词筛选，不改变搜索入口词；AI 输出仍需用户审查保存。
+pub struct JobKeywordFilterTask<'a> {
+    requirement: &'a str,
+}
+
+impl<'a> JobKeywordFilterTask<'a> {
+    pub fn new(requirement: &'a str) -> Self {
+        Self { requirement }
+    }
+}
+
+impl AgentTask for JobKeywordFilterTask<'_> {
+    type Output = ParsedKeywordFilters;
+
+    fn name(&self) -> &'static str {
+        "筛选关键词提取"
+    }
+
+    fn prompt_template(&self) -> Result<String, AppError> {
+        Ok(prompts::compose(
+            &prompts::with_shared(prompts::JOB_KEYWORD_FILTER),
+            &[
+                ("REQUIREMENT", self.requirement),
+                (
+                    "MAX_KEYWORDS",
+                    &MAX_GENERATED_KEYWORDS_PER_FIELD.to_string(),
+                ),
+            ],
+        ))
+    }
+
+    fn params(&self) -> Result<Value, AppError> {
+        Ok(json!({}))
+    }
+
+    fn build_prompt(&self) -> Result<String, AppError> {
+        // 需求原文由用户输入，可能带花括号，不能过模板渲染
+        self.prompt_template()
+    }
+
+    fn parse(&self, raw: &str) -> Result<Self::Output, String> {
+        let json = output::extract_json(raw).ok_or("输出里没有找到 JSON 对象")?;
+        let parsed: ParsedKeywordFilters =
+            serde_json::from_str(json).map_err(|error| format!("JSON 结构不符合要求：{error}"))?;
+
+        Ok(ParsedKeywordFilters {
+            keywords: normalize_keywords(parsed.keywords),
+            exclude_keywords: normalize_keywords(parsed.exclude_keywords),
+            company_keywords: normalize_keywords(parsed.company_keywords),
+            company_exclude_keywords: normalize_keywords(parsed.company_exclude_keywords),
+        })
+    }
+
+    fn validate(&self, filters: &Self::Output) -> Result<(), String> {
+        let fields = [
+            ("岗位关键词", &filters.keywords),
+            ("排除岗位关键词", &filters.exclude_keywords),
+            ("公司关键词", &filters.company_keywords),
+            ("排除公司关键词", &filters.company_exclude_keywords),
+        ];
+
+        if fields.iter().all(|(_, values)| values.is_empty()) {
+            return Err("没有提取到任何关键词".to_string());
+        }
+        for (name, values) in fields {
+            if values.len() > MAX_GENERATED_KEYWORDS_PER_FIELD {
+                return Err(format!(
+                    "{name}提取到 {} 个，超过上限 {MAX_GENERATED_KEYWORDS_PER_FIELD} 个",
+                    values.len()
+                ));
+            }
+        }
+        Ok(())
+    }
+}
 
 impl AgentTask for JobFilterRulesTask<'_> {
     type Output = Vec<RegexRule>;
@@ -469,6 +617,17 @@ impl AgentTask for JobFilterRulesTask<'_> {
         }
         Ok(())
     }
+}
+
+fn normalize_keywords(values: Vec<String>) -> Vec<String> {
+    let mut keywords: Vec<String> = values
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect();
+    keywords.sort_by_key(|value| value.to_lowercase());
+    keywords.dedup_by(|a, b| a.to_lowercase() == b.to_lowercase());
+    keywords
 }
 
 fn build_job_filter_rules_prompt(requirement: &str) -> String {

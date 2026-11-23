@@ -79,6 +79,7 @@ pub fn run() {
             command::analysis::analysis_create,
             command::analysis::analysis_delete,
             command::llm::generate_job_filter_rules,
+            command::llm::parse_job_keyword_filters,
             command::llm::predict_resume_questions,
             command::llm::optimize_resume_with_answer,
             command::llm_provider::get_llm_credential_status,
