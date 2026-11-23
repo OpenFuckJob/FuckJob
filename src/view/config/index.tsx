@@ -135,6 +135,13 @@ const { Title, Text } = Typography;
  * 两个平级开关会让人以为「都打开」是某种冲突配置，实际它是最常用的那一档。
  */
 type ReplyStrategy = "off" | "template" | "llm" | "template_first";
+type ParsedKeywordFilters = Pick<
+  JobFilterConfig,
+  | "keywords"
+  | "exclude_keywords"
+  | "company_keywords"
+  | "company_exclude_keywords"
+>;
 
 type ReplyStrategyFlags = Pick<
   ReplayConfig,
@@ -547,6 +554,8 @@ export function ConfigPage(props: ConfigPageProps) {
     useState<BrowserEnvStatus | null>(null);
   const [ruleRequirement, setRuleRequirement] = useState("");
   const [generatingRules, setGeneratingRules] = useState(false);
+  const [keywordRequirement, setKeywordRequirement] = useState("");
+  const [parsingKeywords, setParsingKeywords] = useState(false);
   const [profileModalMode, setProfileModalMode] = useState<
     "create" | "edit" | null
   >(null);
@@ -688,6 +697,40 @@ export function ConfigPage(props: ConfigPageProps) {
       );
     } finally {
       setGeneratingRules(false);
+    }
+  };
+
+  const parseJobKeywordFilters = async () => {
+    const requirement = keywordRequirement.trim();
+    if (!requirement) {
+      showNotice("warning", "请先描述关键词需求", "输入需求后再提取筛选关键词。");
+      return;
+    }
+    if (!llmActive) {
+      props.onOpenLlmConfig();
+      return;
+    }
+
+    setParsingKeywords(true);
+    try {
+      const result = await invoke<CommandResult<ParsedKeywordFilters>>(
+        "parse_job_keyword_filters",
+        { requirement },
+      );
+      if (!result.success || !result.data) {
+        throw new Error(commandErrorMessage(result.error, "提取筛选关键词失败"));
+      }
+      props.updateJobFilter(result.data);
+      setKeywordRequirement("");
+      showNotice("success", "关键词已提取", "四个筛选框已更新，请检查后保存。");
+    } catch (error) {
+      showNotice(
+        "error",
+        "提取筛选关键词失败",
+        error instanceof Error ? error.message : "提取筛选关键词失败",
+      );
+    } finally {
+      setParsingKeywords(false);
     }
   };
 
@@ -963,6 +1006,28 @@ export function ConfigPage(props: ConfigPageProps) {
                       props.updateJobFilter({ query: e.target.value || null })
                     }
                   />
+                </Form.Item>
+              </Col>
+              <Col xs={24}>
+                <Form.Item label="AI 提取多个筛选关键词">
+                  <Space.Compact block>
+                    <Input
+                      value={keywordRequirement}
+                      placeholder="例如：岗位要 Java、Golang、数据分析，公司排除外包和保险公司"
+                      onChange={(event) =>
+                        setKeywordRequirement(event.target.value)
+                      }
+                    />
+                    <Button
+                      type="primary"
+                      icon={<RobotOutlined />}
+                      loading={parsingKeywords}
+                      disabled={!llmActive}
+                      onClick={() => void parseJobKeywordFilters()}
+                    >
+                      提取
+                    </Button>
+                  </Space.Compact>
                 </Form.Item>
               </Col>
               <Col xs={24} md={12}>

@@ -23,6 +23,7 @@ pub const JSON_ONLY: &str =
 
 pub const JOB_MATCH: &str = include_str!("job_match.md");
 pub const JOB_FILTER_RULES: &str = include_str!("job_filter_rules.md");
+pub const JOB_KEYWORD_FILTER: &str = include_str!("job_keyword_filter.md");
 pub const RESUME_QUESTIONS: &str = include_str!("resume_questions.md");
 pub const RESUME_OPTIMIZE: &str = include_str!("resume_optimize.md");
 pub const REPLY_DECISION_FRAME: &str = include_str!("reply_decision_frame.md");
@@ -83,6 +84,7 @@ mod tests {
         for template in [
             JOB_MATCH,
             JOB_FILTER_RULES,
+            JOB_KEYWORD_FILTER,
             RESUME_QUESTIONS,
             RESUME_OPTIMIZE,
             REPLY_DECISION_FRAME,
@@ -104,6 +106,7 @@ mod tests {
         for (name, template) in [
             ("job_match", JOB_MATCH),
             ("job_filter_rules", JOB_FILTER_RULES),
+            ("job_keyword_filter", JOB_KEYWORD_FILTER),
             ("resume_questions", RESUME_QUESTIONS),
             ("resume_optimize", RESUME_OPTIMIZE),
             ("reply_decision_frame", REPLY_DECISION_FRAME),
