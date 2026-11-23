@@ -43,7 +43,7 @@ pub fn render(template: &str, params: &Value) -> Result<String, AppError> {
     let values = params
         .as_object()
         .ok_or_else(|| AppError::validation("提示词参数必须是对象"))?;
-    let regex = regex::Regex::new(r"\{\{\s*([^{}]+?)\s*\}\}").expect("valid regex");
+    let regex = regex::Regex::new(r"\{\{\s*([^{}\s]+?)\s*\}\}").expect("valid regex");
     let mut output = String::with_capacity(template.len());
     let mut cursor = 0;
     for captures in regex.captures_iter(template) {
@@ -64,7 +64,7 @@ pub fn render(template: &str, params: &Value) -> Result<String, AppError> {
         cursor = whole.end();
     }
     output.push_str(&template[cursor..]);
-    if output.contains("{{") || output.contains("}}") {
+    if output.contains("{{{{") || output.contains("}}}}") {
         return Err(AppError::validation("提示词包含无效占位符"));
     }
     Ok(output)
@@ -89,6 +89,12 @@ mod tests {
             let error = render(template, &json!({"job_content":"JD"})).unwrap_err();
             assert_eq!(error.code, crate::error::AppErrorCode::Validation);
         }
+    }
+
+    #[test]
+    fn empty_placeholder_is_a_literal_not_a_missing_variable() {
+        assert_eq!(render("不要使用 {{ }}", &json!({})).unwrap(), "不要使用 {{ }}");
+        assert!(render("{{   }}", &json!({})).is_ok());
     }
 
     /// 这是猎聘自动回复全平台失效的根因：模板引用了 job_description，
