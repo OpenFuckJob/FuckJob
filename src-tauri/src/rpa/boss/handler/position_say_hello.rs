@@ -56,23 +56,33 @@ pub async fn position_say_hello_on_page(
     let mut processed_job_ids: HashSet<String> = job_detail_dao::list()
         .unwrap_or_default()
         .into_iter()
-        .map(|j| j.id)
+        .map(|job| job.id)
+        .chain(crate::dao::processed_job_dao::ids().unwrap_or_default())
         .collect();
     logger::info(format!("本地已存储 {} 条岗位记录", processed_job_ids.len()))?;
 
     // 在 page.get 之前开始监听，捕获首次加载触发的 joblist 请求
     let joblist_listener = page.listen_url("wapi/zpgeek/search/joblist.json")?;
 
-    page.get(&search_url)?;
-    if let Err(error) = page.wait(".rec-job-list", JOB_LIST_WAIT_TIMEOUT) {
-        // 直接把 CDP 超时抛给用户没有任何可操作性，这里补齐当前页面上下文再给中文提示
-        let current_url = page.url().unwrap_or_else(|_| "未知 URL".to_string());
-        let page_text = page_text_snippet(page);
-        return Err(anyhow::anyhow!(job_list_wait_error(
-            &current_url,
-            &page_text,
-            &error.to_string(),
-        )));
+    for attempt in 1..=JOB_LIST_LOAD_ATTEMPTS {
+        if page.wait(".rec-job-list", JOB_LIST_WAIT_TIMEOUT).is_ok() {
+            break;
+        }
+        if attempt == JOB_LIST_LOAD_ATTEMPTS {
+            // 直接把 CDP 超时抛给用户没有任何可操作性，这里补齐当前页面上下文再给中文提示
+            let current_url = page.url().unwrap_or_else(|_| "未知 URL".to_string());
+            let page_text = page_text_snippet(page);
+            return Err(anyhow::anyhow!(job_list_wait_error(
+                &current_url,
+                &page_text,
+                "连续重载后仍未加载岗位列表",
+            )));
+        }
+        logger::warning(format!(
+            "岗位列表加载超时，正在重载（第 {attempt}/{} 次）",
+            JOB_LIST_LOAD_ATTEMPTS
+        ))?;
+        page.get(&search_url)?;
     }
 
     // 消费首次 page.get 触发的 joblist 响应，初始化 seen_job_ids
@@ -163,6 +173,7 @@ pub async fn position_say_hello_on_page(
             ) {
                 stats.skipped_inactive += 1;
                 logger::info(format!("岗位招聘者活跃度不满足要求，跳过：{reason}"))?;
+                reject_job(&greet_job.platform_job_id);
                 continue;
             }
 
@@ -170,6 +181,7 @@ pub async fn position_say_hello_on_page(
             if !filter_decision.matched {
                 stats.skipped_rule += 1;
                 logger::info(format!("岗位不匹配，跳过：{}", filter_decision.reason))?;
+                reject_job(&greet_job.platform_job_id);
                 continue;
             }
             if app_runtime_config.job_filter_config.enable_semantic_filter {
@@ -184,6 +196,7 @@ pub async fn position_say_hello_on_page(
                             "AI 岗位复核未通过，跳过（{}分）：{}",
                             decision.score, decision.reason
                         ))?;
+                        reject_job(&greet_job.platform_job_id);
                         continue;
                     }
                     Err(error) => {
@@ -319,6 +332,10 @@ pub async fn position_say_hello_on_page(
 
 /// 岗位列表首屏等待超时时间。BOSS 首屏偶尔要十几秒才渲染完，5 秒过短会误判为失败。
 const JOB_LIST_WAIT_TIMEOUT: Duration = Duration::from_secs(20);
+/// 搜索页偶发不渲染推荐列表；重载重试可避免周期任务因一次超时终止。
+const JOB_LIST_LOAD_ATTEMPTS: u32 = 3;
+/// 点击岗位后等待详情面板刷新为新内容的上限。
+const JOB_DETAIL_REFRESH_TIMEOUT: Duration = Duration::from_secs(3);
 /// 连续「无新岗位 / 接口超时」多少次后结束本轮
 const MAX_NO_NEW_RETRY: u32 = 3;
 /// 每跳过多少条已处理岗位打一次进度日志
@@ -614,13 +631,11 @@ fn read_job_card(
         return Ok(CardOutcome::Skipped(SkipReason::Humanized));
     }
 
+    let previous_detail_text = read_detail_text(page).unwrap_or_default();
     human_input::click(page, &job_card_ele)?;
     sleep_random_ms(800, 1200);
 
-    let job_detail_text = page
-        .ele(".job-detail-body")?
-        .ok_or_else(|| anyhow::anyhow!("未加载岗位详情"))?
-        .text_content()?;
+    let job_detail_text = wait_for_new_detail_text(page, &previous_detail_text)?;
     let job_name = job_card_ele
         .element(".job-name")?
         .ok_or_else(|| anyhow::anyhow!("未找到岗位标题"))?
@@ -655,6 +670,34 @@ fn read_job_card(
         recruiter_active_time,
         detail_url: job_detail_url,
     })))
+}
+
+fn read_detail_text(page: &Page) -> Result<String, anyhow::Error> {
+    if let Some(element) = page.ele(".job-detail-body")? {
+        return Ok(element.text_content()?);
+    }
+    Ok(String::new())
+}
+
+fn wait_for_new_detail_text(
+    page: &Page,
+    previous_detail_text: &str,
+) -> Result<String, anyhow::Error> {
+    let deadline = Instant::now() + JOB_DETAIL_REFRESH_TIMEOUT;
+    while Instant::now() < deadline {
+        let detail_text = read_detail_text(page)?;
+        if !detail_text.trim().is_empty() && detail_text != previous_detail_text {
+            return Ok(detail_text);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    anyhow::bail!("岗位详情刷新超时，为避免使用上一条岗位的 JD 已跳过")
+}
+
+fn reject_job(job_id: &str) {
+    if let Err(error) = crate::dao::processed_job_dao::record(job_id) {
+        let _ = logger::warning(format!("持久化已拒绝岗位失败，可能重复复核：{error}"));
+    }
 }
 
 fn is_headhunter_job_card(job_card_ele: &Element) -> Result<bool, anyhow::Error> {

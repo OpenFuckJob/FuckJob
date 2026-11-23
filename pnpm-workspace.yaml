@@ -1,0 +1,4 @@
+allowBuilds:
+packages:
+  - .
+onlyBuiltDependencies: esbuild

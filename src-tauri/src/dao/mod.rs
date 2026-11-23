@@ -4,6 +4,7 @@ pub mod chat_message_dao;
 pub mod job_detail_dao;
 pub mod manual_review_dao;
 pub mod model;
+pub mod processed_job_dao;
 pub mod profile_snapshot_dao;
 pub mod store;
 
@@ -24,5 +25,6 @@ pub fn init(data_dir: &Path) -> Result<()> {
     profile_snapshot_dao::init(data_dir)?;
     auto_reply_log_dao::init(data_dir)?;
     manual_review_dao::init(data_dir)?;
+    processed_job_dao::init(data_dir)?;
     Ok(())
 }
