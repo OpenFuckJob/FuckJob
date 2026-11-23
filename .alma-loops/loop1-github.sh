@@ -11,7 +11,7 @@ echo "=== Loop1 启动 $(date '+%F %T') | repo: $(pwd) ===" | tee -a "$LOG"
 
 for i in $(seq 1 "$MAX_ITERS"); do
   echo "--- 迭代 $i/$MAX_ITERS $(date '+%T') ---" | tee -a "$LOG"
-  codex exec \
+  timeout 1800 codex exec \
     --skip-git-repo-check \
     -s workspace-write \
     -c model_provider="magpie" \
