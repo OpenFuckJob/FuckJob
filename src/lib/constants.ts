@@ -51,13 +51,18 @@ export const cityOptions: Option[] = site.flatMap((prov) => {
   return result;
 });
 
-export const cityTreeOptions: TreeOption[] = site.map((prov) => ({
-  value: prov.code,
-  label: prov.name,
-  children: prov.subLevelModelList?.map((city) => ({
-    value: city.code,
-    label: city.name,
-    // Note: Some cities might have further sub-levels in a full site.json,
-    // but based on current read, we're handling 2 levels.
+export const nationwideCityCode = 100010000;
+
+export const cityTreeOptions: TreeOption[] = [
+  { value: nationwideCityCode, label: "全国" },
+  ...site.map((prov) => ({
+    value: prov.code,
+    label: prov.name,
+    children: prov.subLevelModelList?.map((city) => ({
+      value: city.code,
+      label: city.name,
+      // Note: Some cities might have further sub-levels in a full site.json,
+      // but based on current read, we're handling 2 levels.
+    })),
   })),
-}));
+];
