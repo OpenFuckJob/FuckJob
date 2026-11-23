@@ -312,6 +312,17 @@ mod tests {
     }
 
     #[test]
+    fn builds_url_with_nationwide_city() {
+        let params = JobSearchParams {
+            city: Some(site::NATIONWIDE_CITY_CODE),
+            ..Default::default()
+        };
+
+        let url = build_job_search_url(&params);
+        assert!(url.contains("city=100010000"));
+    }
+
+    #[test]
     fn resolves_invalid_names() {
         let params = JobSearchNameParams {
             city: Some("不存在的城市".to_string()),

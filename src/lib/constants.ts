@@ -61,3 +61,5 @@ export const cityTreeOptions: TreeOption[] = site.map((prov) => ({
     // but based on current read, we're handling 2 levels.
   })),
 }));
+
+cityTreeOptions.unshift({ value: 100010000, label: "全国" });

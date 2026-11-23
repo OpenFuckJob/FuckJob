@@ -1183,7 +1183,7 @@ fn build_job_search_url(job_filter_config: &JobFilterConfig) -> String {
 
     let mut params: Vec<String> = Vec::new();
 
-    // city
+    // 全国检索必须保留 BOSS 全国码，空参数会退化为推荐结果。
     if let Some(city) = job_filter_config.city {
         params.push(format!("city={}", city));
     }

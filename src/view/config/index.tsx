@@ -872,8 +872,10 @@ export function ConfigPage(props: ConfigPageProps) {
     const config = { ...props.config };
     const jobFilter = { ...config.job_filter_config };
 
-    // 还原城市路径 [provinceCode, cityCode]
-    if (jobFilter.city) {
+    // Cascader 需要 [provinceCode, cityCode] 路径；全国是单层虚拟节点。
+    if (jobFilter.city === 100010000) {
+      (jobFilter as any).city = [100010000];
+    } else if (jobFilter.city) {
       for (const prov of cityTreeOptions) {
         const city = prov.children?.find((c) => c.value === jobFilter.city);
         if (city) {
