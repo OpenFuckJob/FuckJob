@@ -48,3 +48,7 @@ designs/
 .omc\project-memory.json
 .omc\sessions\92219f8a-08f3-41a6-a593-df6c3467bc40.json
 .pi
+
+# agent loop 运行时输出（含本地路径，不入库）
+.alma-loops/*.out
+.alma-loops/*.log
