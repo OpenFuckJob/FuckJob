@@ -44,6 +44,7 @@ LESSONS.md
 .super-dev
 .gitignore
 .playwright-mcp
+.alma-loops/
 # Claude Code 的 agent 工作区，由工具自行管理
 .claude/worktrees/
 .omc\project-memory.json
