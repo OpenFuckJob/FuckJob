@@ -40,6 +40,7 @@ designs/
 
 
 *.md
+LESSONS.md
 .super-dev
 .gitignore
 .playwright-mcp
