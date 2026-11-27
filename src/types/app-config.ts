@@ -8,7 +8,6 @@ export type ConfigGroup =
   | "analysis"
   | "runtime"
   | "browser"
-  | "playground"
   | "resume"
   | "data"
   | "about";

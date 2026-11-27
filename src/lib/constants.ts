@@ -44,3 +44,25 @@ export const cityTreeOptions: TreeOption[] = [
     })),
   })),
 ];
+
+export function findCityPath(code: number | null | undefined): number[] | undefined {
+  if (!code) return undefined;
+  if (code === nationwideCityCode) return [nationwideCityCode];
+  for (const prov of cityTreeOptions) {
+    if (prov.value === code) return [prov.value];
+    const city = prov.children?.find((item) => item.value === code);
+    if (city) return [prov.value, city.value];
+  }
+  return undefined;
+}
+
+export function getCityLabel(code: number | null | undefined): string {
+  if (!code) return "全国";
+  if (code === nationwideCityCode) return "全国";
+  for (const prov of cityTreeOptions) {
+    if (prov.value === code) return prov.label;
+    const city = prov.children?.find((item) => item.value === code);
+    if (city) return city.label;
+  }
+  return "已选城市";
+}

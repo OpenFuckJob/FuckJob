@@ -27,7 +27,6 @@ import {
   LinkOutlined,
   MessageOutlined,
   RightOutlined,
-  RobotOutlined,
   SearchOutlined,
   StopOutlined,
   ThunderboltOutlined,
@@ -238,7 +237,6 @@ function JobKanbanCard({
   onChat,
   onDelete,
   onChangeStage,
-  onStartInterview,
 }: {
   job: JobListItem;
   analysis?: InterviewJobAnalysis;
@@ -249,7 +247,6 @@ function JobKanbanCard({
   onChat: (job: JobDetail) => void;
   onDelete: (id: string) => void;
   onChangeStage: (job: JobListItem, stage: JobPipelineStage) => void;
-  onStartInterview?: (job: JobDetail) => void;
 }) {
   const platform = getJobPlatform(job);
   const stage = resolveEffectiveStage(job);
@@ -354,15 +351,6 @@ function JobKanbanCard({
             title="沟通记录"
             onClick={() => onChat(job)}
           />
-          {onStartInterview && (
-            <Button
-              size="small"
-              type="text"
-              icon={<RobotOutlined />}
-              title="用这个岗位做模拟面试"
-              onClick={() => onStartInterview(job)}
-            />
-          )}
           <Popconfirm
             title="确认删除"
             description={`确定要删除「${job.title}」吗？`}
@@ -388,7 +376,6 @@ function KanbanView({
   onChat,
   onDelete,
   onChangeStage,
-  onStartInterview,
 }: {
   jobs: JobListItem[];
   analyses: Record<string, InterviewJobAnalysis>;
@@ -396,7 +383,6 @@ function KanbanView({
   onChat: (job: JobDetail) => void;
   onDelete: (id: string) => void;
   onChangeStage: (job: JobListItem, stage: JobPipelineStage) => void;
-  onStartInterview?: (job: JobDetail) => void;
 }) {
   const lanes = useMemo(() => groupByLane(jobs), [jobs]);
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -497,7 +483,6 @@ function KanbanView({
                     onChat={onChat}
                     onDelete={onDelete}
                     onChangeStage={onChangeStage}
-                    onStartInterview={onStartInterview}
                   />
                 ))
               )}
@@ -511,7 +496,16 @@ function KanbanView({
 
 /* ────────── Page ────────── */
 
-const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, onFocusHandled, highMatchScore = DEFAULT_HIGH_MATCH_SCORE, onStartInterview, onBlacklistCompany }: {
+type FocusFilter = "all" | "actionable" | "waiting";
+
+const ACTIONABLE_STAGES: ReadonlySet<JobPipelineStage> = new Set([
+  "replied",
+  "interview_scheduled",
+  "interviewing",
+  "offer",
+]);
+
+const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, onFocusHandled, highMatchScore = DEFAULT_HIGH_MATCH_SCORE, onBlacklistCompany }: {
   aiConfigured: boolean;
   llmConfigured: boolean;
   onConfigureAi: () => void;
@@ -520,8 +514,6 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
   onFocusHandled?: () => void;
   /** 高匹配的判定分数线，与求职方案的岗位分析配置一致 */
   highMatchScore?: number;
-  /** 带着岗位信息跳到模拟面试 */
-  onStartInterview?: (job: JobDetail) => void;
   /** 一键将公司名追加到当前求职方案的排除公司列表 */
   onBlacklistCompany?: (companyName: string) => void;
 }) => {
@@ -530,6 +522,7 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
   const [loading, setLoading] = useState(true);
   const [keyword, setKeyword] = useState("");
   const [analyses, setAnalyses] = useState<Record<string, InterviewJobAnalysis>>({});
+  const [focusFilter, setFocusFilter] = useState<FocusFilter>("all");
   const [platformFilter, setPlatformFilter] = useState<JobPlatform | "all">("all");
   const [stageFilter, setStageFilter] = useState<JobPipelineStage | "all">("all");
   const [communicationStatusFilter, setCommunicationStatusFilter] =
@@ -537,7 +530,7 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
   const [analysisFilter, setAnalysisFilter] = useState<AnalysisFilter>("all");
   const [currentJob, setCurrentJob] = useState<JobDetail | null>(null);
   const [chatJob, setChatJob] = useState<JobDetail | null>(null);
-  const [viewMode, setViewMode] = useState<"table" | "kanban">("table");
+  const [viewMode, setViewMode] = useState<"table" | "kanban">("kanban");
   const [selectedJobIds, setSelectedJobIds] = useState<React.Key[]>([]);
   const [batchAnalyzing, setBatchAnalyzing] = useState(false);
   const [batchDeleting, setBatchDeleting] = useState(false);
@@ -776,17 +769,40 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
         return true;
     }
   };
+  const actionableCount = useMemo(
+    () => jobs.filter((job) => ACTIONABLE_STAGES.has(resolveEffectiveStage(job))).length,
+    [jobs],
+  );
+  const waitingCount = useMemo(
+    () =>
+      jobs.filter((job) => {
+        const s = resolveEffectiveStage(job);
+        return s === "pending" || s === "applied";
+      }).length,
+    [jobs],
+  );
+
   const filteredJobs = jobs.filter(
-    (job) =>
-      (!normalizedKeyword ||
-        job.title.toLowerCase().includes(normalizedKeyword) ||
-        job.company_name.toLowerCase().includes(normalizedKeyword) ||
-        (job.notes ?? "").toLowerCase().includes(normalizedKeyword)) &&
-      (platformFilter === "all" || getJobPlatform(job) === platformFilter) &&
-      (stageFilter === "all" || resolveEffectiveStage(job) === stageFilter) &&
-      (communicationStatusFilter === "all" ||
-        job.communication_status === communicationStatusFilter) &&
-      matchesAnalysisFilter(job),
+    (job) => {
+      const effectiveStage = resolveEffectiveStage(job);
+      if (focusFilter === "actionable" && !ACTIONABLE_STAGES.has(effectiveStage)) {
+        return false;
+      }
+      if (focusFilter === "waiting" && effectiveStage !== "pending" && effectiveStage !== "applied") {
+        return false;
+      }
+      return (
+        (!normalizedKeyword ||
+          job.title.toLowerCase().includes(normalizedKeyword) ||
+          job.company_name.toLowerCase().includes(normalizedKeyword) ||
+          (job.notes ?? "").toLowerCase().includes(normalizedKeyword)) &&
+        (platformFilter === "all" || getJobPlatform(job) === platformFilter) &&
+        (stageFilter === "all" || effectiveStage === stageFilter) &&
+        (communicationStatusFilter === "all" ||
+          job.communication_status === communicationStatusFilter) &&
+        matchesAnalysisFilter(job)
+      );
+    },
   );
 
   /* ── table columns ── */
@@ -910,16 +926,6 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
             trigger={["click"]}
             menu={{
               items: [
-                ...(onStartInterview
-                  ? [
-                      {
-                        key: "interview",
-                        icon: <RobotOutlined />,
-                        label: "用此岗位做模拟面试",
-                        onClick: () => onStartInterview(record),
-                      },
-                    ]
-                  : []),
                 {
                   key: "source",
                   icon: <LinkOutlined />,
@@ -984,15 +990,25 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
       <div className="job-toolbar">
         <div className="job-toolbar-left">
           <Typography.Title level={5} style={{ margin: 0 }}>
-            岗位管理
+            沟通与进度
           </Typography.Title>
+          <Segmented<FocusFilter>
+            size="small"
+            value={focusFilter}
+            onChange={setFocusFilter}
+            options={[
+              { label: `全部 (${jobs.length})`, value: "all" },
+              { label: `待跟进 (${actionableCount})`, value: "actionable" },
+              { label: `已投待回 (${waitingCount})`, value: "waiting" },
+            ]}
+          />
           <Segmented
             size="small"
             value={viewMode}
             onChange={(val) => setViewMode(val as "table" | "kanban")}
             options={[
-              { label: "表格", value: "table" },
               { label: "看板", value: "kanban" },
+              { label: "表格", value: "table" },
             ]}
           />
           {viewMode === "table" && selectedJobIds.length > 0 && (
@@ -1121,7 +1137,6 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
           onChat={setChatJob}
           onDelete={(id) => void handleDelete(id)}
           onChangeStage={(job, nextStage) => void handleChangeStage(job, nextStage)}
-          onStartInterview={onStartInterview}
         />
       ) : (
         <div
