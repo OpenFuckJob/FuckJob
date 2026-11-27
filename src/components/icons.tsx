@@ -354,3 +354,20 @@ export function IconSystemTheme({ size = 16, className, ...rest }: IconProps) {
     </svg>
   );
 }
+
+export function IconRefreshSync({
+  size = 15,
+  spinning = false,
+  className,
+  ...rest
+}: IconProps & { spinning?: boolean }) {
+  const cls = [spinning ? "of-spin" : "", className ?? ""].filter(Boolean).join(" ") || undefined;
+  return (
+    <svg {...baseProps(size, cls)} {...rest}>
+      <path d="M20 11A8.1 8.1 0 0 0 6.2 6.2L4 8.4" />
+      <path d="M4 4.2V8.4H8.2" />
+      <path d="M4 13A8.1 8.1 0 0 0 17.8 17.8L20 15.6" />
+      <path d="M20 19.8V15.6H15.8" />
+    </svg>
+  );
+}

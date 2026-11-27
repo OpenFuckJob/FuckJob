@@ -7,6 +7,7 @@ pub mod model;
 pub mod processed_job_dao;
 pub mod profile_snapshot_dao;
 pub mod store;
+pub mod sync_state_dao;
 
 use anyhow::Result;
 use std::path::Path;
@@ -26,5 +27,6 @@ pub fn init(data_dir: &Path) -> Result<()> {
     auto_reply_log_dao::init(data_dir)?;
     manual_review_dao::init(data_dir)?;
     processed_job_dao::init(data_dir)?;
+    sync_state_dao::init(data_dir)?;
     Ok(())
 }

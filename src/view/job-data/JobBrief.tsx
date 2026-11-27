@@ -16,9 +16,9 @@ import type { JobDetail, JobPipelineStage, ParsedJobDescription } from "../../ty
 import type { InterviewJobAnalysis } from "../../types/analysis";
 
 const PIPELINE_STAGE_OPTIONS: Array<{ value: JobPipelineStage; label: string }> = [
-  { value: "pending", label: "待投递" },
-  { value: "applied", label: "已投递" },
-  { value: "replied", label: "已回复" },
+  { value: "pending", label: "已打招呼" },
+  { value: "applied", label: "已发简历" },
+  { value: "replied", label: "HR 已回复" },
   { value: "interview_scheduled", label: "已约面" },
   { value: "interviewing", label: "面试中" },
   { value: "offer", label: "已拿 Offer" },

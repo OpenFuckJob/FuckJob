@@ -32,13 +32,43 @@ export interface JobDetail {
   interview_at?: string | null;
 }
 
-export type CommunicationStatus = "rejected" | "replied" | "no_reply";
+export type CommunicationStatus =
+  | "rejected"
+  | "interview_invited"
+  | "replied"
+  | "no_reply";
 
 export interface JobListItem extends JobDetail {
   communication_status: CommunicationStatus;
+  /** 后端双轨状态机计算的有效阶段（平台事实 + 手工覆盖正向合并） */
+  effective_stage?: JobPipelineStage;
+  /** 零点击列表同步抓到的未读条数（不消红点） */
+  unread_count?: number;
+  /** 平台侧原始状态提示（例如：收到约面 / 不合适 / 2 条未读） */
+  platform_status_tag?: string | null;
   latest_message?: string | null;
   latest_message_at?: number | null;
   latest_message_received?: boolean | null;
+}
+
+export interface PlatformSyncMeta {
+  platform: string;
+  last_synced_at?: string | null;
+  watermark_ms: number;
+  last_scanned: number;
+  last_updated: number;
+  last_unread_total: number;
+  last_error?: string | null;
+}
+
+export interface SyncStatusSummary {
+  platforms: string[];
+  scanned: number;
+  updated: number;
+  unread_total: number;
+  interview_detected: number;
+  warnings: string[];
+  synced_at: string;
 }
 
 /* ── 岗位描述的结构化视图 ──

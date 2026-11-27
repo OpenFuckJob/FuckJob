@@ -128,6 +128,9 @@ pub async fn reply_unread_on_page(
             _ => None,
         };
         let job_id = boss_data.as_deref().and_then(parse_encrypt_job_id);
+        if let Some(id) = job_id.as_deref() {
+            crate::dao::sync_state_dao::clear_unread_for_job(id);
+        }
 
         let packet = match history_listener.wait(Duration::from_secs(10)) {
             Ok(Some(p)) => p,

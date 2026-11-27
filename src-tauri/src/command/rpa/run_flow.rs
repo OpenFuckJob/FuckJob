@@ -213,6 +213,102 @@ pub fn stop_job_task(task_id: Option<String>) -> CommandResult<()> {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SyncStatusSummary {
+    pub platforms: Vec<String>,
+    pub scanned: usize,
+    pub updated: usize,
+    pub unread_total: u32,
+    pub interview_detected: usize,
+    pub warnings: Vec<String>,
+    pub synced_at: String,
+}
+
+/// 一键零点击状态同步（支持单平台或同时同步 BOSS + 猎聘，绝不点击会话卡片、保留未读红点）。
+#[tauri::command]
+pub async fn sync_platform_status(
+    platform: Option<PlatformKind>,
+) -> CommandResult<SyncStatusSummary> {
+    let targets = match platform {
+        Some(PlatformKind::Job51) => {
+            return CommandResult::err("前程无忧暂不支持聊天状态同步");
+        }
+        Some(target) => vec![target],
+        None => vec![PlatformKind::Boss, PlatformKind::Liepin],
+    };
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build();
+        let outcome: CommandResult<SyncStatusSummary> = match rt {
+            Ok(runtime) => runtime.block_on(async move {
+                let mut summary = SyncStatusSummary {
+                    platforms: Vec::new(),
+                    scanned: 0,
+                    updated: 0,
+                    unread_total: 0,
+                    interview_detected: 0,
+                    warnings: Vec::new(),
+                    synced_at: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                };
+
+                for target in targets {
+                    let _ = logger::set_platform(Some(target));
+                    match target {
+                        PlatformKind::Boss => match crate::rpa::boss::handler::sync_chat_history().await {
+                            Ok(res) => {
+                                summary.platforms.push("boss".to_string());
+                                summary.scanned += res.scanned;
+                                summary.updated += res.jobs_updated + res.jobs_inserted;
+                                summary.unread_total = summary.unread_total.saturating_add(res.unread_total);
+                                summary.interview_detected += res.interview_detected;
+                            }
+                            Err(err) => {
+                                let mut meta = crate::dao::sync_state_dao::get_platform_meta("boss");
+                                meta.last_error = Some(err.to_string());
+                                let _ = crate::dao::sync_state_dao::save_platform_meta(meta);
+                                summary.warnings.push(format!("BOSS 同步未完成：{err}"));
+                            }
+                        },
+                        PlatformKind::Liepin => match crate::rpa::liepin::handler::sync_chat_status().await {
+                            Ok(res) => {
+                                summary.platforms.push("liepin".to_string());
+                                summary.scanned += res.scanned;
+                                summary.updated += res.jobs_updated;
+                                summary.unread_total = summary.unread_total.saturating_add(res.unread_total);
+                                summary.interview_detected += res.interview_detected;
+                            }
+                            Err(err) => {
+                                let mut meta = crate::dao::sync_state_dao::get_platform_meta("liepin");
+                                meta.last_error = Some(err.to_string());
+                                let _ = crate::dao::sync_state_dao::save_platform_meta(meta);
+                                summary.warnings.push(format!("猎聘同步未完成：{err}"));
+                            }
+                        },
+                        PlatformKind::Job51 => {}
+                    }
+                    let _ = logger::set_platform(None);
+                }
+
+                if summary.platforms.is_empty() && !summary.warnings.is_empty() {
+                    CommandResult::err(summary.warnings.join("；"))
+                } else {
+                    CommandResult::ok(summary)
+                }
+            }),
+            Err(error) => CommandResult::err(format!("创建同步运行时失败：{error}")),
+        };
+        let _ = tx.send(outcome);
+    });
+
+    match rx.await {
+        Ok(result) => result,
+        Err(_) => CommandResult::err("状态同步线程异常退出"),
+    }
+}
+
 #[tauri::command]
 pub fn read_log_file(lines: Option<usize>) -> CommandResult<String> {
     match logger::read_tail_lines(lines.unwrap_or(500)) {

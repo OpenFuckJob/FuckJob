@@ -42,6 +42,8 @@ import type {
   JobListItem,
   JobPipelineStage,
   JobPlatform,
+  PlatformSyncMeta,
+  SyncStatusSummary,
 } from "../../types/job-detail";
 import type { InterviewJobAnalysis } from "../../types/analysis";
 import { DEFAULT_HIGH_MATCH_SCORE } from "../../types/app-config";
@@ -49,7 +51,7 @@ import AnalysisReport from "./AnalysisReport";
 import ChatThreadModal from "./ChatThread";
 import JobBrief from "./JobBrief";
 import { useJobDataRefresh } from "../../hooks/useJobDataRefresh";
-import { PlatformBadgeIcon } from "../../components/icons";
+import { IconRefreshSync, PlatformBadgeIcon } from "../../components/icons";
 import "./style.css";
 
 /** 与 Rust 侧 BatchAnalysisResult 对应 */
@@ -92,6 +94,7 @@ const COMMUNICATION_STATUS_META: Record<
   { label: string; color: string }
 > = {
   rejected: { label: "明确拒绝", color: "red" },
+  interview_invited: { label: "收到约面", color: "purple" },
   replied: { label: "已回复", color: "green" },
   no_reply: { label: "未回复", color: "orange" },
 };
@@ -131,9 +134,9 @@ const renderLatestMessage = (job: JobListItem) => {
 /* ────────── CRM stage & Kanban lane config ────────── */
 
 const STAGE_META: Record<JobPipelineStage, { label: string; color: string }> = {
-  pending: { label: "待投递", color: "default" },
-  applied: { label: "已投递", color: "blue" },
-  replied: { label: "已回复", color: "green" },
+  pending: { label: "已打招呼", color: "default" },
+  applied: { label: "已发简历", color: "blue" },
+  replied: { label: "HR 已回复", color: "green" },
   interview_scheduled: { label: "已约面", color: "cyan" },
   interviewing: { label: "面试中", color: "purple" },
   offer: { label: "已拿 Offer", color: "gold" },
@@ -146,9 +149,17 @@ const STAGE_OPTIONS: Array<{ value: JobPipelineStage; label: string }> = (
 ).map(([value, meta]) => ({ value, label: meta.label }));
 
 export function resolveEffectiveStage(job: JobListItem): JobPipelineStage {
+  if (job.effective_stage) return job.effective_stage;
   if (job.pipeline_stage) return job.pipeline_stage;
   if (job.communication_status === "rejected") return "rejected";
-  if (job.communication_status === "replied" || job.is_reply) return "replied";
+  if (job.communication_status === "interview_invited") return "interview_scheduled";
+  if (
+    job.communication_status === "replied" ||
+    job.is_reply ||
+    (job.unread_count ?? 0) > 0
+  ) {
+    return "replied";
+  }
   if (job.is_send_resume) return "applied";
   return "pending";
 }
@@ -163,29 +174,29 @@ interface KanbanLane {
   collapsible?: boolean;
 }
 
-/** 6 列交互式求职 CRM 泳道，支持拖拽卡片跨列流转与折叠归档列 */
+/** 6 列交互式求职 CRM 泳道，支持拖拽卡片跨列流转、零点击未读角标与折叠归档列 */
 const KANBAN_LANES: KanbanLane[] = [
   {
     key: "pending",
-    label: "待投递",
+    label: "已打招呼",
     color: "#94a3b8",
-    hint: "已建联但还没投出简历",
+    hint: "已建联打招呼，尚未发送附件简历",
     stages: ["pending"],
     primaryStage: "pending",
   },
   {
     key: "applied",
-    label: "已投递",
-    color: "#1677ff",
-    hint: "已投简历，等待 HR 回应",
+    label: "已发简历",
+    color: "#4f46e5",
+    hint: "已投递附件简历，等待 HR 回应",
     stages: ["applied"],
     primaryStage: "applied",
   },
   {
     key: "replied",
-    label: "已回复",
+    label: "HR 已回复",
     color: "#10b981",
-    hint: "对方已回应，优先推进约面",
+    hint: "对方已回应或有未读消息，优先推进约面",
     stages: ["replied"],
     primaryStage: "replied",
   },
@@ -193,7 +204,7 @@ const KANBAN_LANES: KanbanLane[] = [
     key: "interview",
     label: "约面与面试",
     color: "#8b5cf6",
-    hint: "已约面或面试流程进行中",
+    hint: "自动识别约面邀约或手动推进至此",
     stages: ["interview_scheduled", "interviewing"],
     primaryStage: "interview_scheduled",
   },
@@ -281,6 +292,11 @@ function JobKanbanCard({
     >
       <div className="job-card-top">
         <div className="job-card-title">{job.title}</div>
+        {(job.unread_count ?? 0) > 0 && (
+          <span className="job-card-unread" title="零点击同步检测到未读消息（手机端仍保留未读红点）">
+            未读 {job.unread_count}
+          </span>
+        )}
         <MatchScoreTag analysis={analysis} />
       </div>
 
@@ -292,6 +308,9 @@ function JobKanbanCard({
       <div className="job-card-tags">
         {job.salary && <span className="job-card-chip salary">{job.salary}</span>}
         {job.location && <span className="job-card-chip">{job.location}</span>}
+        {job.communication_status === "interview_invited" && (
+          <span className="job-card-invite">收到约面</span>
+        )}
         {job.interview_at && (
           <span className="job-card-chip" title={`面试时间：${job.interview_at}`}>
             <CalendarOutlined /> {job.interview_at}
@@ -303,6 +322,16 @@ function JobKanbanCard({
           </span>
         )}
       </div>
+
+      {job.latest_message?.trim() && (
+        <div
+          className={`job-card-preview${job.latest_message_received ? " is-received" : ""}`}
+          title={job.latest_message}
+        >
+          {job.latest_message_received ? "HR：" : "我："}
+          {job.latest_message}
+        </div>
+      )}
 
       <div className="job-card-foot">
         <div
@@ -525,9 +554,56 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
   const [batchAnalyzing, setBatchAnalyzing] = useState(false);
   const [batchDeleting, setBatchDeleting] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMetaList, setSyncMetaList] = useState<PlatformSyncMeta[]>([]);
   const [messageApi, contextHolder] = message.useMessage();
   const jobsRequest = useRef(0);
   const analysesRequest = useRef(0);
+
+  const loadSyncStatus = useCallback(async () => {
+    try {
+      const result = await invoke<CommandResult<PlatformSyncMeta[]>>("job_sync_status");
+      if (result.success && result.data) {
+        setSyncMetaList(result.data);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const handleSyncStatus = useCallback(
+    async (targetPlatform?: "boss" | "liepin") => {
+      if (syncing) return;
+      setSyncing(true);
+      try {
+        const result = await invoke<CommandResult<SyncStatusSummary>>("sync_platform_status", {
+          platform: targetPlatform ?? null,
+        });
+        if (!result.success || !result.data) {
+          messageApi.error(commandErrorMessage(result.error, "同步状态失败"));
+          return;
+        }
+        const summary = result.data;
+        const parts = [
+          `扫描 ${summary.scanned} 个会话`,
+          summary.updated > 0 ? `更新 ${summary.updated} 个岗位` : "状态均已最新",
+          summary.unread_total > 0 ? `未读 ${summary.unread_total} 条（保留红点）` : "",
+          summary.interview_detected > 0 ? `识别 ${summary.interview_detected} 条约面` : "",
+        ].filter(Boolean);
+        if (summary.warnings.length > 0) {
+          messageApi.warning(`${parts.join(" · ")}（${summary.warnings.join("；")}）`);
+        } else {
+          messageApi.success(`零点击同步完成：${parts.join(" · ")}`);
+        }
+        await Promise.all([loadSyncStatus()]);
+      } catch (error: unknown) {
+        messageApi.error(error instanceof Error ? error.message : "同步状态失败");
+      } finally {
+        setSyncing(false);
+      }
+    },
+    [loadSyncStatus, messageApi, syncing],
+  );
 
   const loadJobs = useCallback(async (showLoading = true) => {
     const request = ++jobsRequest.current;
@@ -574,13 +650,14 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
   }, []);
 
   useJobDataRefresh(useCallback(async () => {
-    await Promise.all([loadJobs(false), loadAnalyses()]);
-  }, [loadAnalyses, loadJobs]));
+    await Promise.all([loadJobs(false), loadAnalyses(), loadSyncStatus()]);
+  }, [loadAnalyses, loadJobs, loadSyncStatus]));
 
   useEffect(() => {
     void loadJobs();
     void loadAnalyses();
-  }, [loadAnalyses, loadJobs]);
+    void loadSyncStatus();
+  }, [loadAnalyses, loadJobs, loadSyncStatus]);
 
   useEffect(() => {
     if (!focusJobId || loading) return;
@@ -654,7 +731,9 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
         }
         setJobs((prev) =>
           prev.map((item) =>
-            item.id === job.id ? { ...item, pipeline_stage: nextStage } : item,
+            item.id === job.id
+              ? { ...item, pipeline_stage: nextStage, effective_stage: nextStage }
+              : item,
           ),
         );
         messageApi.success(`已更新为「${STAGE_META[nextStage].label}」`);
@@ -1053,13 +1132,14 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
           <Select
             size="small"
             value={communicationStatusFilter}
-            style={{ width: 102 }}
+            style={{ width: 108 }}
             onChange={setCommunicationStatusFilter}
             options={[
               { label: "全部沟通", value: "all" },
-              { label: "明确拒绝", value: "rejected" },
-              { label: "未回复", value: "no_reply" },
+              { label: "收到约面", value: "interview_invited" },
               { label: "已回复", value: "replied" },
+              { label: "未回复", value: "no_reply" },
+              { label: "明确拒绝", value: "rejected" },
             ]}
           />
           <Select
@@ -1083,6 +1163,49 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
             value={keyword}
             onChange={(e) => setKeyword(e.target.value)}
           />
+          <Dropdown.Button
+            size="small"
+            type="primary"
+            loading={syncing}
+            icon={<DownOutlined />}
+            onClick={() => void handleSyncStatus("boss")}
+            menu={{
+              items: [
+                {
+                  key: "sync-boss",
+                  label: "零点击同步 BOSS 状态（推荐 · 不消红点）",
+                  onClick: () => void handleSyncStatus("boss"),
+                },
+                {
+                  key: "sync-liepin",
+                  label: "零点击同步猎聘状态（不消红点）",
+                  onClick: () => void handleSyncStatus("liepin"),
+                },
+                {
+                  key: "sync-all",
+                  label: "同时同步 BOSS + 猎聘",
+                  onClick: () => void handleSyncStatus(undefined),
+                },
+              ],
+            }}
+          >
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+              <IconRefreshSync size={13} spinning={syncing} />
+              <span>{syncing ? "同步中…" : "同步状态"}</span>
+            </span>
+          </Dropdown.Button>
+          {(() => {
+            const latestSync = syncMetaList
+              .map((m) => m.last_synced_at)
+              .filter((v): v is string => Boolean(v))
+              .sort()
+              .pop();
+            return latestSync ? (
+              <span className="job-sync-meta" title={`上次零点击同步：${latestSync}`}>
+                上次同步 {latestSync.slice(11, 16)}
+              </span>
+            ) : null;
+          })()}
           <Dropdown
             trigger={["click"]}
             menu={{

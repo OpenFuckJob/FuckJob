@@ -558,10 +558,17 @@ pub async fn execute_rpa_flow(
             Ok(())
         }
         FlowMode::SyncChatHistory => {
-            if platform != PlatformKind::Boss {
-                return Err(anyhow::anyhow!("读取聊天消息任务目前仅支持 BOSS 直聘"));
+            match platform {
+                PlatformKind::Boss => {
+                    boss::handler::sync_chat_history().await?;
+                }
+                PlatformKind::Liepin => {
+                    liepin::handler::sync_chat_status().await?;
+                }
+                PlatformKind::Job51 => {
+                    return Err(anyhow::anyhow!("前程无忧暂不支持聊天状态同步"));
+                }
             }
-            boss::handler::sync_chat_history().await?;
             Ok(())
         }
         FlowMode::PeriodicJobHunting => {
@@ -607,10 +614,17 @@ pub async fn execute_rpa_flow_with_browser(
         }
         FlowMode::ReplyUnread => execute_reply_unread_on_page(main_tab, platform, config).await,
         FlowMode::SyncChatHistory => {
-            if platform != PlatformKind::Boss {
-                return Err(anyhow::anyhow!("读取聊天消息任务目前仅支持 BOSS 直聘"));
+            match platform {
+                PlatformKind::Boss => {
+                    boss::handler::sync_chat_history_on_page(main_tab).await?;
+                }
+                PlatformKind::Liepin => {
+                    liepin::handler::sync_chat_status_on_page(main_tab).await?;
+                }
+                PlatformKind::Job51 => {
+                    return Err(anyhow::anyhow!("前程无忧暂不支持聊天状态同步"));
+                }
             }
-            boss::handler::sync_chat_history_on_page(main_tab).await?;
             Ok(())
         }
         FlowMode::PeriodicJobHunting => {
