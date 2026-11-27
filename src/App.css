@@ -386,67 +386,70 @@ input {
   color: #cbd5e1;
 }
 
-[data-theme="dark"] .job-overview {
-  --overview-border: #263244;
-  --overview-muted: #94a3b8;
-  --overview-ink: #f1f5f9;
+/* ── Safety preset selector cards (Onboarding & Basic Settings) ── */
+.of-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
 }
 
-[data-theme="dark"] .overview-range,
-[data-theme="dark"] .suggestion-item {
-  background: #162033;
+@media (max-width: 720px) {
+  .of-preset-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
-[data-theme="dark"] .suggestion-item.clickable:hover {
-  background: #1d2a42;
+.of-preset-card {
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1.5px solid var(--of-border);
+  background: var(--of-surface);
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.of-preset-card:hover {
+  border-color: #93c5fd;
+}
+
+.of-preset-card.is-selected {
+  border-color: #1677ff;
+  background: rgba(22, 119, 255, 0.06);
+  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.12);
+}
+
+[data-theme="dark"] .of-preset-card.is-selected {
+  background: rgba(59, 130, 246, 0.14);
   border-color: #3b82f6;
 }
 
-[data-theme="dark"] .overview-footnote {
-  background: #132036;
-  border-color: #1e3a5f;
+.of-preset-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
 }
 
-[data-theme="dark"] .funnel-legend-row,
-[data-theme="dark"] .conversation-table .ant-table-tbody > tr > td {
-  border-bottom-color: #1e293b;
+.of-preset-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--of-text);
 }
 
-[data-theme="dark"] .funnel-legend-value em {
-  background: #1e293b;
-  color: #cbd5e1;
+.of-preset-tagline {
+  font-size: 12px;
+  color: var(--of-text-muted);
 }
 
-[data-theme="dark"] .mi-root {
-  color: #f1f5f9;
-}
-
-[data-theme="dark"] .mi-form-section,
-[data-theme="dark"] .mi-choice-card,
-[data-theme="dark"] .mi-duration-card,
-[data-theme="dark"] .mi-outline,
-[data-theme="dark"] .mi-conversation,
-[data-theme="dark"] .mi-session-header,
-[data-theme="dark"] .mi-composer {
-  background: #162033;
-  border-color: #263244;
-  color: #e2e8f0;
-}
-
-[data-theme="dark"] .mi-session-page,
-[data-theme="dark"] .mi-interview-intro,
-[data-theme="dark"] .mi-custom-job-fields,
-[data-theme="dark"] .mi-plan-stat-grid > div,
-[data-theme="dark"] .mi-plan-focus {
-  background: #0f172a;
-}
-
-[data-theme="dark"] .mi-message-content {
-  color: #e2e8f0;
-}
-
-[data-theme="dark"] .mi-message.is-candidate .mi-message-content {
-  background: #1e3a5f;
+.of-preset-summary {
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--of-text-subtle);
+  line-height: 1.45;
 }
 
 [data-theme="dark"] .of-config-surface {

@@ -6,8 +6,6 @@ pub mod job;
 pub mod llm;
 pub mod llm_provider;
 pub mod manual_review;
-pub mod mock_interview;
 pub mod notification;
-pub mod playground;
 pub mod rpa;
 pub mod user_resumes;

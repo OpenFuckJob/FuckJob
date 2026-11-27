@@ -119,12 +119,12 @@ import {
   SolutionOutlined,
   ClockCircleOutlined,
   FontSizeOutlined,
-  ExperimentOutlined,
   SafetyOutlined,
+  SlidersOutlined,
   StopOutlined,
   DollarOutlined,
 } from "@ant-design/icons";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { commandErrorMessage, type CommandResult } from "@/types/command";
@@ -132,6 +132,7 @@ import type { BrowserEnvStatus } from "@/types/rpa";
 import { LlmConfigPanel } from "./LlmConfigPanel";
 import { DataManagementPanel } from "./DataManagementPanel";
 import { AboutPanel } from "./AboutPanel";
+import { BasicSettingsView } from "./BasicSettingsView";
 import { AiFeatureGate } from "@/components/AiFeatureGate";
 
 const { Title, Text } = Typography;
@@ -415,14 +416,16 @@ function PromptVariableGuide({ items }: PromptVariableGuideProps) {
   );
 }
 
+export type ConfigViewMode = "basic" | "advanced";
+
 export interface ConfigPageProps {
   config: AppRuntimeConfig;
   status: StatusKind;
   message: string;
   dirty?: boolean;
   initialGroup?: ConfigGroup;
-  /** 「系统能力 · 测试模式」那一页的内容，由 App 注入 */
-  playgroundSlot?: ReactNode;
+  initialMode?: ConfigViewMode;
+  navigationSeq?: number;
   onOpenLlmConfig: () => void;
   updateLlm: (next: AppRuntimeConfig["llm_config"]) => void;
   persistLlm: (next: AppRuntimeConfig["llm_config"]) => Promise<boolean>;
@@ -517,7 +520,6 @@ const configGroupKeys = [
   "runtime",
   "browser",
   "llm",
-  "playground",
   "job",
   "resume",
   "greet",
@@ -528,6 +530,30 @@ const configGroupKeys = [
 ] as const;
 type VisibleConfigGroup = (typeof configGroupKeys)[number];
 
+const BASIC_GROUPS: ReadonlySet<ConfigGroup> = new Set([
+  "job",
+  "resume",
+  "greet",
+  "runtime",
+  "llm",
+]);
+
+function resolveBasicAnchor(group?: ConfigGroup): string | null {
+  switch (group) {
+    case "job":
+      return "basic-section-job";
+    case "resume":
+    case "greet":
+      return "basic-section-resume";
+    case "runtime":
+      return "basic-section-runtime";
+    case "llm":
+      return "basic-section-llm";
+    default:
+      return null;
+  }
+}
+
 const toVisibleConfigGroup = (group?: ConfigGroup): VisibleConfigGroup =>
   configGroupKeys.includes(group as VisibleConfigGroup)
     ? (group as VisibleConfigGroup)
@@ -536,19 +562,18 @@ const toVisibleConfigGroup = (group?: ConfigGroup): VisibleConfigGroup =>
 const menuItems = [
   {
     type: "group" as const,
-    label: "求职设置",
+    label: "求职策略（高级）",
     children: [
-      { key: "profile", icon: <ProductOutlined />, label: "求职方案" },
+      { key: "profile", icon: <ProductOutlined />, label: "多方案与精细筛选" },
     ],
   },
   {
     type: "group" as const,
     label: "系统能力",
     children: [
-      { key: "runtime", icon: <SafetyOutlined />, label: "运行与防封" },
-      { key: "llm", icon: <RobotOutlined />, label: "大模型" },
+      { key: "runtime", icon: <SafetyOutlined />, label: "运行、防封与通知" },
+      { key: "llm", icon: <RobotOutlined />, label: "AI 降级链与重试" },
       { key: "browser", icon: <GlobalOutlined />, label: "浏览器环境" },
-      { key: "playground", icon: <ExperimentOutlined />, label: "测试模式" },
     ],
   },
   {
@@ -581,6 +606,11 @@ const profileTabItems = [
 ];
 
 export function ConfigPage(props: ConfigPageProps) {
+  const [viewMode, setViewMode] = useState<ConfigViewMode>(() => {
+    if (props.initialMode) return props.initialMode;
+    if (props.initialGroup && !BASIC_GROUPS.has(props.initialGroup)) return "advanced";
+    return "basic";
+  });
   const [activeGroup, setActiveGroup] = useState<VisibleConfigGroup>(() =>
     toVisibleConfigGroup(props.initialGroup),
   );
@@ -682,8 +712,23 @@ export function ConfigPage(props: ConfigPageProps) {
   };
 
   useEffect(() => {
-    setActiveGroup(toVisibleConfigGroup(props.initialGroup));
-  }, [props.initialGroup]);
+    const nextGroup = toVisibleConfigGroup(props.initialGroup);
+    setActiveGroup(nextGroup);
+    const nextMode: ConfigViewMode = props.initialMode
+      ? props.initialMode
+      : props.initialGroup && !BASIC_GROUPS.has(props.initialGroup)
+        ? "advanced"
+        : "basic";
+    setViewMode(nextMode);
+    if (nextMode === "basic") {
+      const anchor = resolveBasicAnchor(props.initialGroup);
+      if (anchor) {
+        window.setTimeout(() => {
+          document.getElementById(anchor)?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }, 50);
+      }
+    }
+  }, [props.initialGroup, props.initialMode, props.navigationSeq]);
 
   useEffect(() => {
     invoke<CommandResult<BrowserEnvStatus>>("check_browser_env")
@@ -1076,9 +1121,6 @@ export function ConfigPage(props: ConfigPageProps) {
             dirty={props.dirty}
           />
         );
-      // 测试模式不走这里：它常驻挂载在内容区，见下方的 playgroundSlot
-      case "playground":
-        return null;
       case "data":
         return <DataManagementPanel />;
       case "job":
@@ -2836,200 +2878,277 @@ export function ConfigPage(props: ConfigPageProps) {
     }
   };
 
+  const saveStatusBadge = (
+    <div className="rounded-xl border border-slate-200/80 bg-white px-3 py-1.5 text-xs text-slate-500">
+      {props.status === "loading" ? (
+        <>
+          <LoadingOutlined className="mr-1.5 text-sky-500" />
+          正在自动保存…
+        </>
+      ) : props.status === "error" ? (
+        <>
+          <WarningOutlined className="mr-1.5 text-red-500" />
+          {props.message || "自动保存失败，修改后将重试"}
+        </>
+      ) : props.dirty ? (
+        <>
+          <LoadingOutlined className="mr-1.5 text-sky-500" />
+          等待自动保存…
+        </>
+      ) : (
+        <>
+          <CheckCircleOutlined className="mr-1.5 text-emerald-500" />
+          配置已自动保存
+        </>
+      )}
+    </div>
+  );
+
   return (
     <>
       {noticeModalContextHolder}
-      <div className="of-config-surface flex h-full w-full flex-col gap-4 md:flex-row animate-in">
-        <aside className="flex w-full flex-shrink-0 flex-col gap-3 md:w-[216px]">
-          <div className="rounded-xl border border-slate-200/80 bg-white px-3 py-2 text-xs text-slate-500">
-            {props.status === "loading" ? (
+      <div className="of-config-surface flex h-full w-full flex-col gap-3 animate-in">
+        {/* Top clean Basic vs Advanced mode bar */}
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200/80 bg-white px-4 py-2.5 shadow-xs">
+          <Space wrap size={12}>
+            <Segmented<ConfigViewMode>
+              value={viewMode}
+              onChange={setViewMode}
+              options={[
+                { value: "basic", label: "基础设置（推荐）" },
+                { value: "advanced", label: "高级设置" },
+              ]}
+            />
+            <Text type="secondary" className="hidden text-xs sm:inline">
+              {viewMode === "basic"
+                ? "一屏配齐求职意向、简历、防封档位与可选 AI，改完即可开跑"
+                : "多求职方案、正则表达式、自定义 Prompt、浏览器与数据备份"}
+            </Text>
+          </Space>
+          <Space size={8}>
+            {viewMode === "basic" && (
               <>
-                <LoadingOutlined className="mr-2 text-sky-500" />
-                正在自动保存…
-              </>
-            ) : props.status === "error" ? (
-              <>
-                <WarningOutlined className="mr-2 text-red-500" />
-                {props.message || "自动保存失败，修改后将重试"}
-              </>
-            ) : props.dirty ? (
-              <>
-                <LoadingOutlined className="mr-2 text-sky-500" />
-                等待自动保存…
-              </>
-            ) : (
-              <>
-                <CheckCircleOutlined className="mr-2 text-emerald-500" />
-                配置已自动保存
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<DatabaseOutlined />}
+                  onClick={() => {
+                    setActiveGroup("data");
+                    setViewMode("advanced");
+                  }}
+                >
+                  备份
+                </Button>
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<InfoCircleOutlined />}
+                  onClick={() => {
+                    setActiveGroup("about");
+                    setViewMode("advanced");
+                  }}
+                >
+                  关于
+                </Button>
               </>
             )}
-          </div>
-          <Menu
-            mode="vertical"
-            selectedKeys={[
-              isProfileGroup(activeGroup) ? "profile" : activeGroup,
-            ]}
-            onSelect={({ key }) =>
-              setActiveGroup(
-                key === "profile"
-                  ? isProfileGroup(activeGroup)
-                    ? activeGroup
-                    : "job"
-                  : (key as VisibleConfigGroup),
-              )
-            }
-            items={menuItems}
-            className="rounded-2xl border border-slate-200/80 bg-white! p-2 shadow-xs"
-          />
-          <Dropdown
-            menu={{
-              items: [
-                {
-                  key: "import",
-                  icon: <UploadOutlined />,
-                  label: "导入配置模板",
-                  onClick: selectConfigFile,
-                },
-                {
-                  key: "export",
-                  icon: <DownloadOutlined />,
-                  label: "导出配置模板",
-                  onClick: selectExportConfigFile,
-                },
-              ],
-            }}
-            trigger={["click"]}
-          >
-            <Button
-              disabled={props.status === "loading"}
-              className="h-10! w-full justify-start! text-slate-600!"
-            >
-              配置文件 <MoreOutlined className="ml-auto" />
-            </Button>
-          </Dropdown>
-        </aside>
+            {saveStatusBadge}
+          </Space>
+        </div>
 
-        <Form
-          form={form}
-          layout="vertical"
-          requiredMark={false}
-          className="flex h-full min-w-0 flex-1 flex-col overflow-hidden"
-          onSubmitCapture={(e) => {
-            e.preventDefault();
-          }}
-        >
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-xs">
-            {isProfileGroup(activeGroup) && (
-              <div className="flex-shrink-0 border-b border-slate-200 bg-white px-5 pt-5 md:px-8 md:pt-6">
-                <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                  <div className="min-w-0">
-                    <Text className="mb-1 block text-[11px] font-bold uppercase tracking-[0.18em] text-sky-600">
-                      当前求职方案
-                    </Text>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Select
-                        aria-label="当前求职方案"
-                        size="large"
-                        popupMatchSelectWidth={false}
-                        className="min-w-[240px] max-w-full md:min-w-[320px]"
-                        value={activeProfile.id}
-                        onChange={props.onSelectProfile}
-                        options={profiles.map((profile) => ({
-                          value: profile.id,
-                          label: `${profile.name}${profile.id === defaultProfileId ? " · 默认" : ""}${profile.archived ? " · 已归档" : ""}`,
-                        }))}
-                      />
-                      {activeProfile.id === defaultProfileId && (
-                        <Tag color="blue">默认使用</Tag>
-                      )}
-                      {activeProfile.archived && <Tag>已归档</Tag>}
-                    </div>
-                    <Text
-                      type="secondary"
-                      className="mt-2 block max-w-2xl text-xs!"
-                    >
-                      {activeProfile.description ||
-                        "这张方案统一管理岗位筛选、简历、打招呼和自动回复。"}
-                    </Text>
-                  </div>
-                  <Space wrap size={8}>
-                    <Button
-                      type="primary"
-                      icon={<PlusOutlined />}
-                      onClick={() => openProfileModal("create")}
-                    >
-                      新建方案
-                    </Button>
-                    <Dropdown
-                      trigger={["click"]}
-                      menu={{
-                        onClick: handleProfileAction,
-                        items: [
-                          {
-                            key: "edit",
-                            icon: <EditOutlined />,
-                            label: "编辑名称与说明",
-                          },
-                          {
-                            key: "duplicate",
-                            icon: <CopyOutlined />,
-                            label: "复制当前方案",
-                          },
-                          { type: "divider" },
-                          {
-                            key: "default",
-                            icon: <StarOutlined />,
-                            label:
-                              activeProfile.id === defaultProfileId
-                                ? "当前已是默认方案"
-                                : "设为默认方案",
-                            disabled:
-                              activeProfile.id === defaultProfileId ||
-                              activeProfile.archived,
-                          },
-                          {
-                            key: "archive",
-                            icon: <InboxOutlined />,
-                            label: "归档当前方案",
-                            disabled: !canArchive,
-                          },
-                          {
-                            key: "delete",
-                            icon: <DeleteOutlined />,
-                            label: "删除当前方案",
-                            danger: true,
-                            disabled: !canDelete,
-                          },
-                        ],
-                      }}
-                    >
-                      <Button icon={<MoreOutlined />}>方案管理</Button>
-                    </Dropdown>
-                  </Space>
-                </div>
-                <Tabs
-                  className="mt-4 [&_.ant-tabs-nav]:mb-0!"
-                  activeKey={activeGroup}
-                  onChange={(key) => setActiveGroup(key as ProfileGroup)}
-                  items={profileTabItems}
-                />
-              </div>
-            )}
-            <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-6 py-6 md:px-10 md:py-8">
-              {/*
-                测试模式整块由 App 注入，且切到别的分组时只是藏起来、不卸载：
-                那里攒着手输的 JD、造了一半的对话和刚跑出来的结果，
-                去大模型页改个模型名回来就得从头填一遍，谁都不会愿意用第二次
-              */}
-              {props.playgroundSlot && (
-                <div className={activeGroup === "playground" ? undefined : "hidden"}>
-                  {props.playgroundSlot}
-                </div>
-              )}
-              {activeGroup !== "playground" && renderContent()}
-            </div>
+        {viewMode === "basic" ? (
+          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+            <BasicSettingsView
+              config={props.config}
+              dirty={props.dirty}
+              onSelectResumePdf={selectResumePdf}
+              updateJobFilter={props.updateJobFilter}
+              updateResume={props.updateResume}
+              updateGreet={props.updateGreet}
+              updateGreetDefaultResource={props.updateGreetDefaultResource}
+              addGreetDefaultResource={props.addGreetDefaultResource}
+              updateReplay={props.updateReplay}
+              updatePeriodicDelivery={props.updatePeriodicDelivery}
+              updateHumanize={props.updateHumanize}
+              updateLlm={props.updateLlm}
+              persistLlm={props.persistLlm}
+              persistConfig={props.persistConfig}
+              updateLlmEnabled={props.updateLlmEnabled}
+              onSwitchToAdvanced={(group) => {
+                if (group) setActiveGroup(toVisibleConfigGroup(group));
+                setViewMode("advanced");
+              }}
+            />
           </div>
-        </Form>
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col gap-4 md:flex-row">
+            <aside className="flex w-full flex-shrink-0 flex-col gap-3 md:w-[216px]">
+              <Menu
+                mode="vertical"
+                selectedKeys={[
+                  isProfileGroup(activeGroup) ? "profile" : activeGroup,
+                ]}
+                onSelect={({ key }) =>
+                  setActiveGroup(
+                    key === "profile"
+                      ? isProfileGroup(activeGroup)
+                        ? activeGroup
+                        : "job"
+                      : (key as VisibleConfigGroup),
+                  )
+                }
+                items={menuItems}
+                className="rounded-2xl border border-slate-200/80 bg-white! p-2 shadow-xs"
+              />
+              <Dropdown
+                menu={{
+                  items: [
+                    {
+                      key: "import",
+                      icon: <UploadOutlined />,
+                      label: "导入配置模板",
+                      onClick: selectConfigFile,
+                    },
+                    {
+                      key: "export",
+                      icon: <DownloadOutlined />,
+                      label: "导出配置模板",
+                      onClick: selectExportConfigFile,
+                    },
+                  ],
+                }}
+                trigger={["click"]}
+              >
+                <Button
+                  disabled={props.status === "loading"}
+                  className="h-10! w-full justify-start! text-slate-600!"
+                >
+                  配置文件 <MoreOutlined className="ml-auto" />
+                </Button>
+              </Dropdown>
+              <Button
+                type="text"
+                size="small"
+                icon={<SlidersOutlined />}
+                onClick={() => setViewMode("basic")}
+              >
+                返回基础设置
+              </Button>
+            </aside>
+
+            <Form
+              form={form}
+              layout="vertical"
+              requiredMark={false}
+              className="flex h-full min-w-0 flex-1 flex-col overflow-hidden"
+              onSubmitCapture={(e) => {
+                e.preventDefault();
+              }}
+            >
+              <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-xs">
+                {isProfileGroup(activeGroup) && (
+                  <div className="flex-shrink-0 border-b border-slate-200 bg-white px-5 pt-5 md:px-8 md:pt-6">
+                    <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                      <div className="min-w-0">
+                        <Text className="mb-1 block text-[11px] font-bold uppercase tracking-[0.18em] text-sky-600">
+                          当前求职方案
+                        </Text>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Select
+                            aria-label="当前求职方案"
+                            size="large"
+                            popupMatchSelectWidth={false}
+                            className="min-w-[240px] max-w-full md:min-w-[320px]"
+                            value={activeProfile.id}
+                            onChange={props.onSelectProfile}
+                            options={profiles.map((profile) => ({
+                              value: profile.id,
+                              label: `${profile.name}${profile.id === defaultProfileId ? " · 默认" : ""}${profile.archived ? " · 已归档" : ""}`,
+                            }))}
+                          />
+                          {activeProfile.id === defaultProfileId && (
+                            <Tag color="blue">默认使用</Tag>
+                          )}
+                          {activeProfile.archived && <Tag>已归档</Tag>}
+                        </div>
+                        <Text
+                          type="secondary"
+                          className="mt-2 block max-w-2xl text-xs!"
+                        >
+                          {activeProfile.description ||
+                            "这张方案统一管理岗位筛选、简历、打招呼和自动回复。"}
+                        </Text>
+                      </div>
+                      <Space wrap size={8}>
+                        <Button
+                          type="primary"
+                          icon={<PlusOutlined />}
+                          onClick={() => openProfileModal("create")}
+                        >
+                          新建方案
+                        </Button>
+                        <Dropdown
+                          trigger={["click"]}
+                          menu={{
+                            onClick: handleProfileAction,
+                            items: [
+                              {
+                                key: "edit",
+                                icon: <EditOutlined />,
+                                label: "编辑名称与说明",
+                              },
+                              {
+                                key: "duplicate",
+                                icon: <CopyOutlined />,
+                                label: "复制当前方案",
+                              },
+                              { type: "divider" },
+                              {
+                                key: "default",
+                                icon: <StarOutlined />,
+                                label:
+                                  activeProfile.id === defaultProfileId
+                                    ? "当前已是默认方案"
+                                    : "设为默认方案",
+                                disabled:
+                                  activeProfile.id === defaultProfileId ||
+                                  activeProfile.archived,
+                              },
+                              {
+                                key: "archive",
+                                icon: <InboxOutlined />,
+                                label: "归档当前方案",
+                                disabled: !canArchive,
+                              },
+                              {
+                                key: "delete",
+                                icon: <DeleteOutlined />,
+                                label: "删除当前方案",
+                                danger: true,
+                                disabled: !canDelete,
+                              },
+                            ],
+                          }}
+                        >
+                          <Button icon={<MoreOutlined />}>方案管理</Button>
+                        </Dropdown>
+                      </Space>
+                    </div>
+                    <Tabs
+                      className="mt-4 [&_.ant-tabs-nav]:mb-0!"
+                      activeKey={activeGroup}
+                      onChange={(key) => setActiveGroup(key as ProfileGroup)}
+                      items={profileTabItems}
+                    />
+                  </div>
+                )}
+                <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-6 py-6 md:px-10 md:py-8">
+                  {renderContent()}
+                </div>
+              </div>
+            </Form>
+          </div>
+        )}
         <Modal
           title={
             profileModalMode === "create" ? "新建求职方案" : "编辑方案信息"
