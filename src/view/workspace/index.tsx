@@ -188,8 +188,8 @@ const FLOW_MODE_OPTIONS: FlowModeOption[] = [
   },
   {
     key: "sync_chat_history",
-    label: "同步历史聊天",
-    description: "把已有沟通记录同步到本地，不会点开未读消息。",
+    label: "零点击同步状态",
+    description: "仅拉取沟通列表、未读摘要与约面信号，不点开会话、保留未读红点。",
   },
 ];
 
@@ -1485,7 +1485,7 @@ const WorkspacePage = ({
           {FLOW_MODE_OPTIONS.filter((option) =>
             modalPlatform === "51job"
               ? ["job_hunting", "periodic_job_hunting"].includes(option.key)
-              : modalPlatform === "boss" || option.key !== "sync_chat_history",
+              : true,
           ).map((option) => {
             const selected = selectedMode === option.key;
             return (

@@ -1,6 +1,7 @@
 use crate::command::base::CommandResult;
 use crate::config;
 use crate::dao::model::{ChatMessageRecord, InterviewJobAnalysis, JobDetail, JobPipelineStage};
+use crate::dao::sync_state_dao::{self, PlatformSyncMeta, SyncedJobSignal};
 use crate::dao::{analysis_dao, chat_message_dao, job_detail_dao};
 use crate::job_description::ParsedJobDescription;
 use chrono::{Duration, Local, NaiveDate, NaiveDateTime, TimeZone};
@@ -42,6 +43,7 @@ pub fn job_list() -> CommandResult<Vec<JobDetail>> {
 #[serde(rename_all = "snake_case")]
 pub enum CommunicationStatus {
     Rejected,
+    InterviewInvited,
     Replied,
     NoReply,
 }
@@ -51,12 +53,18 @@ pub struct JobListItem {
     #[serde(flatten)]
     pub job: JobDetail,
     pub communication_status: CommunicationStatus,
+    /// 双轨状态机计算出的有效展示阶段（结合平台自动事实 + 用户手工推进，只正向推进不倒退）
+    pub effective_stage: JobPipelineStage,
+    /// 零点击列表同步观测到的未读条数（不点开会话即可展示红点）
+    pub unread_count: u32,
+    /// 平台侧原始状态提示标签（例如：约面试 / 不合适 / 新回复）
+    pub platform_status_tag: Option<String>,
     pub latest_message: Option<String>,
     pub latest_message_at: Option<i64>,
     pub latest_message_received: Option<bool>,
 }
 
-fn is_explicit_rejection(text: &str) -> bool {
+pub(crate) fn is_explicit_rejection(text: &str) -> bool {
     let normalized = text
         .to_lowercase()
         .chars()
@@ -87,9 +95,125 @@ fn is_explicit_rejection(text: &str) -> bool {
         .any(|phrase| normalized.contains(phrase))
 }
 
+/// 识别招聘方发来的强约面信号（面试邀约卡片或明确约面话术）。
+pub(crate) fn is_interview_invite(text: &str) -> bool {
+    if is_explicit_rejection(text) {
+        return false;
+    }
+    let normalized = text
+        .to_lowercase()
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
+    const INTERVIEW_PHRASES: &[&str] = &[
+        "邀请您参加面试",
+        "邀请你参加面试",
+        "面试邀请",
+        "面试邀约",
+        "约个面试",
+        "约一下面试",
+        "约场面试",
+        "安排面试",
+        "安排一下面试",
+        "安排初面",
+        "安排一面",
+        "面试时间",
+        "面试链接",
+        "视频面试",
+        "线下面试",
+        "一面时间",
+        "腾讯会议",
+        "飞书会议",
+        "钉钉会议",
+        "zoom会议",
+        "发您面试",
+        "发你面试",
+    ];
+
+    INTERVIEW_PHRASES
+        .iter()
+        .any(|phrase| normalized.contains(phrase))
+}
+
+fn stage_progress_rank(stage: JobPipelineStage) -> Option<u8> {
+    match stage {
+        JobPipelineStage::Pending => Some(0),
+        JobPipelineStage::Applied => Some(1),
+        JobPipelineStage::Replied => Some(2),
+        JobPipelineStage::InterviewScheduled => Some(3),
+        JobPipelineStage::Interviewing => Some(4),
+        JobPipelineStage::Offer => Some(5),
+        JobPipelineStage::Rejected | JobPipelineStage::Archived => None,
+    }
+}
+
+/// 双轨状态机：融合「平台同步事实」与「用户手工覆盖」，只正向推进、绝不覆盖高阶人工决策。
+pub(crate) fn resolve_effective_stage(
+    job: &JobDetail,
+    communication_status: CommunicationStatus,
+    unread_count: u32,
+    signal: Option<&SyncedJobSignal>,
+) -> JobPipelineStage {
+    let detected = if communication_status == CommunicationStatus::Rejected
+        || signal.is_some_and(|s| s.rejected_by_platform)
+    {
+        JobPipelineStage::Rejected
+    } else if communication_status == CommunicationStatus::InterviewInvited
+        || signal.is_some_and(|s| s.interview_invited)
+    {
+        JobPipelineStage::InterviewScheduled
+    } else if job.is_reply
+        || communication_status == CommunicationStatus::Replied
+        || unread_count > 0
+    {
+        JobPipelineStage::Replied
+    } else if job.is_send_resume {
+        JobPipelineStage::Applied
+    } else {
+        JobPipelineStage::Pending
+    };
+
+    let Some(manual) = job.pipeline_stage else {
+        return detected;
+    };
+
+    match manual {
+        // 终态或深度面试阶段一律以用户手工决策为准，绝不被同步覆盖
+        JobPipelineStage::Offer
+        | JobPipelineStage::Interviewing
+        | JobPipelineStage::Archived
+        | JobPipelineStage::Rejected => manual,
+        _ => {
+            if detected == JobPipelineStage::Rejected {
+                return if stage_progress_rank(manual).unwrap_or(0) >= 3 {
+                    manual
+                } else {
+                    JobPipelineStage::Rejected
+                };
+            }
+            let manual_rank = stage_progress_rank(manual).unwrap_or(0);
+            let detected_rank = stage_progress_rank(detected).unwrap_or(0);
+            if detected_rank > manual_rank {
+                detected
+            } else {
+                manual
+            }
+        }
+    }
+}
+
 fn build_job_list_items(jobs: Vec<JobDetail>, messages: Vec<ChatMessageRecord>) -> Vec<JobListItem> {
+    build_job_list_items_with_signals(jobs, messages, &HashMap::new())
+}
+
+fn build_job_list_items_with_signals(
+    jobs: Vec<JobDetail>,
+    messages: Vec<ChatMessageRecord>,
+    signals: &HashMap<String, SyncedJobSignal>,
+) -> Vec<JobListItem> {
     let mut replied_job_ids = HashSet::new();
     let mut rejected_job_ids = HashSet::new();
+    let mut interview_job_ids = HashSet::new();
     let mut latest_messages_by_job_id: HashMap<String, ChatMessageRecord> = HashMap::new();
 
     for message in messages
@@ -100,6 +224,8 @@ fn build_job_list_items(jobs: Vec<JobDetail>, messages: Vec<ChatMessageRecord>) 
             replied_job_ids.insert(message.job_id.clone());
             if is_explicit_rejection(&message.text) {
                 rejected_job_ids.insert(message.job_id.clone());
+            } else if is_interview_invite(&message.text) {
+                interview_job_ids.insert(message.job_id.clone());
             }
         }
 
@@ -114,20 +240,63 @@ fn build_job_list_items(jobs: Vec<JobDetail>, messages: Vec<ChatMessageRecord>) 
 
     jobs.into_iter()
         .map(|job| {
-            let communication_status = if rejected_job_ids.contains(&job.id) {
-                CommunicationStatus::Rejected
-            } else if replied_job_ids.contains(&job.id) {
-                CommunicationStatus::Replied
-            } else {
-                CommunicationStatus::NoReply
-            };
-            let latest_message = latest_messages_by_job_id.get(&job.id);
+            let signal = signals.get(&job.id);
+            let unread_count = signal.map(|s| s.unread_count).unwrap_or(0);
+            let signal_preview = signal
+                .and_then(|s| s.last_message_preview.as_deref())
+                .map(str::trim)
+                .filter(|text| !text.is_empty());
+            let signal_received = signal.and_then(|s| s.last_message_received);
+            let signal_replied = unread_count > 0 || signal_received == Some(true);
+            let signal_rejected = signal.is_some_and(|s| s.rejected_by_platform)
+                || (signal_replied && signal_preview.is_some_and(is_explicit_rejection));
+            let signal_interview = signal.is_some_and(|s| s.interview_invited)
+                || (signal_replied && signal_preview.is_some_and(is_interview_invite));
+
+            let communication_status =
+                if rejected_job_ids.contains(&job.id) || signal_rejected {
+                    CommunicationStatus::Rejected
+                } else if interview_job_ids.contains(&job.id) || signal_interview {
+                    CommunicationStatus::InterviewInvited
+                } else if replied_job_ids.contains(&job.id) || signal_replied {
+                    CommunicationStatus::Replied
+                } else {
+                    CommunicationStatus::NoReply
+                };
+
+            let effective_stage =
+                resolve_effective_stage(&job, communication_status, unread_count, signal);
+
+            let msg_latest = latest_messages_by_job_id.get(&job.id);
+            let msg_ts = msg_latest.map(|m| m.time).unwrap_or(0);
+            let sig_ts = signal.and_then(|s| s.last_message_at).unwrap_or(0);
+
+            let (latest_message, latest_message_at, latest_message_received) =
+                if signal_preview.is_some() && (msg_latest.is_none() || sig_ts >= msg_ts) {
+                    (
+                        signal_preview.map(str::to_string),
+                        signal.and_then(|s| s.last_message_at).or_else(|| msg_latest.map(|m| m.time)),
+                        signal_received.or_else(|| msg_latest.map(|m| m.received)),
+                    )
+                } else {
+                    (
+                        msg_latest.map(|m| m.text.clone()),
+                        msg_latest.map(|m| m.time),
+                        msg_latest.map(|m| m.received),
+                    )
+                };
+
+            let platform_status_tag = signal.and_then(|s| s.platform_status_tag.clone());
+
             JobListItem {
                 job,
                 communication_status,
-                latest_message: latest_message.map(|message| message.text.clone()),
-                latest_message_at: latest_message.map(|message| message.time),
-                latest_message_received: latest_message.map(|message| message.received),
+                effective_stage,
+                unread_count,
+                platform_status_tag,
+                latest_message,
+                latest_message_at,
+                latest_message_received,
             }
         })
         .collect()
@@ -138,13 +307,19 @@ pub fn job_list_with_status() -> CommandResult<Vec<JobListItem>> {
     let result = (|| -> anyhow::Result<Vec<JobListItem>> {
         let jobs = job_detail_dao::list()?;
         let messages = chat_message_dao::list()?;
-        Ok(build_job_list_items(jobs, messages))
+        let signals = sync_state_dao::list_signals();
+        Ok(build_job_list_items_with_signals(jobs, messages, &signals))
     })();
 
     match result {
         Ok(list) => CommandResult::ok(list),
         Err(error) => CommandResult::err(error.to_string()),
     }
+}
+
+#[tauri::command]
+pub fn job_sync_status() -> CommandResult<Vec<PlatformSyncMeta>> {
+    CommandResult::ok(sync_state_dao::list_platform_meta())
 }
 
 #[cfg(test)]
@@ -225,6 +400,67 @@ mod communication_status_tests {
         assert!(is_explicit_rejection("您好，您的经历和岗位不太合适"));
         assert!(is_explicit_rejection("这个职位已经招满了"));
         assert!(is_explicit_rejection("目前没有 HC，感谢关注"));
+    }
+
+    #[test]
+    fn recognizes_interview_invitations_without_false_positives() {
+        assert!(super::is_interview_invite("您好，邀请您参加明天下午3点的视频面试"));
+        assert!(super::is_interview_invite("发您腾讯会议链接，咱们约一下一面时间"));
+        assert!(!super::is_interview_invite("您好，可以发一份最新简历吗？"));
+        assert!(!super::is_interview_invite("不好意思，这个岗位暂时不考虑，面试取消"));
+    }
+
+    #[test]
+    fn dual_track_state_machine_advances_forward_and_preserves_manual_high_stages() {
+        let mut applied_job = job("j-advance");
+        applied_job.pipeline_stage = Some(super::JobPipelineStage::Applied);
+        let invite_signal = super::SyncedJobSignal {
+            job_id: "j-advance".into(),
+            platform: "boss".into(),
+            unread_count: 1,
+            last_message_preview: Some("您好，邀请您参加明天下午面试".into()),
+            last_message_at: Some(5000),
+            last_message_received: Some(true),
+            platform_status_tag: Some("约面试".into()),
+            interview_invited: true,
+            rejected_by_platform: false,
+            updated_at: "now".into(),
+        };
+        let mut signals = std::collections::HashMap::new();
+        signals.insert("j-advance".into(), invite_signal);
+
+        let mut offer_job = job("j-offer");
+        offer_job.pipeline_stage = Some(super::JobPipelineStage::Offer);
+        signals.insert(
+            "j-offer".into(),
+            super::SyncedJobSignal {
+                job_id: "j-offer".into(),
+                platform: "boss".into(),
+                unread_count: 1,
+                last_message_preview: Some("好的收到".into()),
+                last_message_at: Some(6000),
+                last_message_received: Some(true),
+                ..Default::default()
+            },
+        );
+
+        let items = super::build_job_list_items_with_signals(
+            vec![applied_job, offer_job],
+            vec![],
+            &signals,
+        );
+        let advanced = items.iter().find(|i| i.job.id == "j-advance").unwrap();
+        let kept_offer = items.iter().find(|i| i.job.id == "j-offer").unwrap();
+
+        assert_eq!(advanced.communication_status, CommunicationStatus::InterviewInvited);
+        assert_eq!(advanced.effective_stage, super::JobPipelineStage::InterviewScheduled);
+        assert_eq!(advanced.unread_count, 1);
+        assert_eq!(
+            advanced.latest_message.as_deref(),
+            Some("您好，邀请您参加明天下午面试")
+        );
+        // Offer 阶段不会被同步覆盖回 Replied
+        assert_eq!(kept_offer.effective_stage, super::JobPipelineStage::Offer);
     }
 
     #[test]
@@ -890,31 +1126,21 @@ pub fn job_today_greet_counts() -> CommandResult<TodayGreetCounts> {
 }
 
 fn pipeline_stage_label(item: &JobListItem) -> &'static str {
-    if let Some(stage) = item.job.pipeline_stage {
-        return match stage {
-            JobPipelineStage::Pending => "待投递",
-            JobPipelineStage::Applied => "已投递",
-            JobPipelineStage::Replied => "已回复",
-            JobPipelineStage::InterviewScheduled => "已约面",
-            JobPipelineStage::Interviewing => "面试中",
-            JobPipelineStage::Offer => "已拿 Offer",
-            JobPipelineStage::Rejected => "已婉拒",
-            JobPipelineStage::Archived => "已归档",
-        };
-    }
-    if item.communication_status == CommunicationStatus::Rejected {
-        "已婉拒"
-    } else if item.job.is_reply || item.communication_status == CommunicationStatus::Replied {
-        "已回复"
-    } else if item.job.is_send_resume {
-        "已投递"
-    } else {
-        "待投递"
+    match item.effective_stage {
+        JobPipelineStage::Pending => "已打招呼",
+        JobPipelineStage::Applied => "已发简历",
+        JobPipelineStage::Replied => "HR 已回复",
+        JobPipelineStage::InterviewScheduled => "已约面",
+        JobPipelineStage::Interviewing => "面试中",
+        JobPipelineStage::Offer => "已拿 Offer",
+        JobPipelineStage::Rejected => "已婉拒",
+        JobPipelineStage::Archived => "已归档",
     }
 }
 
 fn communication_status_label(status: CommunicationStatus) -> &'static str {
     match status {
+        CommunicationStatus::InterviewInvited => "收到面试邀约",
         CommunicationStatus::Replied => "对方已回复",
         CommunicationStatus::Rejected => "明确婉拒",
         CommunicationStatus::NoReply => "暂无回复",
