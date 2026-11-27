@@ -170,10 +170,10 @@ describe("periodic delivery plan", () => {
 });
 
 describe("periodic delivery form summary", () => {
-  // 折叠起来时这行摘要是配置的唯一出口，默认值也必须说清楚单轮护栏还在
+  // 折叠起来时这行摘要是配置的唯一出口，默认值也必须说清楚单轮与每日护栏还在
   it("summarises the default form without inventing constraints", () => {
     expect(describePeriodicDelivery(DEFAULT_PERIODIC_DELIVERY_CONFIG)).toBe(
-      "每 30 分钟一轮 · 单轮至多 30 条 · 单轮至多 60 分钟",
+      "每 30 分钟一轮 · 单轮至多 30 条 · 每日至多 50 条 · 单轮至多 60 分钟",
     );
   });
 
@@ -198,6 +198,7 @@ describe("periodic delivery form summary", () => {
         windows: [{ start_minute: 9 * 60, end_minute: 18 * 60 }],
         max_run_hours: 0,
         max_greets_per_round: 0,
+        max_greets_per_day: 0,
         max_round_minutes: 0,
       }),
     ).toBe("每 20 分钟一轮");
@@ -303,6 +304,7 @@ describe("periodic delivery equality", () => {
     }],
     ["max_run_hours", { max_run_hours: 8 }],
     ["max_greets_per_round", { max_greets_per_round: 10 }],
+    ["max_greets_per_day", { max_greets_per_day: 80 }],
     ["max_round_minutes", { max_round_minutes: 90 }],
   ];
 

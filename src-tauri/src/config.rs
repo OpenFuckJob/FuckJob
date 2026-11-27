@@ -53,6 +53,10 @@ fn default_job_filter_config() -> JobFilterConfig {
         exclude_keywords: Vec::new(),
         company_keywords: Vec::new(),
         company_exclude_keywords: Vec::new(),
+        min_salary_k: None,
+        max_salary_span_ratio: None,
+        exclude_negotiable: false,
+        max_greets_per_company: 0,
         enable_semantic_filter: false,
         semantic_filter_intent: None,
         regex_rules: Vec::new(),
@@ -131,6 +135,7 @@ pub fn default_app_config() -> AppRuntimeConfig {
         reply_polling_config: ReplyPollingConfig::default(),
         periodic_delivery_config: PeriodicDeliveryConfig::default(),
         humanize_config: HumanizeConfig::default(),
+        notification_config: NotificationConfig::default(),
         browser_config: default_browser_config(),
         resume_config,
     }
@@ -423,6 +428,11 @@ pub(crate) fn normalize_loaded_config(config: &mut AppRuntimeConfig) -> Result<(
     // 值由下面的 normalize_job_profiles 从方案卡回写（方案卡各自已 clamp 过）。
     // 在这里再 clamp 一次的结果总会被覆盖，留着只会让人以为顶层是独立数据
     config.periodic_delivery_config.migrate_legacy_window();
+    config.periodic_delivery_config.max_greets_per_day = config
+        .periodic_delivery_config
+        .max_greets_per_day
+        .min(MAX_GREETS_PER_DAY);
+    config.notification_config.webhook_url = config.notification_config.webhook_url.trim().to_string();
     config.humanize_config.ensure_seed();
     normalize_job_profiles(config)?;
     config.browser_config.max_parallel_tasks = config
@@ -688,6 +698,10 @@ pub struct AppRuntimeConfig {
     /// 拟人化。和轮询节奏一样是全局运行行为，不随求职方案变化
     #[serde(default)]
     pub humanize_config: HumanizeConfig,
+
+    /// 实时通知（Webhook），全局运行配置，默认关闭
+    #[serde(default)]
+    pub notification_config: NotificationConfig,
 
     /// 浏览器运行配置
     #[serde(default = "default_browser_config")]
@@ -1187,6 +1201,22 @@ pub struct JobFilterConfig {
     /// 排除公司关键字
     pub company_exclude_keywords: Vec<String>,
 
+    /// 本地真实月薪下限（单位 K，如 15 表示过滤最高薪不足 15K 的岗位），None 表示不限
+    #[serde(default)]
+    pub min_salary_k: Option<u32>,
+
+    /// 薪资上限/下限最大允许跨度倍数（如 2.0 过滤 8-20K 等虚标宽跨度岗位），None 表示不限
+    #[serde(default)]
+    pub max_salary_span_ratio: Option<f32>,
+
+    /// 是否排除「面议」薪资岗位
+    #[serde(default)]
+    pub exclude_negotiable: bool,
+
+    /// 同一公司最多建联几个岗位（0 表示不限，推荐 1-2 避免重复轰炸同一公司 HR）
+    #[serde(default)]
+    pub max_greets_per_company: u32,
+
     /// 是否在确定性规则通过后使用大模型复核岗位意图
     #[serde(default)]
     pub enable_semantic_filter: bool,
@@ -1525,6 +1555,10 @@ fn default_humanize_delay_max_seconds() -> u64 {
 pub const MINUTES_PER_DAY: u32 = 24 * 60;
 /// 单轮打招呼上限的允许区间上界
 pub const MAX_GREETS_PER_ROUND: u32 = 200;
+/// 每日跨轮安全打招呼上限的允许区间上界
+pub const MAX_GREETS_PER_DAY: u32 = 300;
+/// 默认每日安全打招呼上限（低于 BOSS ~100-150 上限，降低风控风险）
+pub const DEFAULT_MAX_GREETS_PER_DAY: u32 = 50;
 /// 单轮时长上限的允许区间上界（分钟）
 pub const MAX_ROUND_MINUTES: u64 = 240;
 /// 自动结束时长的允许区间上界（小时）
@@ -1572,6 +1606,10 @@ pub struct PeriodicDeliveryConfig {
     /// 单轮最长跑多少分钟，0 表示不限
     #[serde(default = "default_max_round_minutes")]
     pub max_round_minutes: u64,
+
+    /// 单日每平台最多打招呼/投递多少条，0 表示不限（反封号每日护栏）
+    #[serde(default = "default_max_greets_per_day")]
+    pub max_greets_per_day: u32,
 }
 
 /// 配置文件里的一段投递时段。与 `rpa::schedule::DailyWindow` 同形，
@@ -1613,6 +1651,7 @@ impl Default for PeriodicDeliveryConfig {
             max_run_hours: 0,
             max_greets_per_round: default_max_greets_per_round(),
             max_round_minutes: default_max_round_minutes(),
+            max_greets_per_day: default_max_greets_per_day(),
         }
     }
 }
@@ -1634,6 +1673,54 @@ fn default_max_greets_per_round() -> u32 {
 
 fn default_max_round_minutes() -> u64 {
     60
+}
+
+fn default_max_greets_per_day() -> u32 {
+    DEFAULT_MAX_GREETS_PER_DAY
+}
+
+// ================================
+// 实时通知（可选 Webhook）
+// ================================
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationProvider {
+    #[default]
+    Feishu,
+    Wecom,
+    Dingtalk,
+    Bark,
+    Generic,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct NotificationConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub provider: NotificationProvider,
+    #[serde(default)]
+    pub webhook_url: String,
+    #[serde(default = "default_true")]
+    pub notify_manual_review: bool,
+    #[serde(default = "default_true")]
+    pub notify_risk_alert: bool,
+    #[serde(default = "default_true")]
+    pub notify_hr_reply: bool,
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: NotificationProvider::default(),
+            webhook_url: String::new(),
+            notify_manual_review: true,
+            notify_risk_alert: true,
+            notify_hr_reply: true,
+        }
+    }
 }
 
 // ================================
@@ -1999,6 +2086,15 @@ mod tests {
         config.humanize_config.enabled = true;
         config.humanize_config.persona_seed = 4_644_236_598_824_193;
         config.humanize_config.intensity = HumanizeIntensity::Cautious;
+        config.periodic_delivery_config.max_greets_per_day = 66;
+        config.notification_config.enabled = true;
+        config.notification_config.provider = NotificationProvider::Wecom;
+        config.notification_config.webhook_url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test".to_string();
+        config.job_profiles[0].job_filter_config.query = Some("Rust 后端".to_string());
+        config.job_profiles[0].job_filter_config.min_salary_k = Some(20);
+        config.job_profiles[0].job_filter_config.max_salary_span_ratio = Some(2.0);
+        config.job_profiles[0].job_filter_config.exclude_negotiable = true;
+        config.job_profiles[0].job_filter_config.max_greets_per_company = 2;
         config.job_filter_config.query = Some("Rust 后端".to_string());
         config.greet_config.enable_llm = true;
         config.greet_config.reply_prompt = Some("打招呼提示词".to_string());

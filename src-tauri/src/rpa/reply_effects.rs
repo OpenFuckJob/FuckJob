@@ -46,9 +46,27 @@ pub fn hold_for_review(
     reason: ManualReviewReason,
     detail: String,
 ) {
+    let title = if draft.job_name.is_empty() {
+        format!("{platform} · {}", reason.label())
+    } else if draft.company_name.is_empty() {
+        format!("{} · {}", draft.job_name, reason.label())
+    } else {
+        format!("{} - {}", draft.company_name, draft.job_name)
+    };
+    let body = if draft.last_message.is_empty() {
+        detail.clone()
+    } else {
+        format!("{detail}\n对方消息：{}", draft.last_message)
+    };
     let request = draft.to_request(platform, conversation_id, reason, detail);
     if let Err(error) = manual_review_dao::upsert(request) {
         let _ = logger::warning(format!("写入待人工处理列表失败: {error}"));
+    } else {
+        crate::notification::notify_current(
+            crate::notification::NotificationEvent::ManualReview,
+            title,
+            body,
+        );
     }
 }
 

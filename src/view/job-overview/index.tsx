@@ -56,6 +56,15 @@ interface ActiveConversation {
   message_count: number;
 }
 
+interface OverviewAttribution {
+  label: string;
+  total_jobs: number;
+  communicated_jobs: number;
+  replied_jobs: number;
+  reply_rate: number;
+  resume_sent_jobs: number;
+}
+
 interface JobSearchOverview {
   days: number;
   metrics: OverviewMetrics;
@@ -63,6 +72,8 @@ interface JobSearchOverview {
   daily_activity: DailyActivity[];
   source_distribution: SourceSlice[];
   active_conversations: ActiveConversation[];
+  profile_attribution?: OverviewAttribution[];
+  platform_attribution?: OverviewAttribution[];
   /** 高匹配的判定分数线，取自默认求职方案 */
   high_match_score: number;
 }
@@ -765,6 +776,62 @@ export default function JobOverviewPage({ onNavigate, onOpenConversation }: {
           </Card>
         </Col>
       </Row>
+
+      {((overview.profile_attribution?.length ?? 0) > 0 ||
+        (overview.platform_attribution?.length ?? 0) > 0) && (
+        <Row gutter={[14, 14]} className="overview-bottom">
+          <Col xs={24} lg={12}>
+            <Card className="panel-card" title="求职方案转化对比">
+              <Table<OverviewAttribution>
+                rowKey="label"
+                size="small"
+                pagination={false}
+                dataSource={overview.profile_attribution ?? []}
+                locale={{ emptyText: "当前时间范围内暂无方案归因数据" }}
+                columns={[
+                  { title: "求职方案", dataIndex: "label", ellipsis: true },
+                  { title: "活跃岗位", dataIndex: "total_jobs", width: 84, align: "right" },
+                  { title: "有效沟通", dataIndex: "communicated_jobs", width: 84, align: "right" },
+                  { title: "收到回复", dataIndex: "replied_jobs", width: 84, align: "right" },
+                  {
+                    title: "回复率",
+                    dataIndex: "reply_rate",
+                    width: 84,
+                    align: "right",
+                    render: (rate: number) => `${formatPercent(rate)}%`,
+                  },
+                  { title: "简历交换", dataIndex: "resume_sent_jobs", width: 84, align: "right" },
+                ]}
+              />
+            </Card>
+          </Col>
+          <Col xs={24} lg={12}>
+            <Card className="panel-card" title="平台转化对比">
+              <Table<OverviewAttribution>
+                rowKey="label"
+                size="small"
+                pagination={false}
+                dataSource={overview.platform_attribution ?? []}
+                locale={{ emptyText: "当前时间范围内暂无平台对比数据" }}
+                columns={[
+                  { title: "招聘平台", dataIndex: "label", ellipsis: true },
+                  { title: "活跃岗位", dataIndex: "total_jobs", width: 84, align: "right" },
+                  { title: "有效沟通", dataIndex: "communicated_jobs", width: 84, align: "right" },
+                  { title: "收到回复", dataIndex: "replied_jobs", width: 84, align: "right" },
+                  {
+                    title: "回复率",
+                    dataIndex: "reply_rate",
+                    width: 84,
+                    align: "right",
+                    render: (rate: number) => `${formatPercent(rate)}%`,
+                  },
+                  { title: "简历交换", dataIndex: "resume_sent_jobs", width: 84, align: "right" },
+                ]}
+              />
+            </Card>
+          </Col>
+        </Row>
+      )}
 
       <div className="overview-footnote">
         <InfoCircleOutlined />

@@ -1,10 +1,22 @@
 export type JobPlatform = "boss" | "liepin" | "51job";
 
+export type JobPipelineStage =
+  | "pending"
+  | "applied"
+  | "replied"
+  | "interview_scheduled"
+  | "interviewing"
+  | "offer"
+  | "rejected"
+  | "archived";
+
 export interface JobDetail {
   source_url?: string | null;
   resume_delivery_pending?: boolean;
   id: string;
   platform?: JobPlatform | "";
+  profile_id?: string | null;
+  profile_name?: string | null;
   title: string;
   company_name: string;
   detail: string;
@@ -15,6 +27,9 @@ export interface JobDetail {
   created_at: string;
   resume_sent_at: string | null;
   updated_at: string;
+  pipeline_stage?: JobPipelineStage | null;
+  notes?: string | null;
+  interview_at?: string | null;
 }
 
 export type CommunicationStatus = "rejected" | "replied" | "no_reply";

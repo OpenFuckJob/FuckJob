@@ -7,21 +7,12 @@ export interface Option {
   name: string;
 }
 
-export const payTypeOptions: Option[] = conditions.payTypeList;
 export const experienceOptions: Option[] = conditions.experienceList;
 export const salaryOptions: Option[] = conditions.salaryList;
 export const stageOptions: Option[] = conditions.stageList;
 export const scaleOptions: Option[] = conditions.scaleList;
 export const degreeOptions: Option[] = conditions.degreeList;
 export const jobTypeOptions: Option[] = conditions.jobTypeList;
-
-// Flatten industry for simple select
-export const industryOptions: Option[] = industry.flatMap((cat) =>
-  cat.subLevelModelList.map((sub) => ({
-    code: sub.code,
-    name: `${cat.name} / ${sub.name}`,
-  })),
-);
 
 export interface TreeOption {
   value: number;
@@ -37,19 +28,6 @@ export const industryTreeOptions: TreeOption[] = industry.map((cat) => ({
     label: sub.name,
   })),
 }));
-
-// Flatten city for simple select (top level and sub level)
-export const cityOptions: Option[] = site.flatMap((prov) => {
-  const result: Option[] = [];
-  if (prov.subLevelModelList) {
-    prov.subLevelModelList.forEach((city) => {
-      result.push({ code: city.code, name: city.name });
-    });
-  } else {
-    result.push({ code: prov.code, name: prov.name });
-  }
-  return result;
-});
 
 export const nationwideCityCode = 100010000;
 

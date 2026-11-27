@@ -42,6 +42,8 @@ import type {
   JobTaskInfo,
   JobTaskOverview,
   PlatformKind,
+  ReadinessReport,
+  TodayGreetCounts,
 } from "../../types/rpa";
 import {
   buildPeriodicPlan,
@@ -54,13 +56,16 @@ import type { PeriodicPlan } from "../../types/rpa";
 import type { JobDetail } from "../../types/job-detail";
 import ManualReviewDrawer, { useManualReview } from "./manual-review-drawer";
 import {
+  DEFAULT_MAX_GREETS_PER_DAY,
   getDefaultJobProfile,
   DEFAULT_MAX_PARALLEL_TASKS,
   getJobProfiles,
   getPeriodicDeliveryConfig,
   getReplyPollingConfig,
   type AppRuntimeConfig,
+  type ConfigGroup,
   type PeriodicDeliveryConfig,
+  type ReplyPollingConfig,
 } from "../../types/app-config";
 import PeriodicDeliverySection, {
   canResetPeriodicDelivery,
@@ -289,6 +294,15 @@ export function describePeriodicBlocker(
   return null;
 }
 
+export function describeReplyActiveHours(
+  polling: Pick<ReplyPollingConfig, "active_hours_enabled" | "active_start_hour" | "active_end_hour">,
+): string {
+  if (!polling.active_hours_enabled || polling.active_start_hour === polling.active_end_hour) {
+    return "全天回复";
+  }
+  return `只在 ${polling.active_start_hour}:00 - ${polling.active_end_hour}:00 之间回复`;
+}
+
 export function requestStopJobTask(taskId: string): Promise<CommandResult<void>> {
   return invoke<CommandResult<void>>("stop_job_task", { taskId });
 }
@@ -309,11 +323,13 @@ interface StatTile {
 
 const WorkspacePage = ({
   config,
+  onNavigate,
+  onOpenConfig,
   onOpenConversation,
 }: {
   config: AppRuntimeConfig;
   onNavigate?: (tab: "job-data") => void;
-  onOpenConfig?: (group: "resume" | "llm" | "job" | "greet" | "reply" | "browser") => void;
+  onOpenConfig?: (group: ConfigGroup) => void;
   onOpenConversation?: (jobId: string) => void;
 }) => {
   const [environmentStates, setEnvironmentStates] = useState<
@@ -348,7 +364,12 @@ const WorkspacePage = ({
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [queueFilter, setQueueFilter] = useState<QueueFilter>("all");
   const [jobs, setJobs] = useState<JobDetail[]>([]);
+  const [todayCounts, setTodayCounts] = useState<TodayGreetCounts>({ boss: 0, liepin: 0, job51: 0 });
+  const [readinessReport, setReadinessReport] = useState<ReadinessReport | null>(null);
+  const [readinessLoading, setReadinessLoading] = useState(false);
   const [logCollapsed, setLogCollapsed] = useState(true);
+  const logCollapsedRef = useRef(logCollapsed);
+  logCollapsedRef.current = logCollapsed;
   const logRef = useRef<HTMLPreElement>(null);
   const previousActiveTaskIdsRef = useRef<Set<string>>(new Set());
   const taskRefreshPromiseRef = useRef<Promise<void> | null>(null);
@@ -356,9 +377,15 @@ const WorkspacePage = ({
 
   const loadJobs = useCallback(async () => {
     try {
-      const result = await invoke<CommandResult<JobDetail[]>>("job_list");
-      if (result.success && result.data) {
-        setJobs(result.data);
+      const [jobsResult, countsResult] = await Promise.all([
+        invoke<CommandResult<JobDetail[]>>("job_list"),
+        invoke<CommandResult<TodayGreetCounts>>("job_today_greet_counts").catch(() => null),
+      ]);
+      if (jobsResult.success && jobsResult.data) {
+        setJobs(jobsResult.data);
+      }
+      if (countsResult?.success && countsResult.data) {
+        setTodayCounts(countsResult.data);
       }
     } catch {
       // ignore
@@ -416,7 +443,12 @@ const WorkspacePage = ({
     let disposed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
-      await Promise.all([refreshLog(), refreshTaskStatus()]);
+      // 日志终端收起时不再每 2 秒读盘 500 行，展开时立即拉取一次
+      if (logCollapsedRef.current) {
+        await refreshTaskStatus();
+      } else {
+        await Promise.all([refreshLog(), refreshTaskStatus()]);
+      }
       if (!disposed) timer = setTimeout(() => void poll(), 2000);
     };
     void poll();
@@ -425,6 +457,42 @@ const WorkspacePage = ({
       if (timer) clearTimeout(timer);
     };
   }, [loadJobs, refreshLog, refreshTaskStatus]);
+
+  useEffect(() => {
+    if (!logCollapsed) {
+      void refreshLog();
+    }
+  }, [logCollapsed, refreshLog]);
+
+  // 启动弹窗打开或切换模式/方案时，调用后端准备度预检，提前暴露缺失配置并给出一键跳转入口
+  useEffect(() => {
+    if (!startModalOpen) {
+      setReadinessReport(null);
+      return;
+    }
+    let stale = false;
+    setReadinessLoading(true);
+    const needsProfile = selectedMode === "job_hunting" || selectedMode === "periodic_job_hunting";
+    void invoke<CommandResult<ReadinessReport>>("get_readiness_report", {
+      platform: modalPlatform,
+      mode: selectedMode,
+      profileId: needsProfile ? selectedProfileId : undefined,
+    })
+      .then((result) => {
+        if (!stale && result.success && result.data) {
+          setReadinessReport(result.data);
+        }
+      })
+      .catch(() => {
+        if (!stale) setReadinessReport(null);
+      })
+      .finally(() => {
+        if (!stale) setReadinessLoading(false);
+      });
+    return () => {
+      stale = true;
+    };
+  }, [modalPlatform, selectedMode, selectedProfileId, startModalOpen]);
 
   useEffect(() => {
     if (logRef.current) {
@@ -675,11 +743,22 @@ const WorkspacePage = ({
         return summaryRow(
           "轮询节奏",
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            每 {polling.interval_minutes} 分钟检查一次新消息
-            {polling.active_hours_enabled
-              ? `，只在 ${polling.active_start_hour}:00 - ${polling.active_end_hour}:00 之间回复`
-              : "，全天回复"}
-            。可在「配置中心 · 自动回复」调整
+            每 {polling.interval_minutes} 分钟检查一次新消息，{describeReplyActiveHours(polling)}。
+            {onOpenConfig ? (
+              <Button
+                type="link"
+                size="small"
+                style={{ padding: "0 4px", height: "auto", fontSize: 12 }}
+                onClick={() => {
+                  closeStartModal();
+                  onOpenConfig("runtime");
+                }}
+              >
+                在「运行与防封」调整
+              </Button>
+            ) : (
+              "可在「配置中心 · 运行与防封」调整"
+            )}
           </Typography.Text>,
         );
       case "sync_chat_history":
@@ -709,10 +788,11 @@ const WorkspacePage = ({
     {
       label: "已建联岗位",
       value: `${totalJobs}`,
-      subtitle: "本地已入库",
+      subtitle: onNavigate ? "本地已入库 · 点击管理" : "本地已入库",
       icon: <DatabaseOutlined style={{ fontSize: 18 }} />,
       color: "#0ea5e9",
       bg: "rgba(14,165,233,0.1)",
+      onClick: onNavigate ? () => onNavigate("job-data") : undefined,
     },
     {
       label: "已投递简历",
@@ -721,6 +801,7 @@ const WorkspacePage = ({
       icon: <SendOutlined style={{ fontSize: 18 }} />,
       color: "#f59e0b",
       bg: "rgba(245,158,11,0.1)",
+      onClick: onNavigate ? () => onNavigate("job-data") : undefined,
     },
     {
       label: "沟通回复",
@@ -729,6 +810,7 @@ const WorkspacePage = ({
       icon: <MessageOutlined style={{ fontSize: 18 }} />,
       color: "#10b981",
       bg: "rgba(16,185,129,0.1)",
+      onClick: onNavigate ? () => onNavigate("job-data") : undefined,
     },
     {
       label: "待你处理",
@@ -797,13 +879,38 @@ const WorkspacePage = ({
               onChange={setPlatform}
             />
 
-            <div>
-              <Typography.Title level={4} style={{ margin: 0, color: currentPlatformMeta.accent }}>
-                {currentPlatformMeta.label}
-              </Typography.Title>
-              <Typography.Text type="secondary" style={{ fontSize: 12.5 }}>
-                {currentPlatformMeta.description}
-              </Typography.Text>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+              <div>
+                <Typography.Title level={4} style={{ margin: 0, color: currentPlatformMeta.accent }}>
+                  {currentPlatformMeta.label}
+                </Typography.Title>
+                <Typography.Text type="secondary" style={{ fontSize: 12.5 }}>
+                  {currentPlatformMeta.description}
+                </Typography.Text>
+              </div>
+              {(() => {
+                const dailyLimit =
+                  getPeriodicDeliveryConfig(config).max_greets_per_day ??
+                  DEFAULT_MAX_GREETS_PER_DAY;
+                const todayUsed =
+                  platform === "boss"
+                    ? todayCounts.boss
+                    : platform === "liepin"
+                      ? todayCounts.liepin
+                      : todayCounts.job51;
+                const reached = dailyLimit > 0 && todayUsed >= dailyLimit;
+                const warning = dailyLimit > 0 && !reached && todayUsed >= Math.ceil(dailyLimit * 0.8);
+                return (
+                  <Tag
+                    color={reached ? "error" : warning ? "warning" : "default"}
+                    style={{ margin: 0, cursor: onOpenConfig ? "pointer" : undefined, flexShrink: 0 }}
+                    title={onOpenConfig ? "点击前往「运行与防封」调整每日安全上限" : undefined}
+                    onClick={onOpenConfig ? () => onOpenConfig("runtime") : undefined}
+                  >
+                    今日建联 {todayUsed}{dailyLimit > 0 ? ` / ${dailyLimit}` : " 条"}
+                  </Tag>
+                );
+              })()}
             </div>
 
             <div style={{ padding: 14, border: "1px solid #e8edf3", borderRadius: 12, background: "#fff" }}>
@@ -948,7 +1055,9 @@ const WorkspacePage = ({
                 >
                   <div>
                     <Space size={6}>
-                      <Tag color={task.platform === "boss" ? "blue" : "purple"}>{PLATFORM_META[task.platform].shortLabel}</Tag>
+                      <Tag color={task.platform === "51job" ? "orange" : task.platform === "boss" ? "blue" : "purple"}>
+                        {PLATFORM_META[task.platform].shortLabel}
+                      </Tag>
                       <Typography.Text strong>{getFlowModeLabel(task.mode)}</Typography.Text>
                     </Space>
                     <Typography.Text type="secondary" style={{ display: "block", marginTop: 3, fontSize: 11.5 }}>
@@ -999,7 +1108,10 @@ const WorkspacePage = ({
         okText="确认启动"
         cancelText="取消"
         okButtonProps={{
-          disabled: modalTaskStartPending || !!periodicBlocker,
+          disabled:
+            modalTaskStartPending ||
+            !!periodicBlocker ||
+            (readinessReport !== null && !readinessReport.ready),
         }}
       >
         <Radio.Group
@@ -1053,6 +1165,53 @@ const WorkspacePage = ({
             {modeSummary}
           </div>
         )}
+
+        {readinessReport &&
+          readinessReport.items.some((item) => item.level !== "ready") && (
+            <div
+              style={{
+                marginTop: 14,
+                paddingTop: 14,
+                borderTop: "1px solid #e8edf3",
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+              }}
+            >
+              <Typography.Text strong style={{ fontSize: 12.5 }}>
+                启动前准备度检查
+              </Typography.Text>
+              {readinessReport.items
+                .filter((item) => item.level !== "ready")
+                .map((item) => (
+                  <Alert
+                    key={item.key}
+                    type={item.level === "blocked" ? "error" : "warning"}
+                    showIcon
+                    message={`${item.label}：${item.message}`}
+                    action={
+                      item.config_group && onOpenConfig ? (
+                        <Button
+                          size="small"
+                          type="link"
+                          onClick={() => {
+                            closeStartModal();
+                            onOpenConfig(item.config_group as ConfigGroup);
+                          }}
+                        >
+                          去配置
+                        </Button>
+                      ) : undefined
+                    }
+                  />
+                ))}
+            </div>
+          )}
+        {readinessLoading && !readinessReport && (
+          <Typography.Text type="secondary" style={{ display: "block", marginTop: 12, fontSize: 12 }}>
+            正在检查当前方案与运行环境准备度...
+          </Typography.Text>
+        )}
       </Modal>
 
       {/* ── 周期投递参数抽屉 ── */}
@@ -1081,7 +1240,7 @@ const WorkspacePage = ({
           showIcon
           style={{ marginBottom: 16 }}
           message="这里的改动只作用于本次任务"
-          description="要改每次启动的初值，请到「配置中心 · 岗位筛选 · 周期投递」。"
+          description="要改每次启动的初值或每日安全上限，请到「配置中心 · 系统能力 · 运行与防封」。"
         />
         <PeriodicDeliverySection
           variant="plain"

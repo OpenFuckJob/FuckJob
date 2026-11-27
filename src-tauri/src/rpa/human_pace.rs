@@ -95,6 +95,19 @@ impl GreetPacer {
         sleep_ms_interruptible(pause.millis()).await
     }
 
+    /// 已经点击展开岗位详情、但后续在活跃度/规则/AI 复核环节跳过时的阅读停顿。
+    ///
+    /// 此前跳过分支直接 `continue`，导致高过滤率下以 1 秒/次的速率连续点击上百张卡片
+    /// 触发 BOSS 浏览频控（Issue #19）。开启拟人化时模拟 1.5~3.5 秒浏览停顿。
+    pub async fn after_detail_view(&mut self) -> bool {
+        let Some(persona) = self.persona else {
+            return !is_job_task_stop_requested();
+        };
+        let base_ms = 1_500.0 + roll() * 2_000.0;
+        let delay_ms = (base_ms * persona.pace.max(1.0)).round() as u64;
+        sleep_ms_interruptible(delay_ms).await
+    }
+
     /// 算出这一步之后该等多久，并推进休息计数。
     ///
     /// 与真正的等待分开：等待动辄十几分钟，混在一起就没法在单测里验证

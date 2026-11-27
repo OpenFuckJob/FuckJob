@@ -49,11 +49,22 @@ pub fn get_readiness_report(
     app_handle: tauri::AppHandle,
     platform: PlatformKind,
     mode: FlowMode,
+    profile_id: Option<String>,
 ) -> CommandResult<ReadinessReport> {
-    match crate::config::load_app_config_inner(app_handle) {
-        Ok(config) => CommandResult::ok(run_flow::inspect_readiness(platform, mode, &config)),
-        Err(error) => CommandResult::err(error),
-    }
+    let base_config = match crate::config::load_app_config_inner(app_handle) {
+        Ok(config) => config,
+        Err(error) => return CommandResult::err(error),
+    };
+    let config = match mode {
+        FlowMode::JobHunting | FlowMode::PeriodicJobHunting => {
+            match resolve_job_profile(&base_config, profile_id.as_deref()) {
+                Ok(resolved) => resolved.config,
+                Err(error) => return CommandResult::err(error),
+            }
+        }
+        _ => base_config,
+    };
+    CommandResult::ok(run_flow::inspect_readiness(platform, mode, &config))
 }
 
 #[tauri::command]
@@ -102,88 +113,6 @@ pub async fn preflight_job_task(
         Err(_) => return CommandResult::err("平台环境检查线程异常退出"),
     }
     CommandResult::ok(report)
-}
-
-#[tauri::command]
-pub async fn boss_flow(
-    app_handle: tauri::AppHandle,
-    mode: FlowMode,
-    plan: Option<PeriodicPlan>,
-) -> CommandResult<()> {
-    rpa_flow(app_handle, PlatformKind::Boss, mode, plan).await
-}
-
-#[tauri::command]
-pub async fn rpa_flow(
-    app_handle: tauri::AppHandle,
-    platform: PlatformKind,
-    mode: FlowMode,
-    plan: Option<PeriodicPlan>,
-) -> CommandResult<()> {
-    let _running_guard = match run_flow::try_start_job_task() {
-        Ok(guard) => guard,
-        Err(error) => return CommandResult::err(error),
-    };
-
-    if let Err(error) = logger::clear() {
-        return CommandResult::err(error);
-    }
-    if let Err(error) = logger::set_platform(Some(platform)) {
-        return CommandResult::err(error);
-    }
-
-    let app_runtime_config_result = load_app_config(app_handle);
-    if app_runtime_config_result.error.is_some() || app_runtime_config_result.data.is_none() {
-        let _ = logger::set_platform(None);
-        return CommandResult::err("load app config failed");
-    }
-    let app_runtime_config = app_runtime_config_result.data.unwrap();
-    let readiness = run_flow::inspect_readiness(platform, mode, &app_runtime_config);
-    if !readiness.ready {
-        let missing = readiness
-            .items
-            .iter()
-            .filter(|item| item.level == run_flow::ReadinessLevel::Blocked)
-            .map(|item| item.label.as_str())
-            .collect::<Vec<_>>()
-            .join("、");
-        let _ = logger::set_platform(None);
-        return CommandResult::err(format!("任务准备未完成：{missing}"));
-    }
-
-    let _ = logger::info("求职任务已启动（配置内容已隐藏）");
-
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    std::thread::spawn(move || {
-        // Logger context is thread-local. Legacy callers still execute the
-        // actual flow on a dedicated worker, so install the platform again on
-        // that thread instead of relying on the command thread's context.
-        let _log_context = logger::scoped_context(None, Some(platform));
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build();
-        let result = match rt {
-            Ok(runtime) => runtime.block_on(run_flow::execute_rpa_flow(
-                platform,
-                mode,
-                plan,
-                &app_runtime_config,
-            )),
-            Err(e) => Err(anyhow::anyhow!("{e}")),
-        };
-        let _ = tx.send(result);
-    });
-
-    let result = rx.await;
-    let stopped = run_flow::is_job_task_stop_requested();
-    if !stopped {
-        if let Some(message) = flow_error_message(&result) {
-            let _ = logger::warning(message);
-        }
-    }
-    let command_result = command_result_for_flow(stopped, result);
-    let _ = logger::set_platform(None);
-    command_result
 }
 
 /// Enqueues a browser automation job and returns immediately.
@@ -267,30 +196,6 @@ pub fn start_job_task(
     }
 }
 
-fn flow_error_message(
-    result: &Result<Result<(), anyhow::Error>, tokio::sync::oneshot::error::RecvError>,
-) -> Option<String> {
-    match result {
-        Ok(Ok(())) => None,
-        Ok(Err(error)) => Some(format!("求职任务执行失败：{error}")),
-        Err(_) => Some("求职任务后台线程异常退出，未返回错误详情".to_string()),
-    }
-}
-
-fn command_result_for_flow(
-    stopped: bool,
-    result: Result<Result<(), anyhow::Error>, tokio::sync::oneshot::error::RecvError>,
-) -> CommandResult<()> {
-    if stopped {
-        return CommandResult::err(crate::error::AppError::cancelled("任务已由用户停止"));
-    }
-    match result {
-        Ok(Ok(())) => CommandResult::ok(()),
-        Ok(Err(e)) => CommandResult::err(crate::error::AppError::from(e)),
-        Err(e) => CommandResult::err(crate::error::AppError::from(e)),
-    }
-}
-
 #[tauri::command]
 pub fn get_job_task_status() -> CommandResult<JobTaskOverview> {
     CommandResult::ok(JOB_TASK_MANAGER.overview())
@@ -300,8 +205,6 @@ pub fn get_job_task_status() -> CommandResult<JobTaskOverview> {
 pub fn stop_job_task(task_id: Option<String>) -> CommandResult<()> {
     let result = match task_id {
         Some(task_id) => JOB_TASK_MANAGER.stop(&task_id),
-        // Keep the pre-queue command contract working for callers that still
-        // invoke `rpa_flow`/`boss_flow` directly.
         None => run_flow::stop_job_task(),
     };
     match result {
@@ -315,29 +218,5 @@ pub fn read_log_file(lines: Option<usize>) -> CommandResult<String> {
     match logger::read_tail_lines(lines.unwrap_or(500)) {
         Ok(content) => CommandResult::ok(content),
         Err(error) => CommandResult::err(error.to_string()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{command_result_for_flow, flow_error_message};
-    use crate::error::AppErrorCode;
-    use tokio::sync::oneshot::error::RecvError;
-
-    #[test]
-    fn user_requested_stop_maps_to_cancelled() {
-        let result = command_result_for_flow(true, Ok(Ok(())));
-        assert_eq!(result.error.unwrap().code, AppErrorCode::Cancelled);
-    }
-
-    #[test]
-    fn flow_error_message_exposes_internal_detail_for_logging() {
-        let result: Result<Result<(), anyhow::Error>, RecvError> =
-            Ok(Err(anyhow::anyhow!("岗位详情面板加载失败")));
-
-        assert_eq!(
-            flow_error_message(&result),
-            Some("求职任务执行失败：岗位详情面板加载失败".to_string())
-        );
     }
 }

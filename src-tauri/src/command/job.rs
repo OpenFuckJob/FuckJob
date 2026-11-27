@@ -1,6 +1,6 @@
 use crate::command::base::CommandResult;
 use crate::config;
-use crate::dao::model::{ChatMessageRecord, InterviewJobAnalysis, JobDetail};
+use crate::dao::model::{ChatMessageRecord, InterviewJobAnalysis, JobDetail, JobPipelineStage};
 use crate::dao::{analysis_dao, chat_message_dao, job_detail_dao};
 use crate::job_description::ParsedJobDescription;
 use chrono::{Duration, Local, NaiveDate, NaiveDateTime, TimeZone};
@@ -174,6 +174,9 @@ mod communication_status_tests {
             created_at: "2026-08-19 09:00:00".into(),
             resume_sent_at: None,
             updated_at: "2026-08-19 09:00:00".into(),
+            pipeline_stage: None,
+            notes: None,
+            interview_at: None,
         }
     }
 
@@ -288,6 +291,73 @@ mod communication_status_tests {
         assert_eq!(item.latest_message_at, Some(100));
         assert_eq!(item.latest_message_received, Some(false));
     }
+
+    #[test]
+    fn builds_profile_and_platform_attribution() {
+        let mut a = job("boss-1");
+        a.profile_name = Some("Rust 后端".into());
+        a.is_reply = true;
+        a.is_send_resume = true;
+
+        let mut b = job("liepin:2");
+        b.platform = "liepin".into();
+        b.profile_name = Some("Go 后端".into());
+
+        let jobs = vec![a, b];
+        let msgs = vec![
+            message("boss-1", 1, true, "发个简历看看", 10),
+            message("liepin:2", 2, false, "您好我对岗位感兴趣", 20),
+        ];
+        let job_refs: Vec<&JobDetail> = jobs.iter().collect();
+        let msg_refs: Vec<&ChatMessageRecord> = msgs.iter().collect();
+
+        let by_profile = super::build_attribution(&job_refs, &msg_refs, |j| {
+            j.profile_name.clone().unwrap_or_else(|| "未归属".into())
+        });
+        assert_eq!(by_profile.len(), 2);
+        let rust = by_profile.iter().find(|r| r.label == "Rust 后端").unwrap();
+        assert_eq!(rust.replied_jobs, 1);
+        assert_eq!(rust.communicated_jobs, 1);
+        assert_eq!(rust.reply_rate, 100.0);
+        assert_eq!(rust.resume_sent_jobs, 1);
+
+        let go = by_profile.iter().find(|r| r.label == "Go 后端").unwrap();
+        assert_eq!(go.replied_jobs, 0);
+        assert_eq!(go.communicated_jobs, 1);
+        assert_eq!(go.reply_rate, 0.0);
+    }
+
+    #[test]
+    fn exports_csv_with_bom_and_markdown_with_notes_and_jd() {
+        let mut record = job("boss-export-1");
+        record.title = "Rust 工程师, 后端".into();
+        record.company_name = "星辰\"科技\"".into();
+        record.salary = "25-40K".into();
+        record.detail = "负责核心分布式系统研发".into();
+        record.pipeline_stage = Some(super::JobPipelineStage::InterviewScheduled);
+        record.interview_at = Some("2026-08-25 14:30".into());
+        record.notes = Some("一面问 tokio 调度".into());
+
+        let items = build_job_list_items(
+            vec![record],
+            vec![message("boss-export-1", 1, true, "周二下午两点方便面试吗？", 100)],
+        );
+        let mut scores = std::collections::HashMap::new();
+        scores.insert("boss-export-1", 92u8);
+
+        let csv = super::render_jobs_csv(&items, &scores);
+        assert!(csv.starts_with('\u{FEFF}'));
+        assert!(csv.contains("\"Rust 工程师, 后端\""));
+        assert!(csv.contains("\"星辰\"\"科技\"\"\""));
+        assert!(csv.contains("已约面"));
+        assert!(csv.contains("92"));
+
+        let md = super::render_jobs_markdown(&items, &scores);
+        assert!(md.contains("## Rust 工程师, 后端 — 星辰\"科技\""));
+        assert!(md.contains("一面问 tokio 调度"));
+        assert!(md.contains("负责核心分布式系统研发"));
+        assert!(md.contains("92 分"));
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -319,6 +389,17 @@ pub struct OverviewSourceSlice {
     pub count: usize,
 }
 
+/// 按求职方案或平台聚合的投递转化对比
+#[derive(Debug, Serialize, PartialEq)]
+pub struct OverviewAttribution {
+    pub label: String,
+    pub total_jobs: usize,
+    pub communicated_jobs: usize,
+    pub replied_jobs: usize,
+    pub reply_rate: f64,
+    pub resume_sent_jobs: usize,
+}
+
 #[derive(Debug, Serialize)]
 pub struct OverviewConversation {
     pub job_id: String,
@@ -342,6 +423,10 @@ pub struct JobSearchOverview {
     pub daily_activity: Vec<OverviewDailyActivity>,
     pub source_distribution: Vec<OverviewSourceSlice>,
     pub active_conversations: Vec<OverviewConversation>,
+    /// 按求职方案聚合的转化对比（哪个简历/方向方案回复率更高）
+    pub profile_attribution: Vec<OverviewAttribution>,
+    /// 按招聘平台聚合的转化对比
+    pub platform_attribution: Vec<OverviewAttribution>,
     /// 高匹配的判定分数线，取自默认求职方案的岗位分析配置
     pub high_match_score: u8,
 }
@@ -511,6 +596,79 @@ fn build_source_distribution(jobs: &[&JobDetail]) -> Vec<OverviewSourceSlice> {
     slices
 }
 
+fn build_attribution<F>(
+    jobs: &[&JobDetail],
+    messages: &[&ChatMessageRecord],
+    label_of: F,
+) -> Vec<OverviewAttribution>
+where
+    F: Fn(&JobDetail) -> String,
+{
+    let message_job_ids: HashSet<&str> = messages
+        .iter()
+        .map(|message| message.job_id.as_str())
+        .collect();
+    let received_job_ids: HashSet<&str> = messages
+        .iter()
+        .filter(|message| message.received)
+        .map(|message| message.job_id.as_str())
+        .collect();
+
+    struct Bucket {
+        total_jobs: usize,
+        communicated_jobs: usize,
+        replied_jobs: usize,
+        resume_sent_jobs: usize,
+    }
+
+    let mut grouped: HashMap<String, Bucket> = HashMap::new();
+    for job in jobs {
+        let label = label_of(job);
+        let entry = grouped.entry(label).or_insert(Bucket {
+            total_jobs: 0,
+            communicated_jobs: 0,
+            replied_jobs: 0,
+            resume_sent_jobs: 0,
+        });
+        entry.total_jobs += 1;
+        let communicated = job.is_reply || message_job_ids.contains(job.id.as_str());
+        let replied = job.is_reply || received_job_ids.contains(job.id.as_str());
+        if communicated {
+            entry.communicated_jobs += 1;
+        }
+        if replied {
+            entry.replied_jobs += 1;
+        }
+        if job.is_send_resume {
+            entry.resume_sent_jobs += 1;
+        }
+    }
+
+    let mut rows: Vec<OverviewAttribution> = grouped
+        .into_iter()
+        .map(|(label, bucket)| OverviewAttribution {
+            label,
+            total_jobs: bucket.total_jobs,
+            communicated_jobs: bucket.communicated_jobs,
+            replied_jobs: bucket.replied_jobs,
+            reply_rate: if bucket.communicated_jobs == 0 {
+                0.0
+            } else {
+                bucket.replied_jobs as f64 * 100.0 / bucket.communicated_jobs as f64
+            },
+            resume_sent_jobs: bucket.resume_sent_jobs,
+        })
+        .collect();
+
+    rows.sort_by(|left, right| {
+        right
+            .total_jobs
+            .cmp(&left.total_jobs)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    rows
+}
+
 fn build_job_search_overview(
     days: u32,
     high_match_score: u8,
@@ -549,6 +707,17 @@ fn build_job_search_overview(
         start,
     );
     let source_distribution = build_source_distribution(&current.jobs);
+    let profile_attribution = build_attribution(&current.jobs, &current.messages, |job| {
+        job.profile_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or("历史 / 未归属")
+            .to_string()
+    });
+    let platform_attribution = build_attribution(&current.jobs, &current.messages, |job| {
+        platform_label(job).to_string()
+    });
 
     // 趋势图独立于统计窗口取全量数据，保证「今日」视图仍能看到走势
     let trend_days = days.clamp(7, 30);
@@ -641,6 +810,8 @@ fn build_job_search_overview(
         daily_activity,
         source_distribution,
         active_conversations,
+        profile_attribution,
+        platform_attribution,
         high_match_score,
     })
 }
@@ -683,6 +854,239 @@ pub fn job_delete(id: String) -> CommandResult<()> {
         Ok(true) => CommandResult::ok(()),
         Ok(false) => CommandResult::err(format!("岗位不存在: {}", id)),
         Err(e) => CommandResult::err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+pub fn job_batch_delete(ids: Vec<String>) -> CommandResult<usize> {
+    match job_detail_dao::delete_many(&ids) {
+        Ok(removed) => CommandResult::ok(removed),
+        Err(e) => CommandResult::err(e.to_string()),
+    }
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct TodayGreetCounts {
+    pub boss: u32,
+    pub liepin: u32,
+    pub job51: u32,
+}
+
+#[tauri::command]
+pub fn job_today_greet_counts() -> CommandResult<TodayGreetCounts> {
+    let result = (|| -> anyhow::Result<TodayGreetCounts> {
+        let jobs = job_detail_dao::list()?;
+        let today = Local::now().format("%Y-%m-%d").to_string();
+        Ok(TodayGreetCounts {
+            boss: job_detail_dao::count_jobs_on_date_for_platform(&jobs, "boss", &today),
+            liepin: job_detail_dao::count_jobs_on_date_for_platform(&jobs, "liepin", &today),
+            job51: job_detail_dao::count_jobs_on_date_for_platform(&jobs, "51job", &today),
+        })
+    })();
+    match result {
+        Ok(counts) => CommandResult::ok(counts),
+        Err(error) => CommandResult::err(error.to_string()),
+    }
+}
+
+fn pipeline_stage_label(item: &JobListItem) -> &'static str {
+    if let Some(stage) = item.job.pipeline_stage {
+        return match stage {
+            JobPipelineStage::Pending => "待投递",
+            JobPipelineStage::Applied => "已投递",
+            JobPipelineStage::Replied => "已回复",
+            JobPipelineStage::InterviewScheduled => "已约面",
+            JobPipelineStage::Interviewing => "面试中",
+            JobPipelineStage::Offer => "已拿 Offer",
+            JobPipelineStage::Rejected => "已婉拒",
+            JobPipelineStage::Archived => "已归档",
+        };
+    }
+    if item.communication_status == CommunicationStatus::Rejected {
+        "已婉拒"
+    } else if item.job.is_reply || item.communication_status == CommunicationStatus::Replied {
+        "已回复"
+    } else if item.job.is_send_resume {
+        "已投递"
+    } else {
+        "待投递"
+    }
+}
+
+fn communication_status_label(status: CommunicationStatus) -> &'static str {
+    match status {
+        CommunicationStatus::Replied => "对方已回复",
+        CommunicationStatus::Rejected => "明确婉拒",
+        CommunicationStatus::NoReply => "暂无回复",
+    }
+}
+
+fn csv_escape(field: &str) -> String {
+    let sanitized = field.replace('\r', "");
+    if sanitized.contains([',', '"', '\n']) {
+        format!("\"{}\"", sanitized.replace('"', "\"\""))
+    } else {
+        sanitized
+    }
+}
+
+fn render_jobs_csv(
+    items: &[JobListItem],
+    scores_by_job_id: &HashMap<&str, u8>,
+) -> String {
+    // 加上 UTF-8 BOM，Windows Excel 直接双击打开也不会乱码
+    let mut out = String::from("\u{FEFF}平台,岗位名称,公司名称,薪资,城市,求职方案,推进阶段,沟通状态,AI匹配度,已投简历,面试时间,面试笔记,最新消息,原始链接,创建时间\n");
+    for item in items {
+        let score = scores_by_job_id
+            .get(item.job.id.as_str())
+            .map(|value| value.to_string())
+            .unwrap_or_default();
+        let row = [
+            platform_label(&item.job),
+            item.job.title.as_str(),
+            item.job.company_name.as_str(),
+            item.job.salary.as_str(),
+            item.job.location.as_deref().unwrap_or(""),
+            item.job.profile_name.as_deref().unwrap_or(""),
+            pipeline_stage_label(item),
+            communication_status_label(item.communication_status),
+            score.as_str(),
+            if item.job.is_send_resume { "是" } else { "否" },
+            item.job.interview_at.as_deref().unwrap_or(""),
+            item.job.notes.as_deref().unwrap_or(""),
+            item.latest_message.as_deref().unwrap_or(""),
+            item.job.source_url.as_deref().unwrap_or(""),
+            item.job.created_at.as_str(),
+        ];
+        let line = row
+            .iter()
+            .map(|cell| csv_escape(cell))
+            .collect::<Vec<_>>()
+            .join(",");
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out
+}
+
+fn render_jobs_markdown(
+    items: &[JobListItem],
+    scores_by_job_id: &HashMap<&str, u8>,
+) -> String {
+    let exported_at = Local::now().format("%Y-%m-%d %H:%M").to_string();
+    let mut out = format!(
+        "# OfferFlow 投递与面试追踪导出\n\n> 导出时间：{exported_at} · 共 {} 条岗位\n\n",
+        items.len()
+    );
+    for item in items {
+        let score = scores_by_job_id
+            .get(item.job.id.as_str())
+            .map(|value| format!("{value} 分"))
+            .unwrap_or_else(|| "未分析".to_string());
+        out.push_str(&format!(
+            "## {} — {}\n\n",
+            item.job.title.trim(),
+            item.job.company_name.trim()
+        ));
+        out.push_str(&format!("- **平台**：{}\n", platform_label(&item.job)));
+        out.push_str(&format!("- **薪资**：{}\n", item.job.salary.trim()));
+        if let Some(location) = item.job.location.as_deref().filter(|v| !v.trim().is_empty()) {
+            out.push_str(&format!("- **城市**：{}\n", location.trim()));
+        }
+        if let Some(profile) = item
+            .job
+            .profile_name
+            .as_deref()
+            .filter(|v| !v.trim().is_empty())
+        {
+            out.push_str(&format!("- **求职方案**：{}\n", profile.trim()));
+        }
+        out.push_str(&format!("- **推进阶段**：{}\n", pipeline_stage_label(item)));
+        out.push_str(&format!(
+            "- **沟通状态**：{}\n",
+            communication_status_label(item.communication_status)
+        ));
+        out.push_str(&format!("- **AI 匹配度**：{score}\n"));
+        out.push_str(&format!(
+            "- **已投简历**：{}\n",
+            if item.job.is_send_resume { "是" } else { "否" }
+        ));
+        if let Some(interview_at) = item
+            .job
+            .interview_at
+            .as_deref()
+            .filter(|v| !v.trim().is_empty())
+        {
+            out.push_str(&format!("- **面试时间**：{}\n", interview_at.trim()));
+        }
+        if let Some(url) = item
+            .job
+            .source_url
+            .as_deref()
+            .filter(|v| !v.trim().is_empty())
+        {
+            out.push_str(&format!("- **原始链接**：{url}\n"));
+        }
+        if let Some(latest) = item
+            .latest_message
+            .as_deref()
+            .filter(|v| !v.trim().is_empty())
+        {
+            out.push_str(&format!("- **最新消息**：{}\n", latest.trim()));
+        }
+        if let Some(notes) = item.job.notes.as_deref().filter(|v| !v.trim().is_empty()) {
+            out.push_str(&format!("\n### 面试笔记\n\n{}\n", notes.trim()));
+        }
+        let cleaned_jd = crate::job_description::clean_text(&item.job.detail, &item.job.platform);
+        if !cleaned_jd.trim().is_empty() {
+            out.push_str(&format!("\n### JD 快照\n\n{}\n", cleaned_jd.trim()));
+        }
+        out.push_str("\n---\n\n");
+    }
+    out
+}
+
+/// 导出岗位追踪数据为 Excel 兼容 CSV 或 Obsidian/Notion Markdown。
+#[tauri::command]
+pub fn job_export(
+    path: String,
+    format: String,
+    job_ids: Option<Vec<String>>,
+) -> CommandResult<usize> {
+    let result = (|| -> anyhow::Result<usize> {
+        let target_path = path.trim();
+        if target_path.is_empty() {
+            anyhow::bail!("导出路径不能为空");
+        }
+        let jobs = job_detail_dao::list()?;
+        let messages = chat_message_dao::list()?;
+        let analyses = analysis_dao::list()?;
+        let mut items = build_job_list_items(jobs, messages);
+        if let Some(ids) = job_ids.filter(|list| !list.is_empty()) {
+            let allow: HashSet<String> = ids.into_iter().collect();
+            items.retain(|item| allow.contains(&item.job.id));
+        }
+        items.sort_by(|left, right| right.job.updated_at.cmp(&left.job.updated_at));
+
+        let scores_by_job_id: HashMap<&str, u8> = analyses
+            .iter()
+            .filter(|analysis| analysis.parse_error.is_none())
+            .map(|analysis| (analysis.job_id.as_str(), analysis.match_score))
+            .collect();
+
+        let content = match format.trim().to_ascii_lowercase().as_str() {
+            "csv" => render_jobs_csv(&items, &scores_by_job_id),
+            "markdown" | "md" => render_jobs_markdown(&items, &scores_by_job_id),
+            other => anyhow::bail!("不支持的导出格式：{other}"),
+        };
+
+        std::fs::write(target_path, content.as_bytes())?;
+        Ok(items.len())
+    })();
+
+    match result {
+        Ok(count) => CommandResult::ok(count),
+        Err(error) => CommandResult::err(error.to_string()),
     }
 }
 

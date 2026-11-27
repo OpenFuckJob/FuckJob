@@ -35,25 +35,6 @@ export interface InterviewQuestion {
   answer_outline: string;
 }
 
-export interface PredictedQuestion {
-  id: number;
-  question: string;
-  intent: string;
-  target_section: string;
-}
-
-export interface OptimizeWithAnswerRequest {
-  resume_content: string;
-  question: string;
-  user_answer: string;
-  section_title: string;
-}
-
-export interface ResumeLlmResult {
-  success: boolean;
-  data: string;
-}
-
 export interface MockInterviewChatMessage {
   role: "interviewer" | "candidate" | "system";
   content: string;

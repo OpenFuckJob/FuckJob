@@ -1,6 +1,5 @@
 pub mod analysis;
 pub mod base;
-pub mod communicated_jobs;
 pub mod config;
 pub mod data_management;
 pub mod job;
@@ -8,7 +7,7 @@ pub mod llm;
 pub mod llm_provider;
 pub mod manual_review;
 pub mod mock_interview;
+pub mod notification;
 pub mod playground;
-pub mod resume_templates;
 pub mod rpa;
 pub mod user_resumes;

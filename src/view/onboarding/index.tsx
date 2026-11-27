@@ -68,7 +68,7 @@ export function Onboarding({ config, onFinish }: { config: AppRuntimeConfig; onF
       <Button type="primary" onClick={() => setStep(2)}>继续配置</Button>
     </Space>}
     {step === 2 && <Space direction="vertical" size="large" style={{ width: "100%", marginTop: 32 }}>
-      <Alert type="info" message="AI 配置可随时跳过" description="选择六种预设之一，填写模型并完成真实连接测试；失败不会阻止使用本地功能。" />
+      <Alert type="info" message="AI 配置可随时跳过" description="选择内置模型预设之一，填写模型并完成真实连接测试；失败不会阻止使用本地功能。" />
       <LlmConfigPanel
         config={draft.llm_config}
         onChange={(llm_config) => setDraft((v) => ({ ...v, llm_config }))}

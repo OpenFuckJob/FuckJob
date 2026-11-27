@@ -85,11 +85,14 @@ pub async fn position_say_hello_on_page(
         ))?;
     }
 
-    // 消费首次 page.get 触发的 joblist 响应，初始化 seen_job_ids
+    // 消费首次 page.get 触发的 joblist 响应，初始化 seen_job_ids 并检测风控状态码
     let mut seen_job_ids: HashSet<String> = HashSet::new();
     if let Ok(Some(packet)) = joblist_listener.wait(Duration::from_secs(10)) {
-        let (first_ids, _) = parse_joblist_response(&packet);
-        seen_job_ids.extend(first_ids);
+        let parsed = parse_joblist_response(&packet);
+        if let Some(risk_err) = parsed.risk_error() {
+            return Err(anyhow::anyhow!(risk_err));
+        }
+        seen_job_ids.extend(parsed.job_ids);
     }
     let mut no_new_count = 0u32;
     let mut stats = RoundStats::default();
@@ -132,7 +135,8 @@ pub async fn position_say_hello_on_page(
             let greet_job = match read_job_card(
                 page,
                 &job_card_area_ele,
-                &processed_job_ids,
+                &mut processed_job_ids,
+                &app_runtime_config.job_filter_config,
                 &app_runtime_config.platform_filter_config.boss,
                 &mut pacer,
             ) {
@@ -173,7 +177,11 @@ pub async fn position_say_hello_on_page(
             ) {
                 stats.skipped_inactive += 1;
                 logger::info(format!("岗位招聘者活跃度不满足要求，跳过：{reason}"))?;
+                processed_job_ids.insert(greet_job.platform_job_id.clone());
                 reject_job(&greet_job.platform_job_id);
+                if !pacer.after_detail_view().await {
+                    break 'outer StopReason::UserStopped;
+                }
                 continue;
             }
 
@@ -181,7 +189,11 @@ pub async fn position_say_hello_on_page(
             if !filter_decision.matched {
                 stats.skipped_rule += 1;
                 logger::info(format!("岗位不匹配，跳过：{}", filter_decision.reason))?;
+                processed_job_ids.insert(greet_job.platform_job_id.clone());
                 reject_job(&greet_job.platform_job_id);
+                if !pacer.after_detail_view().await {
+                    break 'outer StopReason::UserStopped;
+                }
                 continue;
             }
             if app_runtime_config.job_filter_config.enable_semantic_filter {
@@ -196,12 +208,19 @@ pub async fn position_say_hello_on_page(
                             "AI 岗位复核未通过，跳过（{}分）：{}",
                             decision.score, decision.reason
                         ))?;
+                        processed_job_ids.insert(greet_job.platform_job_id.clone());
                         reject_job(&greet_job.platform_job_id);
+                        if !pacer.after_detail_view().await {
+                            break 'outer StopReason::UserStopped;
+                        }
                         continue;
                     }
                     Err(error) => {
                         stats.skipped_ai += 1;
                         logger::warning(format!("AI 岗位复核失败，为避免误投已跳过：{}", error))?;
+                        if !pacer.after_detail_view().await {
+                            break 'outer StopReason::UserStopped;
+                        }
                         continue;
                     }
                 }
@@ -276,7 +295,12 @@ pub async fn position_say_hello_on_page(
 
         match joblist_listener.wait(Duration::from_secs(10)) {
             Ok(Some(packet)) => {
-                let (api_ids, has_more) = parse_joblist_response(&packet);
+                let parsed = parse_joblist_response(&packet);
+                if let Some(risk_err) = parsed.risk_error() {
+                    return Err(anyhow::anyhow!(risk_err));
+                }
+                let api_ids = parsed.job_ids;
+                let has_more = parsed.has_more;
 
                 if !has_more {
                     break 'outer StopReason::NoMoreFromApi;
@@ -350,6 +374,10 @@ enum SkipReason {
     AlreadyProcessed,
     /// 卡片带猎头标识，按配置跳过
     Headhunter,
+    /// 点击详情前已在列表卡片完成零点击前置过滤（关键词/薪资/同公司上限）
+    PreFiltered,
+    /// 点击详情前已在列表卡片检测到招聘者活跃度不足
+    PreFilteredInactive,
     /// 拟人化随机跳过：扫一眼标题就划过去了，没点开
     Humanized,
 }
@@ -394,6 +422,8 @@ impl RoundStats {
             SkipReason::AlreadyViewed => self.skipped_viewed += 1,
             SkipReason::AlreadyProcessed => self.skipped_processed += 1,
             SkipReason::Headhunter => self.skipped_headhunter += 1,
+            SkipReason::PreFiltered => self.skipped_rule += 1,
+            SkipReason::PreFilteredInactive => self.skipped_inactive += 1,
             SkipReason::Humanized => self.skipped_humanize += 1,
         }
     }
@@ -592,7 +622,8 @@ fn card_failure_message(error: &anyhow::Error) -> String {
 fn read_job_card(
     page: &Page,
     job_card_area_ele: &Element,
-    processed_job_ids: &HashSet<String>,
+    processed_job_ids: &mut HashSet<String>,
+    job_filter_config: &JobFilterConfig,
     boss_filter_config: &BossFilterConfig,
     pacer: &mut GreetPacer,
 ) -> Result<CardOutcome, anyhow::Error> {
@@ -604,11 +635,10 @@ fn read_job_card(
         .element(".job-card-box")?
         .ok_or_else(|| anyhow::anyhow!("未找到岗位卡片主体"))?;
 
-    let job_href = job_card_ele
+    let job_name_ele = job_card_ele
         .element(".job-name")?
-        .ok_or_else(|| anyhow::anyhow!("未找到岗位名称链接"))?
-        .attr("href")
-        .unwrap_or_default();
+        .ok_or_else(|| anyhow::anyhow!("未找到岗位名称链接"))?;
+    let job_href = job_name_ele.attr("href").unwrap_or_default();
 
     let job_id =
         extract_job_id(&format!("https://www.zhipin.com{}", job_href)).map(|s| s.to_string());
@@ -619,7 +649,82 @@ fn read_job_card(
     }
 
     if boss_filter_config.exclude_headhunter_jobs && is_headhunter_job_card(&job_card_ele)? {
+        if let Some(ref id) = job_id {
+            processed_job_ids.insert(id.clone());
+            reject_job(id);
+        }
         return Ok(CardOutcome::Skipped(SkipReason::Headhunter));
+    }
+
+    // 零点击前置过滤：在点击展开详情之前，先用列表卡片上的标题、公司、薪资、
+    // 同公司建联上限及卡片级活跃度筛掉明显不匹配的岗位，大幅降低详情页浏览频次。
+    let job_name = job_name_ele.text_content()?;
+    let salary_text = job_card_ele
+        .element(".job-salary")?
+        .ok_or_else(|| anyhow::anyhow!("未找到岗位薪资"))?
+        .text_content()?;
+    let decoded_salary = decode_salary(&salary_text);
+    let company_text = job_card_ele
+        .element(".boss-name")?
+        .ok_or_else(|| anyhow::anyhow!("未找到公司名称"))?
+        .text_content()?;
+
+    let pre_decision =
+        verify::pre_filter_decision(&job_name, &company_text, &decoded_salary, job_filter_config);
+    if !pre_decision.matched {
+        let _ = logger::info(format!(
+            "列表前置过滤跳过：{} - {}（{}）",
+            job_name.trim(),
+            company_text.trim(),
+            pre_decision.reason
+        ));
+        if let Some(ref id) = job_id {
+            processed_job_ids.insert(id.clone());
+            reject_job(id);
+        }
+        return Ok(CardOutcome::Skipped(SkipReason::PreFiltered));
+    }
+
+    if job_filter_config.max_greets_per_company > 0 {
+        let existing_company_greets =
+            job_detail_dao::count_by_company_normalized(&company_text).unwrap_or(0);
+        if let Some(reason) = verify::company_greet_limit_reason(
+            &company_text,
+            existing_company_greets,
+            job_filter_config.max_greets_per_company,
+        ) {
+            let _ = logger::info(format!(
+                "列表前置过滤跳过：{} - {}（{}）",
+                job_name.trim(),
+                company_text.trim(),
+                reason
+            ));
+            if let Some(ref id) = job_id {
+                processed_job_ids.insert(id.clone());
+                reject_job(id);
+            }
+            return Ok(CardOutcome::Skipped(SkipReason::PreFiltered));
+        }
+    }
+
+    // 若列表卡片本身已展示招聘者活跃度且低于阈值，直接跳过不点详情。
+    // 若卡片未展示活跃度标签，留到点击后的详情面板再判，避免误杀。
+    let card_active_time = read_card_recruiter_active_time(&job_card_ele)?;
+    if card_active_time.is_some() {
+        if let Some(reason) = inactive_recruiter_skip_reason(&card_active_time, boss_filter_config)
+        {
+            let _ = logger::info(format!(
+                "列表前置过滤跳过：{} - {}（{}）",
+                job_name.trim(),
+                company_text.trim(),
+                reason
+            ));
+            if let Some(ref id) = job_id {
+                processed_job_ids.insert(id.clone());
+                reject_job(id);
+            }
+            return Ok(CardOutcome::Skipped(SkipReason::PreFilteredInactive));
+        }
     }
 
     // 「每个岗位都点开看」是人做不到的事：真人扫列表时就会凭标题划过去一些。
@@ -640,23 +745,14 @@ fn read_job_card(
         &previous_detail_text,
         job_id.as_deref(),
     )?;
-    let job_name = job_card_ele
-        .element(".job-name")?
-        .ok_or_else(|| anyhow::anyhow!("未找到岗位标题"))?
-        .text_content()?;
-    let salary_text = job_card_ele
-        .element(".job-salary")?
-        .ok_or_else(|| anyhow::anyhow!("未找到岗位薪资"))?
-        .text_content()?;
-    let company_text = job_card_ele
-        .element(".boss-name")?
-        .ok_or_else(|| anyhow::anyhow!("未找到公司名称"))?
-        .text_content()?;
     let company_location = job_card_ele
         .element(".company-location")?
         .ok_or_else(|| anyhow::anyhow!("未找到公司地址"))?
         .text_content()?;
-    let recruiter_active_time = read_recruiter_active_time(page, &job_card_ele)?;
+    let recruiter_active_time = match card_active_time {
+        Some(active) => Some(active),
+        None => read_recruiter_active_time(page, &job_card_ele)?,
+    };
 
     let job_detail_url = format!("https://www.zhipin.com{}", job_href);
     let platform_job_id = extract_job_id(&job_detail_url)
@@ -669,7 +765,7 @@ fn read_job_card(
         title: job_name,
         company_name: company_text,
         detail: job_detail_text,
-        salary: decode_salary(&salary_text),
+        salary: decoded_salary,
         location: Some(company_location),
         recruiter_active_time,
         detail_url: job_detail_url,
@@ -739,10 +835,7 @@ fn is_headhunter_tag_alt(value: &str) -> bool {
     value.trim() == "猎头"
 }
 
-fn read_recruiter_active_time(
-    page: &Page,
-    job_card_ele: &Element,
-) -> Result<Option<String>, anyhow::Error> {
+fn read_card_recruiter_active_time(job_card_ele: &Element) -> Result<Option<String>, anyhow::Error> {
     // 只读取当前岗位卡片内的 badge。不能在整页上查 `.boss-active-time`，
     // 否则当前卡片缺失时可能拿到其他岗位卡片的招聘者活跃度。
     for selector in [".boss-online-tag", ".boss-active-time"] {
@@ -760,6 +853,17 @@ fn read_recruiter_active_time(
         .ok()
         .and_then(|text| extract_recruiter_active_text(&text))
     {
+        return Ok(Some(text));
+    }
+
+    Ok(None)
+}
+
+fn read_recruiter_active_time(
+    page: &Page,
+    job_card_ele: &Element,
+) -> Result<Option<String>, anyhow::Error> {
+    if let Some(text) = read_card_recruiter_active_time(job_card_ele)? {
         return Ok(Some(text));
     }
 
@@ -1151,20 +1255,63 @@ fn describe_active_threshold(threshold: BossRecruiterActiveThreshold) -> &'stati
     }
 }
 
-/// 从 joblist API 响应中提取所有 encryptJobId 和 hasMore 标志
-fn parse_joblist_response(packet: &DataPacket) -> (Vec<String>, bool) {
-    let body = match &packet.body {
-        Some(b) => b,
-        None => return (Vec::new(), true),
-    };
-    let body_str = match String::from_utf8(body.clone()) {
-        Ok(s) => s,
-        Err(_) => return (Vec::new(), true),
-    };
-    let root: serde_json::Value = match serde_json::from_str(&body_str) {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct JobListResponse {
+    job_ids: Vec<String>,
+    has_more: bool,
+    code: Option<i64>,
+    message: Option<String>,
+}
+
+impl Default for JobListResponse {
+    fn default() -> Self {
+        Self {
+            job_ids: Vec::new(),
+            has_more: true,
+            code: None,
+            message: None,
+        }
+    }
+}
+
+impl JobListResponse {
+    /// 检测 BOSS 搜索接口返回的风控/异常状态码（典型如 code=37 行为异常限制）。
+    /// 一旦命中立刻熔断本轮，避免继续高频请求把轻度校验拖成临时封号。
+    fn risk_error(&self) -> Option<String> {
+        let code = self.code?;
+        if code == 0 {
+            return None;
+        }
+        let message = self
+            .message
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("接口返回异常状态");
+        if code == 37 {
+            Some(format!(
+                "检测到 BOSS 风控熔断（code=37：{message}），已立即停止本轮投递以保护账号；请在浏览器中检查账号状态并冷却 1~2 小时后再继续，同时建议降低每日上限或开启拟人化节奏"
+            ))
+        } else {
+            Some(format!(
+                "BOSS 岗位列表接口返回异常（code={code}：{message}），为保护账号已暂停本轮，请点击『检查BOSS环境』确认登录与验证状态"
+            ))
+        }
+    }
+}
+
+/// 从 joblist API 响应中提取 encryptJobId、hasMore 及风控状态码
+fn parse_joblist_response_str(body_str: &str) -> JobListResponse {
+    let root: serde_json::Value = match serde_json::from_str(body_str) {
         Ok(v) => v,
-        Err(_) => return (Vec::new(), true),
+        Err(_) => return JobListResponse::default(),
     };
+
+    let code = root.get("code").and_then(|v| v.as_i64());
+    let message = root
+        .get("message")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     let has_more = root
         .pointer("/zpData/hasMore")
@@ -1185,7 +1332,22 @@ fn parse_joblist_response(packet: &DataPacket) -> (Vec<String>, bool) {
         })
         .unwrap_or_default();
 
-    (job_ids, has_more)
+    JobListResponse {
+        job_ids,
+        has_more,
+        code,
+        message,
+    }
+}
+
+fn parse_joblist_response(packet: &DataPacket) -> JobListResponse {
+    let Some(body) = &packet.body else {
+        return JobListResponse::default();
+    };
+    let Ok(body_str) = String::from_utf8(body.clone()) else {
+        return JobListResponse::default();
+    };
+    parse_joblist_response_str(&body_str)
 }
 
 fn join_vec(values: &[i64]) -> Option<String> {
@@ -1296,6 +1458,9 @@ fn build_job_detail(job_id: &str, greet_job: &GreetJob, config: &AppRuntimeConfi
         created_at: now.clone(),
         resume_sent_at: None,
         updated_at: now,
+        pipeline_stage: None,
+        notes: None,
+        interview_at: None,
     }
 }
 
@@ -2407,5 +2572,27 @@ mod tests {
             content: "你好".to_string(),
         };
         assert!(send_if_any(vec![resource], |_| Ok(false)).is_err());
+    }
+
+    #[test]
+    fn joblist_response_detects_boss_code_37_risk_control() {
+        let ok_resp = parse_joblist_response_str(
+            r#"{"code":0,"message":"Success","zpData":{"hasMore":true,"jobList":[{"encryptJobId":"j1"}]}}"#,
+        );
+        assert!(ok_resp.risk_error().is_none());
+        assert_eq!(ok_resp.job_ids, vec!["j1".to_string()]);
+        assert!(ok_resp.has_more);
+
+        let risk_resp = parse_joblist_response_str(
+            r#"{"code":37,"message":"您的访问行为异常","zpData":{}}"#,
+        );
+        let err = risk_resp.risk_error().expect("code=37 must trigger circuit breaker");
+        assert!(err.contains("code=37"));
+        assert!(err.contains("风控熔断"));
+
+        let other_err = parse_joblist_response_str(
+            r#"{"code":1,"message":"登录态失效"}"#,
+        );
+        assert!(other_err.risk_error().unwrap().contains("code=1"));
     }
 }

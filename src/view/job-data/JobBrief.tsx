@@ -1,15 +1,30 @@
 import { useEffect, useState } from "react";
-import { Button, Empty, Popconfirm, Skeleton, Space, Tag, Typography, message } from "antd";
+import { Button, Empty, Input, Popconfirm, Select, Skeleton, Space, Tag, Typography, message } from "antd";
 import { invoke } from "@tauri-apps/api/core";
 import { commandErrorMessage, type CommandResult } from "../../types/command";
 import {
+  CalendarOutlined,
+  EditOutlined,
   EnvironmentOutlined,
   FileTextOutlined,
+  SaveOutlined,
+  StopOutlined,
   UserOutlined,
 } from "@ant-design/icons";
 import { fetchJobDescription } from "../../lib/job-description";
-import type { JobDetail, ParsedJobDescription } from "../../types/job-detail";
+import type { JobDetail, JobPipelineStage, ParsedJobDescription } from "../../types/job-detail";
 import type { InterviewJobAnalysis } from "../../types/analysis";
+
+const PIPELINE_STAGE_OPTIONS: Array<{ value: JobPipelineStage; label: string }> = [
+  { value: "pending", label: "待投递" },
+  { value: "applied", label: "已投递" },
+  { value: "replied", label: "已回复" },
+  { value: "interview_scheduled", label: "已约面" },
+  { value: "interviewing", label: "面试中" },
+  { value: "offer", label: "已拿 Offer" },
+  { value: "rejected", label: "已婉拒" },
+  { value: "archived", label: "已归档" },
+];
 
 /** 小节的语义配色：职责说「做什么」，要求说「要什么」，加分项是锦上添花 */
 const sectionTone = (title: string): "duty" | "require" | "bonus" | "plain" => {
@@ -46,14 +61,63 @@ const JobBrief = ({
   job,
   analysis,
   onDeliveryResolved,
+  onJobUpdated,
+  onBlacklistCompany,
 }: {
   job: JobDetail;
   analysis?: InterviewJobAnalysis;
   onDeliveryResolved?: (updated: JobDetail) => void;
+  onJobUpdated?: (updated: JobDetail) => void;
+  onBlacklistCompany?: (companyName: string) => void;
 }) => {
   const [showRaw, setShowRaw] = useState(false);
   const [parsed, setParsed] = useState<ParsedJobDescription | null>(null);
+  const [stageDraft, setStageDraft] = useState<JobPipelineStage | undefined>(
+    job.pipeline_stage ?? undefined,
+  );
+  const [interviewAtDraft, setInterviewAtDraft] = useState(job.interview_at ?? "");
+  const [notesDraft, setNotesDraft] = useState(job.notes ?? "");
+  const [savingCrm, setSavingCrm] = useState(false);
+
+  useEffect(() => {
+    setStageDraft(job.pipeline_stage ?? undefined);
+    setInterviewAtDraft(job.interview_at ?? "");
+    setNotesDraft(job.notes ?? "");
+  }, [job.id, job.interview_at, job.notes, job.pipeline_stage]);
+
   const platform = job.platform === "51job" ? "前程无忧" : job.platform === "liepin" ? "猎聘" : "BOSS 直聘";
+  const platformTagColor = job.platform === "51job" ? "orange" : job.platform === "liepin" ? "purple" : "green";
+  const crmDirty =
+    (stageDraft ?? null) !== (job.pipeline_stage ?? null) ||
+    interviewAtDraft.trim() !== (job.interview_at ?? "").trim() ||
+    notesDraft.trim() !== (job.notes ?? "").trim();
+
+  const saveCrm = async () => {
+    setSavingCrm(true);
+    try {
+      const updated: JobDetail = {
+        ...job,
+        pipeline_stage: stageDraft ?? null,
+        interview_at: interviewAtDraft.trim() || null,
+        notes: notesDraft.trim() || null,
+      };
+      const result = await invoke<CommandResult<void>>("job_update", {
+        id: job.id,
+        job: updated,
+      });
+      if (!result.success) {
+        message.error(commandErrorMessage(result.error, "保存面试进度失败"));
+        return;
+      }
+      message.success("进度与笔记已保存");
+      onJobUpdated?.(updated);
+      onDeliveryResolved?.(updated);
+    } catch (error) {
+      message.error(String(error));
+    } finally {
+      setSavingCrm(false);
+    }
+  };
   const resolveDelivery = async (delivered: boolean) => {
     try {
       const result = await invoke<CommandResult<JobDetail>>("job51_resolve_delivery", { id: job.id, delivered });
@@ -90,7 +154,7 @@ const JobBrief = ({
         <div className="brief-head-side">
           {job.salary && <div className="brief-salary">{job.salary}</div>}
           <div className="brief-badges">
-            <Tag color={job.platform === "liepin" ? "purple" : "green"}>{platform}</Tag>
+            <Tag color={platformTagColor}>{platform}</Tag>
             {job.resume_delivery_pending ? <Tag color="orange">投递待确认</Tag> : job.is_send_resume ? <Tag color="blue">已投递</Tag> : <Tag>未投递</Tag>}
             {job.is_reply && <Tag color="cyan">已回复</Tag>}
             {analysis && !analysis.parse_error && (
@@ -98,7 +162,76 @@ const JobBrief = ({
                 匹配 {analysis.match_score} 分
               </Tag>
             )}
+            {onBlacklistCompany && job.company_name.trim() && (
+              <Popconfirm
+                title={`将「${job.company_name}」加入公司黑名单？`}
+                description="加入后，当前求职方案在后续投递中会自动跳过该公司的全部岗位。"
+                okText="确认拉黑"
+                cancelText="取消"
+                onConfirm={() => {
+                  onBlacklistCompany(job.company_name);
+                  message.success(`已将「${job.company_name}」加入公司排除词`);
+                }}
+              >
+                <Button size="small" type="text" danger icon={<StopOutlined />}>
+                  拉黑公司
+                </Button>
+              </Popconfirm>
+            )}
           </div>
+        </div>
+      </div>
+
+      {/* ── 面试进度与笔记（个人求职 CRM） ── */}
+      <div className="brief-crm">
+        <div className="brief-crm-row">
+          <div className="brief-crm-field">
+            <span className="brief-meta-label">推进阶段</span>
+            <Select<JobPipelineStage>
+              size="small"
+              allowClear
+              placeholder="自动判定"
+              style={{ width: 136 }}
+              value={stageDraft}
+              options={PIPELINE_STAGE_OPTIONS}
+              onChange={(val) => setStageDraft(val)}
+            />
+          </div>
+          <div className="brief-crm-field" style={{ flex: 1, minWidth: 180 }}>
+            <span className="brief-meta-label">
+              <CalendarOutlined /> 面试时间
+            </span>
+            <Input
+              size="small"
+              allowClear
+              placeholder="例如：本周四 14:30 一面（腾讯会议）"
+              value={interviewAtDraft}
+              onChange={(event) => setInterviewAtDraft(event.target.value)}
+            />
+          </div>
+          <Button
+            size="small"
+            type="primary"
+            icon={<SaveOutlined />}
+            loading={savingCrm}
+            disabled={!crmDirty}
+            onClick={() => void saveCrm()}
+          >
+            保存进度
+          </Button>
+        </div>
+        <div className="brief-crm-notes">
+          <Input.TextArea
+            autoSize={{ minRows: 2, maxRows: 5 }}
+            placeholder="记录一面/二面复盘、面试官关注点、薪资期望或薪资包对比..."
+            value={notesDraft}
+            onChange={(event) => setNotesDraft(event.target.value)}
+          />
+          {!crmDirty && job.notes && (
+            <Typography.Text type="secondary" style={{ fontSize: 11, marginTop: 4, display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <EditOutlined /> 已保存到本地
+            </Typography.Text>
+          )}
         </div>
       </div>
 

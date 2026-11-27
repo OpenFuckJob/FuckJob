@@ -4,13 +4,16 @@ import {
   FieldTimeOutlined,
   HourglassOutlined,
   PoweroffOutlined,
+  SafetyOutlined,
   SendOutlined,
   UndoOutlined,
 } from "@ant-design/icons";
 import {
+  DEFAULT_MAX_GREETS_PER_DAY,
   DEFAULT_PERIODIC_DELIVERY_CONFIG,
   hoursToWindows,
   isSamePeriodicDelivery,
+  MAX_GREETS_PER_DAY,
   MAX_GREETS_PER_ROUND,
   MAX_ROUND_MINUTES,
   MAX_RUN_HOURS,
@@ -107,6 +110,19 @@ export default function PeriodicDeliverySection({
           unit="条"
           valueLabel={(value) => (value === 0 ? "不限制" : null)}
           onChange={(value) => onChange({ max_greets_per_round: value })}
+        />
+        <SettingSlider
+          icon={<SafetyOutlined />}
+          title="每日安全上限"
+          description="单平台每天累计打招呼达到上限后自动暂停，次日恢复。建议控制在 30~80 条以降低风控风险"
+          min={0}
+          max={MAX_GREETS_PER_DAY}
+          step={5}
+          fallback={DEFAULT_MAX_GREETS_PER_DAY}
+          value={config.max_greets_per_day ?? DEFAULT_MAX_GREETS_PER_DAY}
+          unit="条/天"
+          valueLabel={(value) => (value === 0 ? "不限制" : null)}
+          onChange={(value) => onChange({ max_greets_per_day: value })}
         />
         <SettingSlider
           icon={<HourglassOutlined />}

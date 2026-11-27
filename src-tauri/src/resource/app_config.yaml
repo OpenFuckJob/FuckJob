@@ -3,45 +3,36 @@ onboarding_completed: false
 llm_config: null
 default_job_profile_id: default
 job_filter_config: &default_job_filter
-  query: 大模型应用
-  city: 101020100
-  job_type: 1901
-  salary: 405
-  experience:
-    - 104
-    - 103
-    - 101
-  dgree:
-    - 203
+  query: 软件工程师
+  city: null
+  job_type: 0
+  salary: 0
+  experience: []
+  dgree: []
   industry: []
   scale: []
   stage: []
   keywords: []
   exclude_keywords: []
   company_keywords: []
-  company_exclude_keywords:
-    - 华为
-    - 外企德科
+  company_exclude_keywords: []
+  min_salary_k: null
+  max_salary_span_ratio: null
+  exclude_negotiable: false
+  max_greets_per_company: 1
   enable_semantic_filter: false
   semantic_filter_intent: null
   regex_rules: []
 greet_config: &default_greet
   enable_llm: true
   reply_prompt: |-
-    你是一个求职者，正在BOSS直聘上与招聘方沟通。请根据以下内容生成一段开场的打招呼用语。
+    你是一名正在求职平台与招聘方初次沟通的候选人。请根据简历与岗位描述，写一段自然、精炼、可直接发送的开场打招呼消息。
 
     【严格要求】
-    1. 严禁使用任何占位符，例如“X年”、“Y年”、“某技术”、“XX公司”等。也不要用括号标注“待补充”之类的内容。
-    2. 如果简历（见下方“我的简历”）为空或缺少某些信息（如工作年限、具体技能），请使用模糊但自然的说法，例如“我有相关经验”、“熟悉该领域”、“有多年实践经验”等。绝对不能编造具体数字或占位符。
-    3. 必须保证生成的文本是可以直接发送给HR的完整句子，无需人工修改。
-    4. 总字数控制在60~120字。
-    5. 结尾以开放式提问结束，例如“方便进一步沟通吗？”或“您觉得我的方向匹配吗？”。
-
-    【示例】
-    简历为空或信息很少时，正确写法：
-    “您好，我对贵公司招聘的Java开发岗很感兴趣。我熟悉Spring Cloud等微服务框架，有相关项目经验。看到岗位中涉及高并发系统设计，这正是我所擅长的方向。方便进一步沟通吗？”
-    错误写法（包含占位符）：
-    “我有X年Java经验” 或 “我有3年经验（但实际上没有提供）”。
+    1. 黄金前 17 字法则：第一句直接抛核心亮点（例如方向/核心技术栈/代表成果），严禁使用“您好，我对贵公司招聘的XX岗位很感兴趣”“在吗”“请问还招人吗”这类空洞套话。
+    2. 严禁使用任何占位符（如“X年”“XX公司”“某项目”）或括号备注；如果简历为空或未提供年限，用自然真实的表述（如“有相关落地经验”），绝不编造经历。
+    3. 精准对齐岗位 JD 中的 1~2 项核心要求，结合简历里的真实经历或技能说明匹配点。
+    4. 总字数控制在 55~100 字，口语自然、简洁有礼貌，结尾附一句低门槛推进语（例如“方便发您一份简历进一步了解吗？”）。
 
     === 我的简历（可能为空） ===
     {{resume_context}}
@@ -49,23 +40,16 @@ greet_config: &default_greet
     === 当前岗位信息 ===
     {{job_content}}
 
-    请直接输出打招呼文本，不要加额外解释。
+    请直接输出最终可发送的打招呼文本，不要附加任何解释或引号。
   default_template:
     - resource_type: LLM
       content: ""
 replay_config: &default_replay
-  enable_template_reply: true
-  templates:
-    - regex_rule:
-        name: 新回复规则
-        pattern: .*
-        limit: 2
-      content:
-        - resource_type: LLM
-          content: ""
+  enable_template_reply: false
+  templates: []
   enable_llm: true
   reply_prompt: |
-    你现在是一名在 Boss直聘 平台上和 HR 沟通的求职者。
+    你现在是一名在招聘平台上和 HR 沟通的求职者。
 
     系统会提供以下上下文：
 
@@ -83,7 +67,7 @@ replay_config: &default_replay
     * 优先突出岗位匹配度、沟通意愿、到岗时间、项目经验等关键信息；
     * 如果 HR 提问，直接回答问题，不要答非所问；
     * 如果信息不足，可以礼貌追问；
-    * 避免模板化、机械化表达；
+    * 避免模板化、机械化表达，绝不编造简历中没有的事实；
     * 输出仅包含最终回复内容，不要添加解释。
 
     输入格式：
@@ -100,15 +84,36 @@ replay_config: &default_replay
     {{chat_history}}
 
     请生成一条适合发送给 HR 的简短回复。
-  background_context: |-
-    一本院校毕业
-    一年工作经验，主要做AI智能客服
+  background_context: ""
 analysis_config: &default_analysis
   # 必须带引号：YAML 会把裸 off 当成布尔 false
   trigger: "off"
   skip_analyzed: true
   max_per_task: 20
   high_match_score: 80
+periodic_delivery_config:
+  interval_minutes: 45
+  window_enabled: true
+  windows:
+    - start_minute: 540
+      end_minute: 720
+    - start_minute: 840
+      end_minute: 1080
+  max_run_hours: 0
+  max_greets_per_round: 20
+  max_round_minutes: 45
+  max_greets_per_day: 50
+humanize_config:
+  enabled: true
+  intensity: standard
+  persona_seed: 0
+notification_config:
+  enabled: false
+  provider: feishu
+  webhook_url: ""
+  notify_manual_review: true
+  notify_risk_alert: true
+  notify_hr_reply: true
 browser_config:
   user_data_dir: ""
   chrome_exe_path: ""

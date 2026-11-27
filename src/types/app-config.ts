@@ -1,21 +1,15 @@
 export type MatchTarget = "Title" | "Company" | "Description" | "All";
 export type RuleMode = "ACCEPT" | "REJECT";
-export type AppPage =
-  | "workspace"
-  | "config"
-  | "practice"
-  | "resumeOptimizer"
-  | "interviewPrep";
 export type ConfigGroup =
   | "job"
   | "llm"
   | "greet"
   | "reply"
   | "analysis"
+  | "runtime"
   | "browser"
   | "playground"
   | "resume"
-  | "rules"
   | "data"
   | "about";
 
@@ -43,6 +37,14 @@ export interface JobFilterConfig {
   enable_semantic_filter: boolean;
   semantic_filter_intent: string | null;
   regex_rules: RegexRule[];
+  /** 最低可接受月薪上限（单位 K，例如 20 表示至少 20K），null 表示不限 */
+  min_salary_k?: number | null;
+  /** 薪资区间最大跨度倍数（如 2.0 过滤 10-30K 等虚标），null 表示不限 */
+  max_salary_span_ratio?: number | null;
+  /** 是否自动排除“薪资面议”岗位 */
+  exclude_negotiable?: boolean;
+  /** 同一公司最多建联几个岗位，0 表示不限制 */
+  max_greets_per_company?: number;
 }
 
 export interface LiepinFilterConfig {
@@ -282,6 +284,8 @@ export const DEFAULT_REPLY_POLLING_CONFIG: ReplyPollingConfig = {
 /** 一天的分钟数。投递时段用「零点起的分钟数」表示，才装得下 09:30 这种半点边界 */
 export const MINUTES_PER_DAY = 24 * 60;
 export const MAX_GREETS_PER_ROUND = 200;
+export const DEFAULT_MAX_GREETS_PER_DAY = 50;
+export const MAX_GREETS_PER_DAY = 300;
 export const MAX_ROUND_MINUTES = 240;
 export const MAX_RUN_HOURS = 72;
 
@@ -308,6 +312,8 @@ export interface PeriodicDeliveryConfig {
   max_run_hours: number;
   /** 单轮最多打招呼多少条，0 表示不限。这是「一直在投递、回复轮不上」的正解 */
   max_greets_per_round: number;
+  /** 单平台每日最多打招呼条数，0 表示不限制（反封号核心安全护栏） */
+  max_greets_per_day?: number;
   /** 单轮最长跑多少分钟，0 表示不限 */
   max_round_minutes: number;
 }
@@ -319,6 +325,7 @@ export const DEFAULT_PERIODIC_DELIVERY_CONFIG: PeriodicDeliveryConfig = {
   windows: [{ start_minute: 9 * 60, end_minute: 18 * 60 }],
   max_run_hours: 0,
   max_greets_per_round: 30,
+  max_greets_per_day: DEFAULT_MAX_GREETS_PER_DAY,
   max_round_minutes: 60,
 };
 
@@ -414,6 +421,33 @@ export function getHumanizeConfig(config: Pick<AppRuntimeConfig, "humanize_confi
   return { ...DEFAULT_HUMANIZE_CONFIG, ...(config.humanize_config ?? {}) };
 }
 
+export type NotificationProvider = "feishu" | "wecom" | "dingtalk" | "bark" | "generic";
+
+/** 可选实时通知配置（默认关闭，仅在用户主动配置 Webhook 时发送）。 */
+export interface NotificationConfig {
+  enabled: boolean;
+  provider: NotificationProvider;
+  webhook_url: string;
+  notify_manual_review: boolean;
+  notify_risk_alert: boolean;
+  notify_hr_reply: boolean;
+}
+
+export const DEFAULT_NOTIFICATION_CONFIG: NotificationConfig = {
+  enabled: false,
+  provider: "feishu",
+  webhook_url: "",
+  notify_manual_review: true,
+  notify_risk_alert: true,
+  notify_hr_reply: false,
+};
+
+export function getNotificationConfig(
+  config: Pick<AppRuntimeConfig, "notification_config">,
+): NotificationConfig {
+  return { ...DEFAULT_NOTIFICATION_CONFIG, ...(config.notification_config ?? {}) };
+}
+
 export interface BrowserConfig {
   user_data_dir: string;
   chrome_exe_path: string | null;
@@ -469,6 +503,8 @@ export interface AppRuntimeConfig {
   periodic_delivery_config?: PeriodicDeliveryConfig;
   /** 旧配置没有这块，读取时请使用 getHumanizeConfig 兜底 */
   humanize_config?: HumanizeConfig;
+  /** 旧配置没有这块，读取时请使用 getNotificationConfig 兜底 */
+  notification_config?: NotificationConfig;
   browser_config: BrowserConfig;
   resume_config: ResumeConfig;
   /** 旧配置/测试 mock 可能暂时不包含这两个字段，读取时请使用 getJobProfiles。 */
@@ -583,6 +619,8 @@ export function isSamePeriodicDelivery(
     left.window_enabled === right.window_enabled &&
     left.max_run_hours === right.max_run_hours &&
     left.max_greets_per_round === right.max_greets_per_round &&
+    (left.max_greets_per_day ?? DEFAULT_MAX_GREETS_PER_DAY) ===
+      (right.max_greets_per_day ?? DEFAULT_MAX_GREETS_PER_DAY) &&
     left.max_round_minutes === right.max_round_minutes &&
     isSameWindows(left.windows, right.windows)
   );

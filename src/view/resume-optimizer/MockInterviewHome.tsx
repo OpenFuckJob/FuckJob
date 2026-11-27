@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import {
+  Alert,
   Button,
   Card,
   Dropdown,
@@ -29,6 +30,11 @@ import { DURATION_META, type InterviewSession, type InterviewSessionStatus } fro
 interface MockInterviewHomeProps {
   sessions: InterviewSession[];
   canStart: boolean;
+  aiReady?: boolean;
+  llmConfigured?: boolean;
+  resumeReady?: boolean;
+  onConfigureAi?: () => void;
+  onConfigureResume?: () => void;
   onCreate: () => void;
   onContinue: (id: string) => void;
   onOpenReport: (id: string) => void;
@@ -179,6 +185,40 @@ export function MockInterviewHome(props: MockInterviewHomeProps) {
           开始新的模拟面试
         </Button>
       </div>
+
+      {!props.canStart && (
+        <Alert
+          type="warning"
+          showIcon
+          message="开始模拟面试前需先补齐以下前置条件"
+          description={
+            <Space wrap size={12}>
+              {props.aiReady === false && (
+                <span>
+                  {props.llmConfigured ? "大模型当前已停用" : "尚未配置大模型服务"}
+                </span>
+              )}
+              {props.resumeReady === false && (
+                <span>当前求职方案尚未填写或解析简历内容</span>
+              )}
+            </Space>
+          }
+          action={
+            <Space>
+              {props.aiReady === false && props.onConfigureAi && (
+                <Button size="small" type="primary" onClick={props.onConfigureAi}>
+                  配置大模型
+                </Button>
+              )}
+              {props.resumeReady === false && props.onConfigureResume && (
+                <Button size="small" onClick={props.onConfigureResume}>
+                  去配置简历
+                </Button>
+              )}
+            </Space>
+          }
+        />
+      )}
 
       {unfinished.length > 0 && (
         <section className="mi-home-section">

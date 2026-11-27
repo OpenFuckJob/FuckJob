@@ -1,6 +1,16 @@
-import type { DailyWindow, PeriodicDeliveryConfig } from "./app-config";
+import {
+  DEFAULT_MAX_GREETS_PER_DAY,
+  type DailyWindow,
+  type PeriodicDeliveryConfig,
+} from "./app-config";
 
 export type { DailyWindow };
+
+export interface TodayGreetCounts {
+  boss: number;
+  liepin: number;
+  job51: number;
+}
 
 export type PlatformKind = "boss" | "liepin" | "51job";
 
@@ -50,6 +60,8 @@ export interface PeriodicPlan {
   run_until?: string | null;
   /** 单轮最多打招呼多少条，0 表示不限 */
   max_greets_per_round?: number;
+  /** 每日单平台最多打招呼多少条，0 表示不限 */
+  max_greets_per_day?: number;
   /** 单轮最长跑多少分钟，0 表示不限 */
   max_round_minutes?: number;
 }
@@ -90,6 +102,7 @@ export function buildPeriodicPlan(
         ? new Date(now.getTime() + config.max_run_hours * 3_600_000).toISOString()
         : null,
     max_greets_per_round: config.max_greets_per_round,
+    max_greets_per_day: config.max_greets_per_day ?? DEFAULT_MAX_GREETS_PER_DAY,
     max_round_minutes: config.max_round_minutes,
   };
 }
@@ -126,6 +139,9 @@ export function describePeriodicDelivery(config: PeriodicDeliveryConfig): string
   if (config.max_greets_per_round) {
     parts.push(`单轮至多 ${config.max_greets_per_round} 条`);
   }
+  if (config.max_greets_per_day) {
+    parts.push(`每日至多 ${config.max_greets_per_day} 条`);
+  }
   if (config.max_round_minutes) {
     parts.push(`单轮至多 ${config.max_round_minutes} 分钟`);
   }
@@ -155,6 +171,9 @@ export function describePeriodicPlan(plan: PeriodicPlan): string {
   }
   if (plan.max_greets_per_round) {
     parts.push(`单轮至多 ${plan.max_greets_per_round} 条`);
+  }
+  if (plan.max_greets_per_day) {
+    parts.push(`每日至多 ${plan.max_greets_per_day} 条`);
   }
   if (plan.max_round_minutes) {
     parts.push(`单轮至多 ${plan.max_round_minutes} 分钟`);

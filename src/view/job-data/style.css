@@ -278,6 +278,33 @@
   margin: 0;
 }
 
+.brief-crm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid #dbeafe;
+  border-radius: 12px;
+  background: #f8fbff;
+}
+
+.brief-crm-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+
+.brief-crm-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.brief-crm-notes {
+  width: 100%;
+}
+
 /* 时间线这类字段横排铺开，比 Descriptions 的两列更省纵向空间 */
 .brief-meta {
   display: flex;

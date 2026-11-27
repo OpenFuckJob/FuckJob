@@ -74,6 +74,63 @@ pub fn delete(id: &str) -> Result<bool> {
     Ok(changed)
 }
 
+pub fn delete_many(ids: &[String]) -> Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let id_set: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
+    let removed = store().transaction(|jobs| {
+        let before = jobs.len();
+        jobs.retain(|job| !id_set.contains(job.id.as_str()));
+        let count = before.saturating_sub(jobs.len());
+        Ok((count, count > 0))
+    })?;
+    if removed > 0 {
+        super::notify_job_data_changed();
+    }
+    Ok(removed)
+}
+
+/// 统计某个平台今天已新建联的岗位数，用于反封号每日配额护栏与工作台进度展示。
+pub fn count_today_for_platform(platform: &str) -> Result<u32> {
+    let today_prefix = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let jobs = store().load_all()?;
+    Ok(count_jobs_on_date_for_platform(&jobs, platform, &today_prefix))
+}
+
+pub(crate) fn count_jobs_on_date_for_platform(
+    jobs: &[JobDetail],
+    platform: &str,
+    date_prefix: &str,
+) -> u32 {
+    jobs.iter()
+        .filter(|job| {
+            let job_platform = if job.platform == "51job" || job.id.starts_with("51job:") {
+                "51job"
+            } else if job.platform == "liepin" || job.id.starts_with("liepin:") {
+                "liepin"
+            } else {
+                "boss"
+            };
+            job_platform.eq_ignore_ascii_case(platform)
+                && job.created_at.trim().starts_with(date_prefix)
+        })
+        .count() as u32
+}
+
+/// 统计同一公司已建联的岗位数（按标准化公司名匹配），供同公司冷却上限使用。
+pub fn count_by_company_normalized(company_name: &str) -> Result<u32> {
+    let target = crate::verify::normalize_company_name(company_name);
+    if target.is_empty() {
+        return Ok(0);
+    }
+    let jobs = store().load_all()?;
+    Ok(jobs
+        .iter()
+        .filter(|job| crate::verify::normalize_company_name(&job.company_name) == target)
+        .count() as u32)
+}
+
 pub fn find_by_company(name: &str) -> Result<Vec<JobDetail>> {
     let name_lower = name.to_lowercase();
     store().query(|j| j.company_name.to_lowercase().contains(&name_lower))

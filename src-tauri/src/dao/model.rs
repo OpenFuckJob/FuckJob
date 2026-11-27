@@ -56,6 +56,22 @@ impl JobProfileSnapshot {
     }
 }
 
+/// 用户可自主推进的求职 CRM 阶段。
+///
+/// `None` 表示尚未手工覆盖，界面按投递/回复/婉拒状态自动归类。
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum JobPipelineStage {
+    Pending,
+    Applied,
+    Replied,
+    InterviewScheduled,
+    Interviewing,
+    Offer,
+    Rejected,
+    Archived,
+}
+
 /// 岗位详情表
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct JobDetail {
@@ -68,7 +84,7 @@ pub struct JobDetail {
     /// 岗位唯一ID
     pub id: String,
 
-    /// 岗位来源平台: boss / liepin
+    /// 岗位来源平台: boss / liepin / 51job
     #[serde(default)]
     pub platform: String,
 
@@ -110,6 +126,18 @@ pub struct JobDetail {
     /// 是否已投递简历
     /// 默认 false
     pub is_send_resume: bool,
+
+    /// 用户手动维护的求职推进阶段（约面 / 面试中 / Offer 等）
+    #[serde(default)]
+    pub pipeline_stage: Option<JobPipelineStage>,
+
+    /// 个人面试记录 / 沟通备忘
+    #[serde(default)]
+    pub notes: Option<String>,
+
+    /// 预约面试时间（可读文本或日期时间）
+    #[serde(default)]
+    pub interview_at: Option<String>,
 
     /// 创建时间（收藏或导入岗位时间）
     pub created_at: String,
