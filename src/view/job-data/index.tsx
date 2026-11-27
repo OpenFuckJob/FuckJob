@@ -17,13 +17,16 @@ import {
 import {
   CalendarOutlined,
   DeleteOutlined,
+  DownOutlined,
   DownloadOutlined,
   EllipsisOutlined,
   EyeOutlined,
   FileTextOutlined,
   InboxOutlined,
+  LeftOutlined,
   LinkOutlined,
   MessageOutlined,
+  RightOutlined,
   RobotOutlined,
   SearchOutlined,
   StopOutlined,
@@ -156,9 +159,11 @@ interface KanbanLane {
   color: string;
   hint: string;
   stages: JobPipelineStage[];
+  primaryStage: JobPipelineStage;
+  collapsible?: boolean;
 }
 
-/** 6 列交互式求职 CRM 泳道，按推进漏斗顺序互斥分布 */
+/** 6 列交互式求职 CRM 泳道，支持拖拽卡片跨列流转与折叠归档列 */
 const KANBAN_LANES: KanbanLane[] = [
   {
     key: "pending",
@@ -166,6 +171,7 @@ const KANBAN_LANES: KanbanLane[] = [
     color: "#94a3b8",
     hint: "已建联但还没投出简历",
     stages: ["pending"],
+    primaryStage: "pending",
   },
   {
     key: "applied",
@@ -173,6 +179,7 @@ const KANBAN_LANES: KanbanLane[] = [
     color: "#1677ff",
     hint: "已投简历，等待 HR 回应",
     stages: ["applied"],
+    primaryStage: "applied",
   },
   {
     key: "replied",
@@ -180,6 +187,7 @@ const KANBAN_LANES: KanbanLane[] = [
     color: "#10b981",
     hint: "对方已回应，优先推进约面",
     stages: ["replied"],
+    primaryStage: "replied",
   },
   {
     key: "interview",
@@ -187,6 +195,7 @@ const KANBAN_LANES: KanbanLane[] = [
     color: "#8b5cf6",
     hint: "已约面或面试流程进行中",
     stages: ["interview_scheduled", "interviewing"],
+    primaryStage: "interview_scheduled",
   },
   {
     key: "offer",
@@ -194,6 +203,7 @@ const KANBAN_LANES: KanbanLane[] = [
     color: "#eab308",
     hint: "已拿到 Offer 或谈薪阶段",
     stages: ["offer"],
+    primaryStage: "offer",
   },
   {
     key: "closed",
@@ -201,6 +211,8 @@ const KANBAN_LANES: KanbanLane[] = [
     color: "#f97316",
     hint: "明确不合适或主动归档",
     stages: ["rejected", "archived"],
+    primaryStage: "rejected",
+    collapsible: true,
   },
 ];
 
@@ -219,6 +231,9 @@ function groupByLane(jobs: JobListItem[]): Array<KanbanLane & { jobs: JobListIte
 function JobKanbanCard({
   job,
   analysis,
+  dragging,
+  onDragStart,
+  onDragEnd,
   onView,
   onChat,
   onDelete,
@@ -227,6 +242,9 @@ function JobKanbanCard({
 }: {
   job: JobListItem;
   analysis?: InterviewJobAnalysis;
+  dragging: boolean;
+  onDragStart: (jobId: string) => void;
+  onDragEnd: () => void;
   onView: (job: JobDetail) => void;
   onChat: (job: JobDetail) => void;
   onDelete: (id: string) => void;
@@ -244,10 +262,17 @@ function JobKanbanCard({
 
   return (
     <div
-      className="job-card"
+      className={`job-card${dragging ? " is-dragging" : ""}`}
       role="button"
       tabIndex={0}
-      title="查看岗位详情、面试笔记与分析报告"
+      draggable
+      title="点击查看详情与笔记，拖拽卡片可切换推进阶段"
+      onDragStart={(event) => {
+        event.dataTransfer.setData("text/plain", job.id);
+        event.dataTransfer.effectAllowed = "move";
+        onDragStart(job.id);
+      }}
+      onDragEnd={onDragEnd}
       onClick={() => onView(job)}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -292,21 +317,30 @@ function JobKanbanCard({
         )}
       </div>
 
-      <div
-        onClick={(event) => event.stopPropagation()}
-        onKeyDown={(event) => event.stopPropagation()}
-      >
-        <Select<JobPipelineStage>
-          size="small"
-          value={stage}
-          options={STAGE_OPTIONS}
-          style={{ width: "100%" }}
-          onChange={(next) => onChangeStage(job, next)}
-        />
-      </div>
-
       <div className="job-card-foot">
-        <span className="job-card-time">{time}</span>
+        <div
+          style={{ display: "flex", alignItems: "center", gap: 6 }}
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => event.stopPropagation()}
+        >
+          <Dropdown
+            trigger={["click"]}
+            menu={{
+              selectedKeys: [stage],
+              items: STAGE_OPTIONS.map((opt) => ({
+                key: opt.value,
+                label: opt.label,
+                onClick: () => onChangeStage(job, opt.value),
+              })),
+            }}
+          >
+            <button type="button" className="job-card-stage-pill" title="点击切换推进阶段">
+              <span>{STAGE_META[stage].label}</span>
+              <DownOutlined style={{ fontSize: 9 }} />
+            </button>
+          </Dropdown>
+          <span className="job-card-time">{time}</span>
+        </div>
         {/* 阻止冒泡：这些按钮各有各的动作，不该顺带打开详情 */}
         <div
           className="job-card-actions"
@@ -365,39 +399,112 @@ function KanbanView({
   onStartInterview?: (job: JobDetail) => void;
 }) {
   const lanes = useMemo(() => groupByLane(jobs), [jobs]);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragOverLane, setDragOverLane] = useState<string | null>(null);
+  const [closedCollapsed, setClosedCollapsed] = useState(false);
+
+  const handleDropOnLane = (lane: KanbanLane, event: React.DragEvent) => {
+    event.preventDefault();
+    const jobId = event.dataTransfer.getData("text/plain") || draggingId;
+    setDraggingId(null);
+    setDragOverLane(null);
+    if (!jobId) return;
+    const job = jobs.find((item) => item.id === jobId);
+    if (!job) return;
+    const currentStage = resolveEffectiveStage(job);
+    if (lane.stages.includes(currentStage)) return;
+    onChangeStage(job, lane.primaryStage);
+  };
 
   return (
     <div className="kanban-board">
-      {lanes.map((lane) => (
-        <div className="kanban-lane" key={lane.key}>
-          <div className="kanban-lane-head" title={lane.hint}>
-            <span className="kanban-lane-dot" style={{ background: lane.color }} />
-            <span className="kanban-lane-title">{lane.label}</span>
-            <span className="kanban-lane-count">{lane.jobs.length}</span>
-          </div>
-          <div className="kanban-lane-body">
-            {lane.jobs.length === 0 ? (
-              <div className="kanban-empty">
-                <InboxOutlined />
-                <span>{lane.hint}</span>
-              </div>
-            ) : (
-              lane.jobs.map((job) => (
-                <JobKanbanCard
-                  key={job.id}
-                  job={job}
-                  analysis={analyses[job.id]}
-                  onView={onView}
-                  onChat={onChat}
-                  onDelete={onDelete}
-                  onChangeStage={onChangeStage}
-                  onStartInterview={onStartInterview}
+      {lanes.map((lane) => {
+        const isCollapsed = Boolean(lane.collapsible && closedCollapsed);
+        const isDragOver = dragOverLane === lane.key;
+
+        if (isCollapsed) {
+          return (
+            <div
+              key={lane.key}
+              className={`kanban-lane is-collapsed${isDragOver ? " is-drag-over" : ""}`}
+              title={`展开「${lane.label}」（${lane.jobs.length} 条），也可直接拖入卡片归档`}
+              onClick={() => setClosedCollapsed(false)}
+              onDragOver={(event) => {
+                event.preventDefault();
+                setDragOverLane(lane.key);
+              }}
+              onDragLeave={() => setDragOverLane((prev) => (prev === lane.key ? null : prev))}
+              onDrop={(event) => handleDropOnLane(lane, event)}
+            >
+              <LeftOutlined style={{ fontSize: 11, color: "var(--jd-muted)" }} />
+              <span className="kanban-lane-dot" style={{ background: lane.color }} />
+              <span className="kanban-lane-count" style={{ marginLeft: 0 }}>{lane.jobs.length}</span>
+              <span className="kanban-collapsed-title">{lane.label}</span>
+            </div>
+          );
+        }
+
+        return (
+          <div
+            className={`kanban-lane${isDragOver ? " is-drag-over" : ""}`}
+            key={lane.key}
+            onDragOver={(event) => {
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "move";
+              if (dragOverLane !== lane.key) setDragOverLane(lane.key);
+            }}
+            onDragLeave={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                setDragOverLane((prev) => (prev === lane.key ? null : prev));
+              }
+            }}
+            onDrop={(event) => handleDropOnLane(lane, event)}
+          >
+            <div className="kanban-lane-head" title={lane.hint}>
+              <span className="kanban-lane-dot" style={{ background: lane.color }} />
+              <span className="kanban-lane-title">{lane.label}</span>
+              <span className="kanban-lane-count">{lane.jobs.length}</span>
+              {lane.collapsible && (
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<RightOutlined style={{ fontSize: 11 }} />}
+                  title="折叠此列腾出更多看板空间"
+                  onClick={() => setClosedCollapsed(true)}
+                  style={{ width: 22, height: 22, padding: 0 }}
                 />
-              ))
-            )}
+              )}
+            </div>
+            <div className="kanban-lane-body">
+              {lane.jobs.length === 0 ? (
+                <div className="kanban-empty">
+                  <InboxOutlined />
+                  <span>{isDragOver ? "松开移入此阶段" : lane.hint}</span>
+                </div>
+              ) : (
+                lane.jobs.map((job) => (
+                  <JobKanbanCard
+                    key={job.id}
+                    job={job}
+                    analysis={analyses[job.id]}
+                    dragging={draggingId === job.id}
+                    onDragStart={setDraggingId}
+                    onDragEnd={() => {
+                      setDraggingId(null);
+                      setDragOverLane(null);
+                    }}
+                    onView={onView}
+                    onChat={onChat}
+                    onDelete={onDelete}
+                    onChangeStage={onChangeStage}
+                    onStartInterview={onStartInterview}
+                  />
+                ))
+              )}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -874,28 +981,30 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
       {contextHolder}
 
       {/* ── header toolbar ── */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          gap: 12,
-          flexWrap: "wrap",
-        }}
-      >
-        <Typography.Title level={5} style={{ margin: 0 }}>
-          岗位数据
-        </Typography.Title>
-        <Space wrap>
+      <div className="job-toolbar">
+        <div className="job-toolbar-left">
+          <Typography.Title level={5} style={{ margin: 0 }}>
+            岗位管理
+          </Typography.Title>
+          <Segmented
+            size="small"
+            value={viewMode}
+            onChange={(val) => setViewMode(val as "table" | "kanban")}
+            options={[
+              { label: "表格", value: "table" },
+              { label: "看板", value: "kanban" },
+            ]}
+          />
           {viewMode === "table" && selectedJobIds.length > 0 && (
             <>
               <Button
+                size="small"
                 type="primary"
                 icon={<ThunderboltOutlined />}
                 loading={batchAnalyzing}
                 onClick={() => void handleBatchAnalyze()}
               >
-                批量 AI 分析（{selectedJobIds.length}）
+                批量分析（{selectedJobIds.length}）
               </Button>
               <Popconfirm
                 title={`确定批量删除已选的 ${selectedJobIds.length} 条岗位？`}
@@ -905,12 +1014,69 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
                 okButtonProps={{ danger: true }}
                 onConfirm={() => void handleBatchDelete()}
               >
-                <Button danger icon={<DeleteOutlined />} loading={batchDeleting}>
+                <Button size="small" danger icon={<DeleteOutlined />} loading={batchDeleting}>
                   批量删除
                 </Button>
               </Popconfirm>
             </>
           )}
+        </div>
+        <div className="job-toolbar-right">
+          <Select
+            size="small"
+            value={platformFilter}
+            style={{ width: 96 }}
+            onChange={setPlatformFilter}
+            options={[
+              { label: "全部平台", value: "all" },
+              { label: "BOSS", value: "boss" },
+              { label: "猎聘", value: "liepin" },
+              { label: "51job", value: "51job" },
+            ]}
+          />
+          <Select
+            size="small"
+            value={stageFilter}
+            style={{ width: 106 }}
+            onChange={setStageFilter}
+            options={[
+              { label: "全部阶段", value: "all" },
+              ...STAGE_OPTIONS,
+            ]}
+          />
+          <Select
+            size="small"
+            value={communicationStatusFilter}
+            style={{ width: 102 }}
+            onChange={setCommunicationStatusFilter}
+            options={[
+              { label: "全部沟通", value: "all" },
+              { label: "明确拒绝", value: "rejected" },
+              { label: "未回复", value: "no_reply" },
+              { label: "已回复", value: "replied" },
+            ]}
+          />
+          <Select
+            size="small"
+            value={analysisFilter}
+            style={{ width: 122 }}
+            onChange={setAnalysisFilter}
+            options={[
+              { label: "全部分析", value: "all" },
+              { label: "已分析", value: "analyzed" },
+              { label: "未分析", value: "not_analyzed" },
+              { label: `高匹配≥${highMatchScore}`, value: "high_match" },
+            ]}
+          />
+          <Input
+            size="small"
+            placeholder="搜索岗位/公司/笔记"
+            prefix={<SearchOutlined />}
+            allowClear
+            style={{ width: 185 }}
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+          />
           <Dropdown
             trigger={["click"]}
             menu={{
@@ -939,69 +1105,11 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
               ],
             }}
           >
-            <Button icon={<DownloadOutlined />} loading={exporting}>
+            <Button size="small" icon={<DownloadOutlined />} loading={exporting}>
               导出
             </Button>
           </Dropdown>
-          <Segmented
-            value={viewMode}
-            onChange={(val) => setViewMode(val as "table" | "kanban")}
-            options={[
-              { label: "表格", value: "table" },
-              { label: "看板", value: "kanban" },
-            ]}
-          />
-          <Select
-            value={platformFilter}
-            style={{ width: 112 }}
-            onChange={setPlatformFilter}
-            options={[
-              { label: "全部平台", value: "all" },
-              { label: "BOSS", value: "boss" },
-              { label: "猎聘", value: "liepin" },
-              { label: "前程无忧", value: "51job" },
-            ]}
-          />
-          <Select
-            value={stageFilter}
-            style={{ width: 120 }}
-            onChange={setStageFilter}
-            options={[
-              { label: "全部阶段", value: "all" },
-              ...STAGE_OPTIONS,
-            ]}
-          />
-          <Select
-            value={communicationStatusFilter}
-            style={{ width: 124 }}
-            onChange={setCommunicationStatusFilter}
-            options={[
-              { label: "全部沟通", value: "all" },
-              { label: "明确拒绝", value: "rejected" },
-              { label: "未回复", value: "no_reply" },
-              { label: "已回复", value: "replied" },
-            ]}
-          />
-          <Select
-            value={analysisFilter}
-            style={{ width: 140 }}
-            onChange={setAnalysisFilter}
-            options={[
-              { label: "全部分析", value: "all" },
-              { label: "已分析", value: "analyzed" },
-              { label: "未分析", value: "not_analyzed" },
-              { label: `高匹配（≥${highMatchScore}）`, value: "high_match" },
-            ]}
-          />
-          <Input
-            placeholder="搜索岗位、公司或面试笔记"
-            prefix={<SearchOutlined />}
-            allowClear
-            style={{ width: 220 }}
-            value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
-          />
-        </Space>
+        </div>
       </div>
 
       {/* ── view body ── */}
