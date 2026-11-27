@@ -20,11 +20,12 @@ const REFRESH_INTERVAL_MS = 30_000;
  * 抽屉才需要完整列表。让磁贴去挂一个隐藏的列表组件来拿计数，
  * 会变成两处各轮询一次。
  */
-export function useManualReview() {
+export function useManualReview(enabled = true) {
   const [records, setRecords] = useState<ManualReviewRecord[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(enabled);
 
   const refresh = useCallback(async () => {
+    if (!enabled) return;
     try {
       const result = await invoke<CommandResult<ManualReviewRecord[]>>("manual_review_list");
       if (result.success && result.data) {
@@ -36,13 +37,14 @@ export function useManualReview() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [enabled]);
 
   useEffect(() => {
+    if (!enabled) return;
     void refresh();
     const timer = setInterval(() => void refresh(), REFRESH_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [refresh]);
+  }, [enabled, refresh]);
 
   const resolve = useCallback(async (record: ManualReviewRecord) => {
     try {

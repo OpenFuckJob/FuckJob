@@ -5,6 +5,7 @@ import {
   Card,
   Drawer,
   Image,
+  Input,
   Modal,
   Radio,
   Select,
@@ -17,15 +18,18 @@ import {
 } from "antd";
 import {
   CheckCircleOutlined,
+  CloseOutlined,
   CopyOutlined,
   DatabaseOutlined,
   ExclamationCircleOutlined,
   EyeInvisibleOutlined,
   EyeOutlined,
+  FilterOutlined,
   LoadingOutlined,
   MessageOutlined,
   PlayCircleOutlined,
   RocketOutlined,
+  SearchOutlined,
   SendOutlined,
   SlidersOutlined,
   UndoOutlined,
@@ -70,6 +74,7 @@ import {
 import PeriodicDeliverySection, {
   canResetPeriodicDelivery,
 } from "../config/PeriodicDeliverySection";
+import "./style.css";
 
 type CheckPhase = "idle" | "checking" | "done";
 
@@ -294,6 +299,37 @@ export function describePeriodicBlocker(
   return null;
 }
 
+export type LogLineLevel = "error" | "warn" | "success" | "info";
+
+export function parseLogLineLevel(line: string): LogLineLevel {
+  if (/\[ERROR\]|失败|风控|熔断|异常|断开/.test(line)) return "error";
+  if (/\[WARN\]|\[WARNING\]|警告|超时|跳过|转人工|限额|上限/.test(line)) return "warn";
+  if (/初次沟通成功|通过|已加入任务队列|完成/.test(line)) return "success";
+  return "info";
+}
+
+export function filterLogLines(
+  content: string,
+  taskId: string | null,
+  levelFilter: "all" | "warn_error",
+  keyword: string,
+): string[] {
+  const scoped = filterTaskLogContent(content, taskId);
+  if (!scoped.trim()) return [];
+  const normalizedKeyword = keyword.trim().toLowerCase();
+  return scoped.split("\n").filter((line) => {
+    if (!line.trim()) return false;
+    if (levelFilter === "warn_error") {
+      const level = parseLogLineLevel(line);
+      if (level !== "error" && level !== "warn") return false;
+    }
+    if (normalizedKeyword && !line.toLowerCase().includes(normalizedKeyword)) {
+      return false;
+    }
+    return true;
+  });
+}
+
 export function describeReplyActiveHours(
   polling: Pick<ReplyPollingConfig, "active_hours_enabled" | "active_start_hour" | "active_end_hour">,
 ): string {
@@ -321,16 +357,22 @@ interface StatTile {
 
 /* ────────── Component ────────── */
 
+const QUICKSTART_DISMISSED_KEY = "offerflow_quickstart_dismissed";
+
 const WorkspacePage = ({
   config,
   onNavigate,
   onOpenConfig,
   onOpenConversation,
+  pendingReviewCount: externalPendingReviewCount,
+  onOpenManualReview,
 }: {
   config: AppRuntimeConfig;
   onNavigate?: (tab: "job-data") => void;
   onOpenConfig?: (group: ConfigGroup) => void;
   onOpenConversation?: (jobId: string) => void;
+  pendingReviewCount?: number;
+  onOpenManualReview?: () => void;
 }) => {
   const [environmentStates, setEnvironmentStates] = useState<
     Record<PlatformKind, PlatformEnvState>
@@ -356,7 +398,8 @@ const WorkspacePage = ({
   const [selectedProfileId, setSelectedProfileId] = useState<string>(() => getDefaultJobProfile(config).id);
   const [platform, setPlatform] = useState<PlatformKind>("boss");
   const [reviewDrawerOpen, setReviewDrawerOpen] = useState(false);
-  const manualReview = useManualReview();
+  const usesExternalReview = onOpenManualReview !== undefined;
+  const manualReview = useManualReview(!usesExternalReview);
   const [modalPlatform, setModalPlatform] = useState<PlatformKind>("boss");
   const [pendingStartPlatforms, setPendingStartPlatforms] = useState<
     Partial<Record<PlatformKind, boolean>>
@@ -368,6 +411,15 @@ const WorkspacePage = ({
   const [readinessReport, setReadinessReport] = useState<ReadinessReport | null>(null);
   const [readinessLoading, setReadinessLoading] = useState(false);
   const [logCollapsed, setLogCollapsed] = useState(true);
+  const [logLevelFilter, setLogLevelFilter] = useState<"all" | "warn_error">("all");
+  const [logSearch, setLogSearch] = useState("");
+  const [quickstartDismissed, setQuickstartDismissed] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem(QUICKSTART_DISMISSED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
   const logCollapsedRef = useRef(logCollapsed);
   logCollapsedRef.current = logCollapsed;
   const logRef = useRef<HTMLPreElement>(null);
@@ -659,7 +711,12 @@ const WorkspacePage = ({
   const selectedTask = selectedTaskId
     ? taskOverview.tasks.find((task) => task.task_id === selectedTaskId) ?? null
     : null;
-  const filteredLogContent = filterTaskLogContent(logContent, selectedTaskId);
+  const filteredLogLines = filterLogLines(
+    logContent,
+    selectedTaskId,
+    logLevelFilter,
+    logSearch,
+  );
 
   /* derived stats */
   const totalJobs = jobs.length;
@@ -667,7 +724,17 @@ const WorkspacePage = ({
   const repliedCount = jobs.filter((j) => j.is_reply).length;
   const replyRate = totalJobs > 0 ? `${((repliedCount / totalJobs) * 100).toFixed(0)}%` : "—";
   const runningModeLabel = `${taskCounts.running} / ${taskOverview.max_parallel_tasks}`;
-  const pendingReviewCount = manualReview.records.length;
+  const pendingReviewCount = externalPendingReviewCount ?? manualReview.records.length;
+  const showQuickstart =
+    !quickstartDismissed && totalJobs === 0 && taskOverview.tasks.length === 0;
+  const dismissQuickstart = () => {
+    setQuickstartDismissed(true);
+    try {
+      window.localStorage.setItem(QUICKSTART_DISMISSED_KEY, "1");
+    } catch {
+      // ignore
+    }
+  };
 
   /** 摘要区的一行：左侧窄标签、右侧内容，两行之间靠这个网格对齐 */
   const summaryRow = (label: string, content: React.ReactNode) => (
@@ -816,25 +883,83 @@ const WorkspacePage = ({
       label: "待你处理",
       ...describePendingReview(pendingReviewCount),
       icon: <ExclamationCircleOutlined style={{ fontSize: 18 }} />,
-      onClick: () => setReviewDrawerOpen(true),
+      onClick: () => {
+        if (onOpenManualReview) onOpenManualReview();
+        else setReviewDrawerOpen(true);
+      },
     },
   ];
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", gap: 20 }}>
+    <div className="ws-root">
       {contextHolder}
 
+      {showQuickstart && (
+        <section className="ws-quickstart">
+          <div className="ws-quickstart-head">
+            <Space size={8}>
+              <RocketOutlined style={{ color: "#1677ff" }} />
+              <Typography.Text strong>三步快速上手 OfferFlow</Typography.Text>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                默认已开启拟人化节奏与每日 50 条安全护栏
+              </Typography.Text>
+            </Space>
+            <Button
+              type="text"
+              size="small"
+              icon={<CloseOutlined />}
+              aria-label="关闭快速上手引导"
+              onClick={dismissQuickstart}
+            />
+          </div>
+          <div className="ws-quickstart-steps">
+            <div className="ws-quickstart-step">
+              <Space size={8}>
+                <span className="ws-quickstart-step-num">1</span>
+                <div>
+                  <Typography.Text strong style={{ fontSize: 12.5, display: "block" }}>检查平台登录</Typography.Text>
+                  <Typography.Text type="secondary" style={{ fontSize: 11.5 }}>确认 Chrome 与账号已就绪</Typography.Text>
+                </div>
+              </Space>
+              <Button size="small" onClick={() => void handleCheckEnv(platform)}>立即检查</Button>
+            </div>
+            <div className="ws-quickstart-step">
+              <Space size={8}>
+                <span className="ws-quickstart-step-num">2</span>
+                <div>
+                  <Typography.Text strong style={{ fontSize: 12.5, display: "block" }}>导入简历与黑名单</Typography.Text>
+                  <Typography.Text type="secondary" style={{ fontSize: 11.5 }}>过滤外包与低薪，减少无效浏览</Typography.Text>
+                </div>
+              </Space>
+              {onOpenConfig && (
+                <Button size="small" onClick={() => onOpenConfig("job")}>去配置</Button>
+              )}
+            </div>
+            <div className="ws-quickstart-step">
+              <Space size={8}>
+                <span className="ws-quickstart-step-num">3</span>
+                <div>
+                  <Typography.Text strong style={{ fontSize: 12.5, display: "block" }}>开启首轮安全试投</Typography.Text>
+                  <Typography.Text type="secondary" style={{ fontSize: 11.5 }}>启动前会自动检查必填项</Typography.Text>
+                </div>
+              </Space>
+              <Button size="small" type="primary" onClick={() => openStartModal(platform)}>添加任务</Button>
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* ── Stat tiles ── */}
-      <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14 }}>
+      <section className="ws-stat-grid">
         {statTiles.map((tile) => (
           <Card
             key={tile.label}
             size="small"
+            className="ws-stat-card"
             hoverable={!!tile.onClick}
             onClick={tile.onClick}
-            styles={{ body: { padding: "14px 16px" } }}
+            styles={{ body: { padding: "13px 15px" } }}
             style={{
-              background: "linear-gradient(135deg, #ffffff 0%, #f8fafc 100%)",
               cursor: tile.onClick ? "pointer" : undefined,
             }}
           >
@@ -853,19 +978,11 @@ const WorkspacePage = ({
       </section>
 
       {/* ── Platform card + task queue ── */}
-      <section
-        style={{
-          display: "grid",
-          gridTemplateColumns: "minmax(380px, 1fr) minmax(440px, 1.15fr)",
-          gap: 16,
-          alignItems: "start",
-        }}
-      >
+      <section className="ws-main-grid">
         <Card
-          styles={{ body: { padding: 20, height: "100%" } }}
+          styles={{ body: { padding: 18, height: "100%" } }}
           style={{
             borderTop: `4px solid ${currentPlatformMeta.accent}`,
-            background: "linear-gradient(180deg, #ffffff 0%, #fbfdff 100%)",
           }}
         >
           <Space direction="vertical" size={16} style={{ width: "100%" }}>
@@ -913,7 +1030,7 @@ const WorkspacePage = ({
               })()}
             </div>
 
-            <div style={{ padding: 14, border: "1px solid #e8edf3", borderRadius: 12, background: "#fff" }}>
+            <div className="ws-env-box">
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 12 }}>
                 <div>
                   <Typography.Text strong>环境状态</Typography.Text>
@@ -950,7 +1067,7 @@ const WorkspacePage = ({
                 <Typography.Text type="secondary" style={{ display: "block", marginTop: 10, fontSize: 12.5 }}>{currentEnvironment.result.message}</Typography.Text>
               )}
               {currentQrSrc && (
-                <div style={{ marginTop: 12, padding: 12, display: "flex", alignItems: "center", gap: 14, background: "#f8fafc", borderRadius: 10 }}>
+                <div className="ws-qr-box">
                   <Image src={currentQrSrc} width={112} height={112} preview={false} alt={`${currentPlatformMeta.label}登录二维码`} />
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>请使用 {currentPlatformMeta.label} App 扫码登录，完成后重新检查环境。</Typography.Text>
                 </div>
@@ -964,7 +1081,7 @@ const WorkspacePage = ({
               icon={<PlayCircleOutlined />}
               loading={currentStartPending}
               disabled={currentStartPending}
-              style={{ background: currentPlatformMeta.accent }}
+              style={{ backgroundColor: currentPlatformMeta.accent, borderColor: currentPlatformMeta.accent }}
               onClick={() => openStartModal(platform)}
             >
               {currentStartPending ? "正在加入队列..." : `添加 ${currentPlatformMeta.shortLabel} 任务`}
@@ -1031,6 +1148,7 @@ const WorkspacePage = ({
                   key={task.task_id}
                   role="button"
                   tabIndex={0}
+                  className={`ws-queue-item${selected ? " is-selected" : ""}`}
                   onClick={() => {
                     setSelectedTaskId(task.task_id);
                     setLogCollapsed(false);
@@ -1042,15 +1160,7 @@ const WorkspacePage = ({
                     }
                   }}
                   style={{
-                    display: "grid",
-                    gridTemplateColumns: "minmax(170px, 1.3fr) minmax(100px, .7fr) auto",
-                    alignItems: "center",
-                    gap: 12,
-                    padding: "11px 12px",
-                    border: `1px solid ${selected ? PLATFORM_META[task.platform].accent : "#e8edf3"}`,
-                    borderRadius: 10,
-                    background: selected ? "rgba(22, 119, 255, 0.04)" : "#fff",
-                    cursor: "pointer",
+                    borderColor: selected ? PLATFORM_META[task.platform].accent : undefined,
                   }}
                 >
                   <div>
@@ -1271,12 +1381,28 @@ const WorkspacePage = ({
                 : "全部任务"}
             </Tag>
           </Space>
-          <Space>
-            <Button size="small" icon={logCollapsed ? <EyeOutlined /> : <EyeInvisibleOutlined />} onClick={() => setLogCollapsed(!logCollapsed)}>
-              {logCollapsed ? "展开" : "收起"}
-            </Button>
+          <Space wrap size={6}>
             {!logCollapsed && (
               <>
+                <Button
+                  size="small"
+                  type={logLevelFilter === "warn_error" ? "primary" : "default"}
+                  icon={<FilterOutlined />}
+                  onClick={() =>
+                    setLogLevelFilter((prev) => (prev === "all" ? "warn_error" : "all"))
+                  }
+                >
+                  仅看警告/错误
+                </Button>
+                <Input
+                  size="small"
+                  allowClear
+                  prefix={<SearchOutlined />}
+                  placeholder="过滤日志关键字"
+                  style={{ width: 170 }}
+                  value={logSearch}
+                  onChange={(event) => setLogSearch(event.target.value)}
+                />
                 <Button size="small" icon={<CopyOutlined />} onClick={handleCopyLog}>复制</Button>
                 {selectedTaskId && (
                   <Button size="small" onClick={() => setSelectedTaskId(null)}>
@@ -1285,50 +1411,47 @@ const WorkspacePage = ({
                 )}
               </>
             )}
+            <Button size="small" icon={logCollapsed ? <EyeOutlined /> : <EyeInvisibleOutlined />} onClick={() => setLogCollapsed(!logCollapsed)}>
+              {logCollapsed ? "展开" : "收起"}
+            </Button>
           </Space>
         </div>
         {!logCollapsed && (
-          <pre
-            ref={logRef}
-            style={{
-              flex: 1,
-              minHeight: 180,
-              margin: 0,
-              padding: "14px 16px",
-              background: "#0f172a",
-              color: "#38bdf8",
-              borderRadius: 12,
-              fontFamily: "'JetBrains Mono', 'Fira Code', 'Menlo', 'Monaco', monospace",
-              fontSize: 12.5,
-              lineHeight: 1.6,
-              overflowY: "auto",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-all",
-              boxShadow: "inset 0 2px 6px rgba(0,0,0,0.4)",
-              border: "1px solid #1e293b",
-            }}
-          >
-            {filteredLogContent || "// 暂无运行日志..."}
+          <pre ref={logRef} className="ws-log-terminal">
+            {filteredLogLines.length === 0 ? (
+              <span className="ws-log-line is-info">
+                {logContent.trim() ? "// 当前过滤条件下无匹配日志" : "// 暂无运行日志..."}
+              </span>
+            ) : (
+              filteredLogLines.map((line, index) => (
+                <span key={index} className={`ws-log-line is-${parseLogLineLevel(line)}`}>
+                  {line}
+                  {"\n"}
+                </span>
+              ))
+            )}
           </pre>
         )}
       </section>
 
-      <ManualReviewDrawer
-        open={reviewDrawerOpen}
-        onClose={() => setReviewDrawerOpen(false)}
-        records={manualReview.records}
-        loading={manualReview.loading}
-        onResolve={(record) => void manualReview.resolve(record)}
-        onClear={() => void manualReview.clear()}
-        onOpenConversation={
-          onOpenConversation
-            ? (jobId) => {
-                setReviewDrawerOpen(false);
-                onOpenConversation(jobId);
-              }
-            : undefined
-        }
-      />
+      {!usesExternalReview && (
+        <ManualReviewDrawer
+          open={reviewDrawerOpen}
+          onClose={() => setReviewDrawerOpen(false)}
+          records={manualReview.records}
+          loading={manualReview.loading}
+          onResolve={(record) => void manualReview.resolve(record)}
+          onClear={() => void manualReview.clear()}
+          onOpenConversation={
+            onOpenConversation
+              ? (jobId) => {
+                  setReviewDrawerOpen(false);
+                  onOpenConversation(jobId);
+                }
+              : undefined
+          }
+        />
+      )}
     </div>
   );
 };

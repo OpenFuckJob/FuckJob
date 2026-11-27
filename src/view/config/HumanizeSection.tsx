@@ -1,3 +1,4 @@
+import { Typography } from "antd";
 import { SafetyCertificateOutlined } from "@ant-design/icons";
 import {
   type HumanizeConfig,
@@ -5,6 +6,8 @@ import {
 } from "../../types/app-config";
 import { SettingGroup, SettingToggle } from "@/components/SettingField";
 import { RadioCardGroup, type RadioCardOption } from "@/components/RadioCardGroup";
+
+const { Text } = Typography;
 
 /**
  * 强度档位只表达用户能感知到的行为差异，具体节奏仍由后端按人格种子推导。
@@ -45,23 +48,31 @@ interface Props {
  */
 export default function HumanizeSection({ config, onChange }: Props) {
   return (
-    <SettingGroup>
-      <SettingToggle
-        icon={<SafetyCertificateOutlined />}
-        title="启用拟人化"
-        description="模拟真人的操作节奏，同一账号每天的表现也会略有差异"
-        checked={config.enabled}
-        onChange={(enabled) => onChange({ enabled })}
-      >
-        {config.enabled && (
-          <RadioCardGroup
-            ariaLabel="拟人化强度"
-            value={config.intensity}
-            options={INTENSITY_OPTIONS}
-            onChange={(intensity) => onChange({ intensity })}
-          />
-        )}
-      </SettingToggle>
-    </SettingGroup>
+    <div className="space-y-4 rounded-2xl border border-slate-200/80 bg-white/85 p-6">
+      <div>
+        <Text className="block font-bold text-slate-900">拟人化节奏</Text>
+        <Text className="text-xs text-slate-500">
+          为投递间隔、单轮数量和休息停顿叠加自然波动，避免固定节律触发平台风控
+        </Text>
+      </div>
+      <SettingGroup>
+        <SettingToggle
+          icon={<SafetyCertificateOutlined />}
+          title="启用拟人化"
+          description="模拟真人的操作节奏，同一账号每天的表现也会略有差异"
+          checked={config.enabled}
+          onChange={(enabled) => onChange({ enabled })}
+        >
+          {config.enabled && (
+            <RadioCardGroup
+              ariaLabel="拟人化强度"
+              value={config.intensity}
+              options={INTENSITY_OPTIONS}
+              onChange={(intensity) => onChange({ intensity })}
+            />
+          )}
+        </SettingToggle>
+      </SettingGroup>
+    </div>
   );
 }

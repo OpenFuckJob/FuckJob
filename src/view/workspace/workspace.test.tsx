@@ -8,9 +8,11 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   describePendingReview,
   describeReplyActiveHours,
+  filterLogLines,
   filterTaskLogContent,
   filterTasksByPlatform,
   getTaskProfileLabel,
+  parseLogLineLevel,
   requestStopJobTask,
   sortTasksForQueue,
   sortTasksNewestFirst,
@@ -147,5 +149,28 @@ describe("reply active hours copy", () => {
     expect(
       describeReplyActiveHours({ active_hours_enabled: true, active_start_hour: 9, active_end_hour: 22 }),
     ).toBe("只在 9:00 - 22:00 之间回复");
+  });
+});
+
+describe("log line classification and filtering", () => {
+  it("classifies error, warning, success, and info lines", () => {
+    expect(parseLogLineLevel("[ERROR] 检测到 BOSS 风控熔断")).toBe("error");
+    expect(parseLogLineLevel("[WARN] 跳过不匹配岗位")).toBe("warn");
+    expect(parseLogLineLevel("[INFO] 后端工程师 初次沟通成功")).toBe("success");
+    expect(parseLogLineLevel("[INFO] 正在加载页面")).toBe("info");
+  });
+
+  it("filters log lines by task id, severity, and keyword", () => {
+    const sample = [
+      "[INFO] [task=t1] 页面加载到 30 条",
+      "[WARN] [task=t1] 列表前置过滤跳过：外包岗位",
+      "[ERROR] [task=t1] 检测到 BOSS 风控熔断",
+      "[ERROR] [task=t2] 其他任务错误",
+    ].join("\n");
+
+    expect(filterLogLines(sample, "t1", "warn_error", "")).toHaveLength(2);
+    expect(filterLogLines(sample, "t1", "warn_error", "风控")).toEqual([
+      "[ERROR] [task=t1] 检测到 BOSS 风控熔断",
+    ]);
   });
 });

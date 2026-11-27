@@ -17,6 +17,7 @@ import {
   Alert,
   Dropdown,
   Modal,
+  Segmented,
   Tabs,
   Tag,
 } from "antd";
@@ -583,6 +584,7 @@ export function ConfigPage(props: ConfigPageProps) {
   const [activeGroup, setActiveGroup] = useState<VisibleConfigGroup>(() =>
     toVisibleConfigGroup(props.initialGroup),
   );
+  const [jobFilterTab, setJobFilterTab] = useState<"basic" | "guard" | "platform">("basic");
   const [form] = Form.useForm();
   const [noticeModal, noticeModalContextHolder] = Modal.useModal();
   const [browserEnvStatus, setBrowserEnvStatus] =
@@ -1031,7 +1033,7 @@ export function ConfigPage(props: ConfigPageProps) {
                 <SafetyOutlined className="text-sky-500" />
                 运行与防封
               </Title>
-              <Text className="text-slate-500 text-xs uppercase font-bold tracking-widest">
+              <Text className="text-slate-500 text-xs">
                 全局运行节奏、账号防封护栏、自动回复轮询与实时通知（跨所有求职方案生效）
               </Text>
             </div>
@@ -1082,19 +1084,31 @@ export function ConfigPage(props: ConfigPageProps) {
       case "job":
         return (
           <Space direction="vertical" size="large" className="w-full">
-            <div>
-              <Title
-                level={4}
-                className="text-slate-900! m-0! flex items-center gap-2"
-              >
-                <ProductOutlined className="text-sky-500" />
-                岗位筛选
-              </Title>
-              <Text className="text-slate-500 text-xs uppercase font-bold tracking-widest">
-                配置岗位检索、筛选及关键词策略
-              </Text>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <Title
+                  level={4}
+                  className="text-slate-900! m-0! flex items-center gap-2"
+                >
+                  <ProductOutlined className="text-sky-500" />
+                  岗位筛选
+                </Title>
+                <Text className="text-slate-500 text-xs">
+                  配置检索条件、反噪黑名单、真实薪资护栏与平台专属过滤
+                </Text>
+              </div>
+              <Segmented<"basic" | "guard" | "platform">
+                value={jobFilterTab}
+                onChange={setJobFilterTab}
+                options={[
+                  { value: "basic", label: "基础与关键词" },
+                  { value: "guard", label: "反噪与薪资" },
+                  { value: "platform", label: "平台专属与 AI" },
+                ]}
+              />
             </div>
             <Divider className="!my-0 opacity-10" />
+            <div className={jobFilterTab === "basic" ? undefined : "hidden"}>
             <Row gutter={[24, 16]}>
               <Col xs={24} md={12}>
                 <Form.Item
@@ -1326,50 +1340,51 @@ export function ConfigPage(props: ConfigPageProps) {
                   />
                 </Form.Item>
               </Col>
-              <Col xs={24}>
-                <div className="rounded-xl border border-slate-200/80 bg-slate-50/70 px-4 py-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-700">
-                      <StopOutlined className="text-rose-500" />
-                      <span>一键导入反噪黑名单预设</span>
-                      <Text type="secondary" className="font-normal text-xs">
-                        （增量去重追加，不会清空已填词）
-                      </Text>
-                    </div>
-                  </div>
-                  <div className="mt-2.5 flex flex-wrap gap-2">
-                    {BLACKLIST_PRESETS.map((preset) => (
-                      <Button
-                        key={preset.id}
-                        size="small"
-                        title={preset.description}
-                        onClick={() => {
-                          const existing =
-                            props.config.job_filter_config[preset.target] ?? [];
-                          const merged = mergeUniqueKeywords(
-                            existing,
-                            preset.keywords,
-                          );
-                          const added = merged.length - existing.length;
-                          props.updateJobFilter({ [preset.target]: merged });
-                          showNotice(
-                            "success",
-                            `已应用「${preset.label}」`,
-                            added > 0
-                              ? `新增 ${added} 个过滤词，点击上方标签可随时微调或删除。`
-                              : "该预设词已全部存在于你的黑名单中。",
-                          );
-                        }}
-                      >
-                        + {preset.label}
-                      </Button>
-                    ))}
+            </Row>
+            </div>
+
+            <div className={jobFilterTab === "guard" ? "space-y-4" : "hidden"}>
+              <div className="rounded-xl border border-slate-200/80 bg-slate-50/70 px-4 py-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 text-sm font-semibold text-slate-700">
+                    <StopOutlined className="text-rose-500" />
+                    <span>一键导入反噪黑名单预设</span>
+                    <Text type="secondary" className="font-normal text-xs">
+                      （增量去重追加到「排除关键词 / 排除公司」，不会清空已填词）
+                    </Text>
                   </div>
                 </div>
-              </Col>
-            </Row>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {BLACKLIST_PRESETS.map((preset) => (
+                    <Button
+                      key={preset.id}
+                      size="small"
+                      title={preset.description}
+                      onClick={() => {
+                        const existing =
+                          props.config.job_filter_config[preset.target] ?? [];
+                        const merged = mergeUniqueKeywords(
+                          existing,
+                          preset.keywords,
+                        );
+                        const added = merged.length - existing.length;
+                        props.updateJobFilter({ [preset.target]: merged });
+                        showNotice(
+                          "success",
+                          `已应用「${preset.label}」`,
+                          added > 0
+                            ? `新增 ${added} 个过滤词，切回「基础与关键词」可随时微调或删除。`
+                            : "该预设词已全部存在于你的黑名单中。",
+                        );
+                      }}
+                    >
+                      + {preset.label}
+                    </Button>
+                  ))}
+                </div>
+              </div>
 
-            <Card size="small" className="mt-2 border-emerald-200! bg-emerald-50/40!">
+            <Card size="small" className="border-emerald-200! bg-emerald-50/40!">
               <div className="mb-3 flex items-center gap-2">
                 <DollarOutlined className="text-emerald-600" />
                 <div>
@@ -1463,7 +1478,9 @@ export function ConfigPage(props: ConfigPageProps) {
                 </Col>
               </Row>
             </Card>
+            </div>
 
+            <div className={jobFilterTab === "platform" ? "space-y-4" : "hidden"}>
             <Job51FilterSection value={props.config.platform_filter_config.job51}
               onChange={job51 => props.updatePlatformFilter({ job51 })} />
 
@@ -1767,11 +1784,12 @@ export function ConfigPage(props: ConfigPageProps) {
                 },
               ]}
             />
+            </div>
 
             <Alert
               type="info"
               showIcon
-              message="投递频率、每日安全上限与拟人化节奏已统一归口至「系统能力 · 运行与防封」"
+              title="投递频率、每日安全上限与拟人化节奏已统一归口至「系统能力 · 运行与防封」"
               action={
                 <Button size="small" type="link" onClick={() => setActiveGroup("runtime")}>
                   前往调整
@@ -2821,9 +2839,9 @@ export function ConfigPage(props: ConfigPageProps) {
   return (
     <>
       {noticeModalContextHolder}
-      <div className="flex h-full w-full flex-col gap-5 md:flex-row animate-in">
-        <aside className="flex w-full flex-shrink-0 flex-col gap-3 md:w-[220px]">
-          <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
+      <div className="of-config-surface flex h-full w-full flex-col gap-4 md:flex-row animate-in">
+        <aside className="flex w-full flex-shrink-0 flex-col gap-3 md:w-[216px]">
+          <div className="rounded-xl border border-slate-200/80 bg-white px-3 py-2 text-xs text-slate-500">
             {props.status === "loading" ? (
               <>
                 <LoadingOutlined className="mr-2 text-sky-500" />
@@ -2861,7 +2879,7 @@ export function ConfigPage(props: ConfigPageProps) {
               )
             }
             items={menuItems}
-            className="rounded-2xl border border-slate-200/80 bg-white/90! p-2 shadow-[0_12px_32px_rgba(15,23,42,0.05)]"
+            className="rounded-2xl border border-slate-200/80 bg-white! p-2 shadow-xs"
           />
           <Dropdown
             menu={{
@@ -2900,7 +2918,7 @@ export function ConfigPage(props: ConfigPageProps) {
             e.preventDefault();
           }}
         >
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-3xl border border-slate-200/80 bg-white/90 shadow-[0_24px_60px_rgba(15,23,42,0.06)] backdrop-blur-3xl">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-xs">
             {isProfileGroup(activeGroup) && (
               <div className="flex-shrink-0 border-b border-slate-200 bg-white px-5 pt-5 md:px-8 md:pt-6">
                 <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">

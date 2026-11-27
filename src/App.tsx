@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, Button, ConfigProvider, Spin, Tabs, Typography } from "antd";
-import { RocketOutlined } from "@ant-design/icons";
+import { Alert, Badge, Button, ConfigProvider, Spin, Tabs, Tooltip, Typography, theme as antdTheme } from "antd";
+import { BellOutlined, DesktopOutlined, MoonOutlined, RocketOutlined, SunOutlined } from "@ant-design/icons";
+import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import { useAppConfig } from "@/hooks/useAppConfig";
 import { mergeUniqueKeywords } from "@/lib/blacklist-presets";
+import { THEME_MODE_LABELS, useThemeMode, type ThemeMode } from "@/lib/theme";
+import type { CommandResult } from "@/types/command";
+import { countJobTasks, type JobTaskOverview } from "@/types/rpa";
 import { copyJobProfile, DEFAULT_REGEX_RULE_LIMIT, getAnalysisConfig, getDefaultJobProfile, getHumanizeConfig, getJobProfiles, getNotificationConfig, getPeriodicDeliveryConfig, getPlatformFilterConfig, getReplyPollingConfig, isLlmActive, isLlmConfigured, selectProfileAfterRemoval, type AnalysisConfig, type AppRuntimeConfig, type BrowserConfig, type ConfigGroup, type GreetConfig, type GreetResource, type HumanizeConfig, type JobFilterConfig, type JobProfile, type NotificationConfig, type PeriodicDeliveryConfig, type PlatformFilterConfig, type RegexRule, type ReplayConfig, type ReplyPollingConfig, type ReplyResource, type ReplyTemplate, type ResumeConfig } from "@/types/app-config";
 import type { JobDetail } from "@/types/job-detail";
 import { Onboarding } from "@/view/onboarding";
@@ -13,6 +17,7 @@ import JobOverviewPage from "@/view/job-overview";
 import PlaygroundPage from "@/view/playground";
 import ResumeOptimizerPage from "@/view/resume-optimizer";
 import WorkspacePage from "@/view/workspace";
+import ManualReviewDrawer, { useManualReview } from "@/view/workspace/manual-review-drawer";
 import { AutoUpdaterModal, UpdaterProvider } from "@/lib/updater";
 
 type AppTabKey = "workspace" | "job-overview" | "job-data" | "resume-optimizer" | "config";
@@ -34,16 +39,56 @@ const moveAt = <T,>(items: T[], index: number, offset: -1 | 1) => {
   return next;
 };
 
-function MainShell({ config, update, save, status, message, dirty, importConfig, exportConfig }: {
+function MainShell({ config, update, save, status, message, dirty, importConfig, exportConfig, themeMode, onCycleTheme }: {
   config: AppRuntimeConfig; update: (fn: (c: AppRuntimeConfig) => AppRuntimeConfig) => void;
   save: (next?: AppRuntimeConfig) => Promise<boolean>; status: "idle" | "loading" | "saved" | "error"; message: string; dirty: boolean;
   importConfig: (path: string) => Promise<void>; exportConfig: (path: string) => Promise<void>;
+  themeMode: ThemeMode; onCycleTheme: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<AppTabKey>("workspace");
   const [focusJobId, setFocusJobId] = useState<string>();
   const [interviewJob, setInterviewJob] = useState<JobDetail>();
   const [configGroup, setConfigGroup] = useState<ConfigGroup>("job");
   const [activeProfileId, setActiveProfileId] = useState(() => getDefaultJobProfile(config).id);
+  const [reviewDrawerOpen, setReviewDrawerOpen] = useState(false);
+  const [headerTaskCounts, setHeaderTaskCounts] = useState({ active: 0, running: 0, queued: 0 });
+  const manualReview = useManualReview();
+
+  // 全局任务运行态感知：离开工作台时顶栏仍能看到后台任务是否运行中
+  useEffect(() => {
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      try {
+        const res = await invoke<CommandResult<JobTaskOverview>>("get_job_task_status");
+        if (!disposed && res.success && res.data) {
+          setHeaderTaskCounts(countJobTasks(res.data.tasks));
+        }
+      } catch {
+        // ignore transient poll errors
+      }
+      if (!disposed) timer = setTimeout(() => void poll(), 4000);
+    };
+    void poll();
+    return () => {
+      disposed = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+
+  // 桌面快捷键：Cmd/Ctrl + 1~5 快速切换顶层页签
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
+      const idx = Number(event.key) - 1;
+      if (idx >= 0 && idx < tabs.length) {
+        event.preventDefault();
+        setActiveTab(tabs[idx].key);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
   const profiles = getJobProfiles(config);
   const llmConfigured = isLlmConfigured(config);
   const llmActive = isLlmActive(config);
@@ -203,7 +248,12 @@ function MainShell({ config, update, save, status, message, dirty, importConfig,
     removeRule={(i: number) => updateActiveProfile((p) => ({ ...p, job_filter_config: { ...p.job_filter_config, regex_rules: p.job_filter_config.regex_rules.filter((_, x) => x !== i) } }))}
     importConfig={importConfig} exportConfig={exportConfig} />;
 
-  const content = activeTab === "workspace" ? <WorkspacePage config={config} onNavigate={(tab) => void navigate(tab)} onOpenConfig={openConfig} onOpenConversation={openConversation} /> : activeTab === "job-overview" ? <JobOverviewPage onNavigate={(target) => target === "job-data" ? navigate("job-data") : openConfig(target)} onOpenConversation={openConversation} /> : activeTab === "job-data" ? <JobDataPage aiConfigured={llmActive} llmConfigured={llmConfigured} onConfigureAi={openLlm} focusJobId={focusJobId} onFocusHandled={clearFocusJob} highMatchScore={getAnalysisConfig(getDefaultJobProfile(config)).high_match_score} onStartInterview={startInterview} onBlacklistCompany={blacklistCompany} /> : activeTab === "resume-optimizer" ? <ResumeOptimizerPage config={profileConfig} llmConfigured={llmConfigured} onOpenLlmConfig={openLlm} onOpenResumeConfig={() => openConfig("resume")} pendingInterviewJob={interviewJob} onPendingInterviewHandled={clearInterviewJob} /> : configPage;
+  const content = activeTab === "workspace"
+    ? <WorkspacePage config={config} onNavigate={(tab) => void navigate(tab)} onOpenConfig={openConfig} onOpenConversation={openConversation} pendingReviewCount={manualReview.records.length} onOpenManualReview={() => setReviewDrawerOpen(true)} />
+    : activeTab === "job-overview" ? <JobOverviewPage onNavigate={(target) => target === "job-data" ? navigate("job-data") : openConfig(target)} onOpenConversation={openConversation} /> : activeTab === "job-data" ? <JobDataPage aiConfigured={llmActive} llmConfigured={llmConfigured} onConfigureAi={openLlm} focusJobId={focusJobId} onFocusHandled={clearFocusJob} highMatchScore={getAnalysisConfig(getDefaultJobProfile(config)).high_match_score} onStartInterview={startInterview} onBlacklistCompany={blacklistCompany} /> : activeTab === "resume-optimizer" ? <ResumeOptimizerPage config={profileConfig} llmConfigured={llmConfigured} onOpenLlmConfig={openLlm} onOpenResumeConfig={() => openConfig("resume")} pendingInterviewJob={interviewJob} onPendingInterviewHandled={clearInterviewJob} /> : configPage;
+
+  const themeIcon = themeMode === "dark" ? <MoonOutlined /> : themeMode === "light" ? <SunOutlined /> : <DesktopOutlined />;
+
   return (
     <main className="app-shell">
       <header className="app-header">
@@ -217,28 +267,90 @@ function MainShell({ config, update, save, status, message, dirty, importConfig,
           </div>
         </div>
         <Tabs activeKey={activeTab} className="app-tabs" items={tabs} onChange={(k) => void navigate(k as AppTabKey)} />
+        <div className="app-header-actions">
+          {headerTaskCounts.active > 0 && (
+            <Tooltip title="点击返回工作台查看实时队列与日志">
+              <button
+                type="button"
+                className="header-status-pill is-running"
+                onClick={() => navigate("workspace")}
+              >
+                <span className="of-pulse-dot" />
+                <span>
+                  运行中 {headerTaskCounts.running}
+                  {headerTaskCounts.queued > 0 ? ` · 排队 ${headerTaskCounts.queued}` : ""}
+                </span>
+              </button>
+            </Tooltip>
+          )}
+          <Tooltip title={manualReview.records.length > 0 ? `${manualReview.records.length} 条会话等待你接手` : "待人工处理会话（当前清空）"}>
+            <button
+              type="button"
+              className={`header-status-pill${manualReview.records.length > 0 ? " is-urgent" : ""}`}
+              onClick={() => setReviewDrawerOpen(true)}
+            >
+              <Badge count={manualReview.records.length} size="small" offset={[2, -2]}>
+                <BellOutlined style={{ fontSize: 14, color: "inherit" }} />
+              </Badge>
+              <span>待处理</span>
+            </button>
+          </Tooltip>
+          <Tooltip title={`外观：${THEME_MODE_LABELS[themeMode]}（点击切换）`}>
+            <Button
+              type="text"
+              size="small"
+              icon={themeIcon}
+              aria-label={`切换主题，当前为${THEME_MODE_LABELS[themeMode]}`}
+              onClick={onCycleTheme}
+            />
+          </Tooltip>
+        </div>
       </header>
-      <section className="app-content">{content}</section>
+      <section className={`app-content${activeTab === "config" ? " is-frameless" : ""}`}>{content}</section>
+      <ManualReviewDrawer
+        open={reviewDrawerOpen}
+        onClose={() => setReviewDrawerOpen(false)}
+        records={manualReview.records}
+        loading={manualReview.loading}
+        onResolve={(record) => void manualReview.resolve(record)}
+        onClear={() => void manualReview.clear()}
+        onOpenConversation={(jobId) => {
+          setReviewDrawerOpen(false);
+          openConversation(jobId);
+        }}
+      />
     </main>
   );
 }
 
 export default function App() {
   const app = useAppConfig();
+  const { mode: themeMode, isDark, cycleMode } = useThemeMode();
   if (app.status === "loading" && !app.config) return <main className="app-loading"><Spin size="large" tip="正在加载本地配置" /></main>;
-  if (!app.config) return <main className="app-loading"><Alert type="error" showIcon message="无法加载本地配置" description={app.message} action={<Button onClick={() => void app.load()}>重试</Button>} /></main>;
+  if (!app.config) return <main className="app-loading"><Alert type="error" showIcon title="无法加载本地配置" description={app.message} action={<Button onClick={() => void app.load()}>重试</Button>} /></main>;
 
   return (
     <UpdaterProvider>
       <ConfigProvider
         theme={{
+          algorithm: isDark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
           token: {
             colorPrimary: "#1677ff",
             borderRadius: 10,
             fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif",
-            colorBgContainer: "#ffffff",
-            colorTextBase: "#0f172a",
-            colorTextSecondary: "#64748b",
+            ...(isDark
+              ? {
+                  colorBgContainer: "#162033",
+                  colorBgElevated: "#1b2740",
+                  colorTextBase: "#f1f5f9",
+                  colorTextSecondary: "#94a3b8",
+                  colorBorder: "#263244",
+                }
+              : {
+                  colorBgContainer: "#ffffff",
+                  colorTextBase: "#0f172a",
+                  colorTextSecondary: "#64748b",
+                }),
           },
           components: {
             Card: {
@@ -249,7 +361,7 @@ export default function App() {
               fontWeight: 500,
             },
             Tabs: {
-              cardBg: "#f8fafc",
+              cardBg: isDark ? "#0f172a" : "#f8fafc",
             },
             Slider: {
               railSize: 6,
@@ -257,8 +369,8 @@ export default function App() {
               handleSizeHover: 14,
               handleLineWidth: 3,
               handleLineWidthHover: 4,
-              railBg: "#e2e8f0",
-              railHoverBg: "#cbd5e1",
+              railBg: isDark ? "#334155" : "#e2e8f0",
+              railHoverBg: isDark ? "#475569" : "#cbd5e1",
               // 默认的已选轨道是浅蓝，混在灰轨道里几乎看不出滑到了哪
               trackBg: "#1677ff",
               trackHoverBg: "#0958d9",
@@ -270,7 +382,7 @@ export default function App() {
         {!app.config.onboarding_completed ? (
           <Onboarding config={app.config} onFinish={app.save} />
         ) : (
-          <MainShell config={app.config} update={app.updateConfig} save={app.save} status={app.status} message={app.message} dirty={app.dirty} importConfig={app.importConfig} exportConfig={app.exportConfig} />
+          <MainShell config={app.config} update={app.updateConfig} save={app.save} status={app.status} message={app.message} dirty={app.dirty} importConfig={app.importConfig} exportConfig={app.exportConfig} themeMode={themeMode} onCycleTheme={cycleMode} />
         )}
       </ConfigProvider>
     </UpdaterProvider>
