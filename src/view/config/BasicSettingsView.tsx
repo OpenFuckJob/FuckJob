@@ -17,14 +17,16 @@ import {
 } from "antd";
 import {
   CheckCircleOutlined,
-  CommentOutlined,
   FilePdfOutlined,
-  ProductOutlined,
-  RobotOutlined,
-  SafetyOutlined,
-  SlidersOutlined,
-  StopOutlined,
 } from "@ant-design/icons";
+import {
+  IconFilterSlash,
+  IconResumeDoc,
+  IconShieldCheck,
+  IconSliders,
+  IconSparkles,
+  IconTarget,
+} from "@/components/icons";
 import {
   isLlmActive,
   type AppRuntimeConfig,
@@ -152,14 +154,18 @@ export function BasicSettingsView({
       {/* 1. 求职意向 */}
       <Card id="basic-section-job" size="small" styles={{ body: { padding: 20 } }}>
         <div className="mb-4 flex items-center justify-between gap-2">
-          <div>
-            <Title level={5} className="m-0! flex items-center gap-2">
-              <ProductOutlined className="text-sky-500" />
-              1. 求职意向（我要找什么工作）
-            </Title>
-            <Text type="secondary" className="text-xs">
-              填好岗位关键词、城市和屏蔽词即可开始自动筛选，过滤掉外包与低薪水岗。
-            </Text>
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-500">
+              <IconTarget size={17} />
+            </span>
+            <div>
+              <Title level={5} className="m-0! tracking-tight">
+                1. 求职意向（我要找什么工作）
+              </Title>
+              <Text type="secondary" className="text-xs">
+                填好岗位关键词、城市和屏蔽词即可开始自动筛选，过滤掉外包与低薪水岗。
+              </Text>
+            </div>
           </div>
           <Button type="link" size="small" onClick={() => onSwitchToAdvanced("job")}>
             更多行业 / 学历 / 平台筛选 →
@@ -250,7 +256,7 @@ export function BasicSettingsView({
 
         <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-slate-200/80 bg-slate-50/70 px-3.5 py-2.5">
           <span className="flex items-center gap-1.5 text-xs font-semibold text-slate-600">
-            <StopOutlined className="text-rose-500" />
+            <IconFilterSlash size={14} className="text-rose-500" />
             一键屏蔽水岗：
           </span>
           {BLACKLIST_PRESETS.map((preset) => (
@@ -279,14 +285,18 @@ export function BasicSettingsView({
       {/* 2. 简历与打招呼 */}
       <Card id="basic-section-resume" size="small" styles={{ body: { padding: 20 } }}>
         <div className="mb-4 flex items-center justify-between gap-2">
-          <div>
-            <Title level={5} className="m-0! flex items-center gap-2">
-              <CommentOutlined className="text-sky-500" />
-              2. 简历与沟通方式
-            </Title>
-            <Text type="secondary" className="text-xs">
-              上传 PDF 简历并决定如何跟 HR 打招呼与回复未读消息。
-            </Text>
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-sky-500/10 text-sky-500">
+              <IconResumeDoc size={17} />
+            </span>
+            <div>
+              <Title level={5} className="m-0! tracking-tight">
+                2. 简历与沟通方式
+              </Title>
+              <Text type="secondary" className="text-xs">
+                上传 PDF 简历并决定如何跟 HR 打招呼与回复未读消息。
+              </Text>
+            </div>
           </div>
           <Button type="link" size="small" onClick={() => onSwitchToAdvanced("greet")}>
             编辑 Prompt 与正则模板 →
@@ -402,14 +412,18 @@ export function BasicSettingsView({
       {/* 3. 安全与防封档位 */}
       <Card id="basic-section-runtime" size="small" styles={{ body: { padding: 20 } }}>
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <Title level={5} className="m-0! flex items-center gap-2">
-              <SafetyOutlined className="text-emerald-500" />
-              3. 防封安全档位
-            </Title>
-            <Text type="secondary" className="text-xs">
-              一键打包每日投递上限、单轮条数、时段窗口与拟人化节奏，降低账号风控风险。
-            </Text>
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-500">
+              <IconShieldCheck size={17} />
+            </span>
+            <div>
+              <Title level={5} className="m-0! tracking-tight">
+                3. 防封安全档位
+              </Title>
+              <Text type="secondary" className="text-xs">
+                一键打包每日投递上限、单轮条数、时段窗口与拟人化节奏，降低账号风控风险。
+              </Text>
+            </div>
           </div>
           <Space size={8}>
             {activeSafety === "custom" && <Tag color="blue">当前为自定义参数</Tag>}
@@ -452,21 +466,25 @@ export function BasicSettingsView({
       {/* 4. AI 大模型（可选） */}
       <Card id="basic-section-llm" size="small" styles={{ body: { padding: 20 } }}>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <Title level={5} className="m-0! flex items-center gap-2">
-              <RobotOutlined className="text-violet-500" />
-              4. AI 大模型（可选）
-              {llmActive ? (
-                <Tag color="success" style={{ margin: 0 }}>
-                  已就绪 · {config.llm_config?.model}
-                </Tag>
-              ) : (
-                <Tag style={{ margin: 0 }}>未启用（纯规则可用）</Tag>
-              )}
-            </Title>
-            <Text type="secondary" className="text-xs">
-              配置后可解锁 AI 定制打招呼、自动回复 HR 与岗位匹配分析；API Key 仅保存在系统钥匙串。
-            </Text>
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-violet-500/10 text-violet-500">
+              <IconSparkles size={17} />
+            </span>
+            <div>
+              <Title level={5} className="m-0! flex items-center gap-2 tracking-tight">
+                4. AI 大模型（可选）
+                {llmActive ? (
+                  <Tag color="success" style={{ margin: 0 }}>
+                    已就绪 · {config.llm_config?.model}
+                  </Tag>
+                ) : (
+                  <Tag style={{ margin: 0 }}>未启用（纯规则可用）</Tag>
+                )}
+              </Title>
+              <Text type="secondary" className="text-xs">
+                配置后可解锁 AI 定制打招呼、自动回复 HR 与岗位匹配分析；API Key 仅保存在系统钥匙串。
+              </Text>
+            </div>
           </div>
           <Button type="link" size="small" onClick={() => onSwitchToAdvanced("llm")}>
             备用降级链与重试策略 →
@@ -508,7 +526,7 @@ export function BasicSettingsView({
         </Text>
         <Button
           size="small"
-          icon={<SlidersOutlined />}
+          icon={<IconSliders size={14} />}
           onClick={() => onSwitchToAdvanced("job")}
         >
           进入高级设置
