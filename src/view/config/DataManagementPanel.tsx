@@ -53,13 +53,13 @@ export function DataManagementPanel() {
       )}${String(now.getDate()).padStart(2, "0")}_${String(
         now.getHours()
       ).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
-      const defaultPath = `fuckjob_backup_${dateStr}.fjbackup`;
+      const defaultPath = `offerflow_backup_${dateStr}.fjbackup`;
 
       const targetPath = await save({
         defaultPath,
         filters: [
           {
-            name: "FuckJob 数据备份包 (*.fjbackup)",
+            name: "OfferFlow 数据备份包 (*.fjbackup)",
             extensions: ["fjbackup", "zip"],
           },
         ],
@@ -98,7 +98,7 @@ export function DataManagementPanel() {
         directory: false,
         filters: [
           {
-            name: "FuckJob 数据备份包 (*.fjbackup, *.zip)",
+            name: "OfferFlow 数据备份包 (*.fjbackup, *.zip)",
             extensions: ["fjbackup", "zip"],
           },
         ],
@@ -176,7 +176,7 @@ export function DataManagementPanel() {
         }
       >
         <Paragraph type="secondary">
-          导出全量求职数据（包含已沟通岗位、沟通对话记录、AI 分析报告及简历模板）为归档文件（.fjbackup），方便在公司与家中等多台设备间共享合并求职进度或进行安全备份。
+          导出全量求职数据（包含已沟通岗位、沟通对话记录、AI 分析报告与求职方案快照）为归档文件（.fjbackup），方便在多台设备间同步进度或进行安全备份。
         </Paragraph>
 
         <Divider />
@@ -241,7 +241,7 @@ export function DataManagementPanel() {
           <Space direction="vertical" size="middle" style={{ width: "100%" }}>
             <Alert
               message="备份包解析成功"
-              description={`导出时间：${previewManifest.exported_at} (由 FuckJob v${previewManifest.app_version} 生成)`}
+              description={`导出时间：${previewManifest.exported_at} (由 OfferFlow v${previewManifest.app_version} 生成)`}
               type="info"
               showIcon
             />
@@ -256,9 +256,11 @@ export function DataManagementPanel() {
               <Descriptions.Item label="AI 岗位分析报告">
                 {previewManifest.stats.interview_analyses_count} 条
               </Descriptions.Item>
-              <Descriptions.Item label="简历快照与模板">
-                {previewManifest.stats.user_resumes_count} 个
-              </Descriptions.Item>
+              {previewManifest.stats.user_resumes_count > 0 && (
+                <Descriptions.Item label="历史简历数据">
+                  {previewManifest.stats.user_resumes_count} 个
+                </Descriptions.Item>
+              )}
               <Descriptions.Item label="求职方案执行快照">
                 {previewManifest.stats.job_profile_snapshots_count ?? 0} 个
               </Descriptions.Item>
@@ -282,10 +284,10 @@ export function DataManagementPanel() {
                   </Radio>
                   <Radio value="overwrite">
                     <Text strong type="danger">
-                      完全覆盖恢复
+                      完全覆盖恢复（清空本地现有数据）
                     </Text>
-                    <div style={{ color: "#666", paddingLeft: 24 }}>
-                      用备份文件中的内容直接更新替换本地数据库，不会清除未冲突的数据。
+                    <div style={{ color: "#b91c1c", paddingLeft: 24 }}>
+                      注意：会清空本地已有记录并用备份包完全替换；备份包中未包含的本地记录将被删除，建议先导出备份。
                     </div>
                   </Radio>
                 </Space>

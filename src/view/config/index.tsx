@@ -42,12 +42,14 @@ import {
   ReplyPollingConfig,
   PeriodicDeliveryConfig,
   HumanizeConfig,
+  NotificationConfig,
   DEFAULT_PERIODIC_DELIVERY_CONFIG,
   getAnalysisConfig,
   getJobProfiles,
   getReplyPollingConfig,
   getPeriodicDeliveryConfig,
   getHumanizeConfig,
+  getNotificationConfig,
   isLlmActive,
   isLlmConfigured,
   DEFAULT_AUTO_REPLY_WINDOW_HOURS,
@@ -70,7 +72,9 @@ import { RadioCardGroup } from "@/components/RadioCardGroup";
 import ReplyPollingSection from "./ReplyPollingSection";
 import PeriodicDeliverySection from "./PeriodicDeliverySection";
 import HumanizeSection from "./HumanizeSection";
+import NotificationSection from "./NotificationSection";
 import Job51FilterSection from "./Job51FilterSection";
+import { BLACKLIST_PRESETS, mergeUniqueKeywords } from "@/lib/blacklist-presets";
 import {
   jobTypeOptions,
   salaryOptions,
@@ -115,6 +119,9 @@ import {
   ClockCircleOutlined,
   FontSizeOutlined,
   ExperimentOutlined,
+  SafetyOutlined,
+  StopOutlined,
+  DollarOutlined,
 } from "@ant-design/icons";
 import { useEffect, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -215,14 +222,33 @@ const buildCommonPromptVariables = (resumeEnabled: boolean) =>
     : basePromptVariableItems;
 
 const buildReplyPromptVariables = (resumeEnabled: boolean) => [
-  ...buildCommonPromptVariables(resumeEnabled),
+  {
+    token: "{{job_content}}",
+    description: "职位摘要（岗位标题｜公司名｜薪资）",
+  },
+  {
+    token: "{{job_description}}",
+    description: "清洗后的岗位 JD 正文详情",
+  },
+  ...(resumeEnabled
+    ? [
+        {
+          token: "{{resume_context}}",
+          description: "简历解析内容（也可写作 {{resume}}），需开启简历注入",
+        },
+      ]
+    : []),
   {
     token: "{{background_context}}",
-    description: "背景上下文，补充简历里没有体现的信息",
+    description: "背景上下文，补充简历里没有体现的个人诉求",
   },
   {
     token: "{{chat_history}}",
-    description: "岗位沟通上下文",
+    description: "完整岗位沟通上下文记录",
+  },
+  {
+    token: "{{message_content}}",
+    description: "招聘方最新发来的一条消息内容",
   },
 ];
 
@@ -235,22 +261,35 @@ const bossActiveThresholdOptions: Array<{
   value: PlatformFilterConfig["boss"]["active_threshold"];
   label: string;
 }> = [
-  { value: "online", label: "在线" },
+  { value: "online", label: "当前在线" },
   { value: "just_active", label: "刚刚活跃" },
-  { value: "three_days", label: "3日内活跃" },
-  { value: "this_week", label: "本周活跃" },
-  { value: "seven_days", label: "7日内活跃" },
-  { value: "seven_days_text", label: "7天内活跃" },
-  { value: "two_weeks", label: "2周内活跃" },
-  { value: "this_month", label: "本月活跃" },
-  { value: "two_months", label: "2月内活跃" },
-  { value: "three_months", label: "3月内活跃" },
-  { value: "four_months", label: "4月内活跃" },
-  { value: "five_months", label: "5月内活跃" },
-  { value: "half_year", label: "近半年活跃" },
-  { value: "half_year_ago", label: "半年前活跃" },
-  { value: "disabled", label: "不筛选" },
+  { value: "three_days", label: "3日内" },
+  { value: "this_week", label: "本周内" },
+  { value: "two_weeks", label: "2周内" },
+  { value: "this_month", label: "本月内" },
+  { value: "three_months", label: "3月内" },
+  { value: "half_year", label: "半年内" },
 ];
+
+/** 将历史配置中重复/细碎的活跃度档位平滑映射到精简后的 8 档 */
+function normalizeBossActiveThreshold(
+  value: PlatformFilterConfig["boss"]["active_threshold"],
+): PlatformFilterConfig["boss"]["active_threshold"] {
+  switch (value) {
+    case "seven_days":
+    case "seven_days_text":
+    case "disabled":
+      return "this_week";
+    case "two_months":
+      return "three_months";
+    case "four_months":
+    case "five_months":
+    case "half_year_ago":
+      return "half_year";
+    default:
+      return value;
+  }
+}
 
 interface BossActiveThresholdScaleProps {
   value: PlatformFilterConfig["boss"]["active_threshold"];
@@ -261,93 +300,86 @@ function BossActiveThresholdScale({
   value,
   onChange,
 }: BossActiveThresholdScaleProps) {
+  const normalized = normalizeBossActiveThreshold(value);
   const selectedIndex = Math.max(
     0,
-    bossActiveThresholdOptions.findIndex((option) => option.value === value),
+    bossActiveThresholdOptions.findIndex((option) => option.value === normalized),
   );
 
   return (
     <div className="rounded-lg border border-sky-100 bg-white/80 px-4 py-4">
       <div className="mb-3 flex items-center justify-between gap-3 text-xs text-slate-500">
-        <span>更活跃</span>
-        <span>更不活跃 / 不筛选</span>
+        <span>回复率更高（更活跃）</span>
+        <span>覆盖更多岗位（更宽松）</span>
       </div>
-      <div className="overflow-x-auto pb-1">
-        <div className="relative min-w-max px-2 pt-1">
-          <div className="absolute left-8 right-8 top-[13px] h-1 rounded-full bg-slate-200" />
-          <div
-            className="absolute left-8 top-[13px] h-1 rounded-full bg-blue-500 transition-all"
-            style={{
-              width:
-                bossActiveThresholdOptions.length > 1
-                  ? `calc((100% - 4rem) * ${selectedIndex / (bossActiveThresholdOptions.length - 1)})`
-                  : 0,
-            }}
-          />
-          <div className="relative z-10 flex items-start">
-            {bossActiveThresholdOptions.map((option, index) => {
-              const selected = option.value === value;
-              const beforeSelected = index <= selectedIndex;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  role="radio"
-                  aria-checked={selected}
-                  className="group flex w-28 shrink-0 flex-col items-center gap-2 border-0 bg-transparent p-0 text-center outline-none"
-                  onClick={() => onChange(option.value)}
+      <div className="relative px-2 pt-1">
+        <div className="absolute left-6 right-6 top-[13px] h-1 rounded-full bg-slate-200" />
+        <div
+          className="absolute left-6 top-[13px] h-1 rounded-full bg-blue-500 transition-all"
+          style={{
+            width:
+              bossActiveThresholdOptions.length > 1
+                ? `calc((100% - 3rem) * ${selectedIndex / (bossActiveThresholdOptions.length - 1)})`
+                : 0,
+          }}
+        />
+        <div className="relative z-10 grid grid-cols-4 gap-y-3 sm:grid-cols-8">
+          {bossActiveThresholdOptions.map((option, index) => {
+            const selected = option.value === normalized;
+            const beforeSelected = index <= selectedIndex;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                className="group flex flex-col items-center gap-2 border-0 bg-transparent p-0 text-center outline-none cursor-pointer"
+                onClick={() => onChange(option.value)}
+              >
+                <span
+                  className={[
+                    "grid h-6 w-6 place-items-center rounded-full border-2 bg-white transition",
+                    selected
+                      ? "border-blue-500 shadow-[0_0_0_5px_rgba(59,130,246,0.14)]"
+                      : beforeSelected
+                        ? "border-blue-400"
+                        : "border-slate-300 group-hover:border-blue-300",
+                  ].join(" ")}
                 >
                   <span
                     className={[
-                      "grid h-6 w-6 place-items-center rounded-full border-2 bg-white transition",
+                      "h-2.5 w-2.5 rounded-full transition",
                       selected
-                        ? "border-blue-500 shadow-[0_0_0_5px_rgba(59,130,246,0.14)]"
+                        ? "bg-blue-600"
                         : beforeSelected
-                          ? "border-blue-400"
-                          : "border-slate-300 group-hover:border-blue-300",
+                          ? "bg-blue-300"
+                          : "bg-slate-200 group-hover:bg-blue-200",
                     ].join(" ")}
-                  >
-                    <span
-                      className={[
-                        "h-2.5 w-2.5 rounded-full transition",
-                        selected
-                          ? "bg-blue-600"
-                          : beforeSelected
-                            ? "bg-blue-300"
-                            : "bg-slate-200 group-hover:bg-blue-200",
-                      ].join(" ")}
-                    />
-                  </span>
-                  <span
-                    className={[
-                      "min-h-10 px-1 text-xs font-medium leading-5 transition",
-                      selected
-                        ? "text-blue-600"
-                        : beforeSelected
-                          ? "text-slate-700"
-                          : "text-slate-500 group-hover:text-slate-700",
-                    ].join(" ")}
-                  >
-                    {option.label}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
+                  />
+                </span>
+                <span
+                  className={[
+                    "px-1 text-xs font-medium leading-5 transition",
+                    selected
+                      ? "text-blue-600"
+                      : beforeSelected
+                        ? "text-slate-700"
+                        : "text-slate-500 group-hover:text-slate-700",
+                  ].join(" ")}
+                >
+                  {option.label}
+                </span>
+              </button>
+            );
+          })}
         </div>
       </div>
       <div className="mt-3 text-xs leading-5 text-slate-500">
-        {value === "disabled" ? (
-          "当前不按 Boss 活跃度过滤岗位。"
-        ) : (
-          <>
-            当前阈值：只处理活跃度不低于
-            <Text className="mx-1" strong>
-              {bossActiveThresholdOptions[selectedIndex]?.label ?? "本周活跃"}
-            </Text>
-            的岗位，右侧更不活跃的岗位会跳过。
-          </>
-        )}
+        当前阈值：只处理活跃度不低于
+        <Text className="mx-1" strong>
+          {bossActiveThresholdOptions[selectedIndex]?.label ?? "本周内"}
+        </Text>
+        的招聘者，右侧更久未登录的岗位会直接跳过。
       </div>
     </div>
   );
@@ -424,6 +456,7 @@ export interface ConfigPageProps {
   updatePolling: (next: Partial<ReplyPollingConfig>) => void;
   updatePeriodicDelivery: (next: Partial<PeriodicDeliveryConfig>) => void;
   updateHumanize: (next: Partial<HumanizeConfig>) => void;
+  updateNotification: (next: Partial<NotificationConfig>) => void;
   updateBrowser: (next: Partial<BrowserConfig>) => void;
   updateResume: (next: Partial<ResumeConfig>) => void;
   updateRule: (index: number, next: Partial<RegexRule>) => void;
@@ -480,6 +513,7 @@ const ANALYSIS_TRIGGER_OPTIONS: Array<{
 ];
 
 const configGroupKeys = [
+  "runtime",
   "browser",
   "llm",
   "playground",
@@ -510,6 +544,7 @@ const menuItems = [
     type: "group" as const,
     label: "系统能力",
     children: [
+      { key: "runtime", icon: <SafetyOutlined />, label: "运行与防封" },
       { key: "llm", icon: <RobotOutlined />, label: "大模型" },
       { key: "browser", icon: <GlobalOutlined />, label: "浏览器环境" },
       { key: "playground", icon: <ExperimentOutlined />, label: "测试模式" },
@@ -720,9 +755,28 @@ export function ConfigPage(props: ConfigPageProps) {
       if (!result.success || !result.data) {
         throw new Error(commandErrorMessage(result.error, "提取筛选关键词失败"));
       }
-      props.updateJobFilter(result.data);
+      const current = props.config.job_filter_config;
+      props.updateJobFilter({
+        keywords: mergeUniqueKeywords(current.keywords, result.data.keywords),
+        exclude_keywords: mergeUniqueKeywords(
+          current.exclude_keywords,
+          result.data.exclude_keywords,
+        ),
+        company_keywords: mergeUniqueKeywords(
+          current.company_keywords,
+          result.data.company_keywords,
+        ),
+        company_exclude_keywords: mergeUniqueKeywords(
+          current.company_exclude_keywords,
+          result.data.company_exclude_keywords,
+        ),
+      });
       setKeywordRequirement("");
-      showNotice("success", "关键词已提取", "四个筛选框已更新，请检查后保存。");
+      showNotice(
+        "success",
+        "关键词已增量合并",
+        "新提取的筛选词已去重合并到现有列表中，不会覆盖你原有的配置。",
+      );
     } catch (error) {
       showNotice(
         "error",
@@ -806,9 +860,20 @@ export function ConfigPage(props: ConfigPageProps) {
     { value: "LLM", label: "LLM" },
   ];
 
+  // 正则回复模板仅支持静态文本/图片；LLM 路径由上方的「回复策略」控制，避免误选无效项
+  const replyTemplateResourceTypeOptions = () => [
+    { value: "Text", label: "文本" },
+    { value: "Image", label: "图片" },
+  ];
+
   const greetTemplateHasLlm = props.config.greet_config.default_template.some(
     (resource) => resource.resource_type === "LLM",
   );
+  const greetTemplateHasActiveImage =
+    props.config.greet_config.default_template.some(
+      (resource) =>
+        resource.resource_type === "Image" && resource.enabled !== false,
+    );
 
   const addGreetLlmResource = () => props.addGreetDefaultResource("LLM");
 
@@ -955,6 +1020,42 @@ export function ConfigPage(props: ConfigPageProps) {
 
   const renderContent = () => {
     switch (activeGroup) {
+      case "runtime":
+        return (
+          <Space direction="vertical" size="large" className="w-full">
+            <div>
+              <Title
+                level={4}
+                className="text-slate-900! m-0! flex items-center gap-2"
+              >
+                <SafetyOutlined className="text-sky-500" />
+                运行与防封
+              </Title>
+              <Text className="text-slate-500 text-xs uppercase font-bold tracking-widest">
+                全局运行节奏、账号防封护栏、自动回复轮询与实时通知（跨所有求职方案生效）
+              </Text>
+            </div>
+            <Divider className="!my-0 opacity-10" />
+            <PeriodicDeliverySection
+              config={getPeriodicDeliveryConfig(props.config)}
+              onChange={props.updatePeriodicDelivery}
+              resetTo={DEFAULT_PERIODIC_DELIVERY_CONFIG}
+              resetLabel="恢复出厂默认"
+            />
+            <HumanizeSection
+              config={getHumanizeConfig(props.config)}
+              onChange={props.updateHumanize}
+            />
+            <ReplyPollingSection
+              config={getReplyPollingConfig(props.config)}
+              onChange={props.updatePolling}
+            />
+            <NotificationSection
+              config={getNotificationConfig(props.config)}
+              onChange={props.updateNotification}
+            />
+          </Space>
+        );
       case "llm":
         return (
           <LlmConfigPanel
@@ -1225,7 +1326,143 @@ export function ConfigPage(props: ConfigPageProps) {
                   />
                 </Form.Item>
               </Col>
+              <Col xs={24}>
+                <div className="rounded-xl border border-slate-200/80 bg-slate-50/70 px-4 py-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+                      <StopOutlined className="text-rose-500" />
+                      <span>一键导入反噪黑名单预设</span>
+                      <Text type="secondary" className="font-normal text-xs">
+                        （增量去重追加，不会清空已填词）
+                      </Text>
+                    </div>
+                  </div>
+                  <div className="mt-2.5 flex flex-wrap gap-2">
+                    {BLACKLIST_PRESETS.map((preset) => (
+                      <Button
+                        key={preset.id}
+                        size="small"
+                        title={preset.description}
+                        onClick={() => {
+                          const existing =
+                            props.config.job_filter_config[preset.target] ?? [];
+                          const merged = mergeUniqueKeywords(
+                            existing,
+                            preset.keywords,
+                          );
+                          const added = merged.length - existing.length;
+                          props.updateJobFilter({ [preset.target]: merged });
+                          showNotice(
+                            "success",
+                            `已应用「${preset.label}」`,
+                            added > 0
+                              ? `新增 ${added} 个过滤词，点击上方标签可随时微调或删除。`
+                              : "该预设词已全部存在于你的黑名单中。",
+                          );
+                        }}
+                      >
+                        + {preset.label}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+              </Col>
             </Row>
+
+            <Card size="small" className="mt-2 border-emerald-200! bg-emerald-50/40!">
+              <div className="mb-3 flex items-center gap-2">
+                <DollarOutlined className="text-emerald-600" />
+                <div>
+                  <Text strong>真实薪资过滤与同公司防骚扰（零点击前置生效）</Text>
+                  <div className="text-xs text-slate-500">
+                    在点开岗位详情前直接过滤低薪、虚标宽跨度、面议及同公司重复建联，既省时间又降风控。
+                  </div>
+                </div>
+              </div>
+              <Row gutter={[16, 12]}>
+                <Col xs={24} md={6}>
+                  <Form.Item
+                    label="最低月薪要求 (K)"
+                    className="mb-0!"
+                    extra="按薪资上限比对，0 表示不限"
+                  >
+                    <NumberField
+                      min={0}
+                      max={300}
+                      precision={0}
+                      fallback={0}
+                      value={props.config.job_filter_config.min_salary_k ?? 0}
+                      style={{ width: "100%" }}
+                      onChange={(value) =>
+                        props.updateJobFilter({
+                          min_salary_k: value > 0 ? value : null,
+                        })
+                      }
+                    />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} md={6}>
+                  <Form.Item
+                    label="薪资跨度虚标上限"
+                    className="mb-0!"
+                    extra="拦截如 10-30K (3x) 虚标岗"
+                  >
+                    <Select
+                      value={props.config.job_filter_config.max_salary_span_ratio ?? 0}
+                      options={[
+                        { value: 0, label: "不限制" },
+                        { value: 1.8, label: "严格（≤ 1.8 倍）" },
+                        { value: 2.0, label: "标准（≤ 2.0 倍）" },
+                        { value: 2.5, label: "宽松（≤ 2.5 倍）" },
+                        { value: 3.0, label: "仅拦极端（≤ 3.0 倍）" },
+                      ]}
+                      onChange={(value) =>
+                        props.updateJobFilter({
+                          max_salary_span_ratio: value > 0 ? value : null,
+                        })
+                      }
+                    />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} md={6}>
+                  <Form.Item
+                    label="同公司最多建联数"
+                    className="mb-0!"
+                    extra="0 = 不限制；建议 2~3 个"
+                  >
+                    <NumberField
+                      min={0}
+                      max={20}
+                      precision={0}
+                      fallback={0}
+                      value={props.config.job_filter_config.max_greets_per_company ?? 0}
+                      style={{ width: "100%" }}
+                      onChange={(value) =>
+                        props.updateJobFilter({
+                          max_greets_per_company: value,
+                        })
+                      }
+                    />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} md={6}>
+                  <Form.Item
+                    label="排除“薪资面议”"
+                    className="mb-0!"
+                    extra="跳过未标明数字薪资的岗位"
+                  >
+                    <div className="pt-1">
+                      <Switch
+                        checked={Boolean(props.config.job_filter_config.exclude_negotiable)}
+                        onChange={(checked) =>
+                          props.updateJobFilter({ exclude_negotiable: checked })
+                        }
+                      />
+                    </div>
+                  </Form.Item>
+                </Col>
+              </Row>
+            </Card>
 
             <Job51FilterSection value={props.config.platform_filter_config.job51}
               onChange={job51 => props.updatePlatformFilter({ job51 })} />
@@ -1531,17 +1768,15 @@ export function ConfigPage(props: ConfigPageProps) {
               ]}
             />
 
-            <PeriodicDeliverySection
-              config={getPeriodicDeliveryConfig(props.config)}
-              onChange={props.updatePeriodicDelivery}
-              resetTo={DEFAULT_PERIODIC_DELIVERY_CONFIG}
-              resetLabel="恢复出厂默认"
-            />
-
-            {/* 紧跟周期投递：两者都在回答「怎么跑」，而不是「投什么」 */}
-            <HumanizeSection
-              config={getHumanizeConfig(props.config)}
-              onChange={props.updateHumanize}
+            <Alert
+              type="info"
+              showIcon
+              message="投递频率、每日安全上限与拟人化节奏已统一归口至「系统能力 · 运行与防封」"
+              action={
+                <Button size="small" type="link" onClick={() => setActiveGroup("runtime")}>
+                  前往调整
+                </Button>
+              }
             />
           </Space>
         );
@@ -1633,6 +1868,15 @@ export function ConfigPage(props: ConfigPageProps) {
                       添加 LLM 内容
                     </Button>
                   }
+                />
+              )}
+
+              {greetTemplateHasActiveImage && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="首轮打招呼包含图片消息，可能触发平台风控"
+                  description="BOSS 直聘等平台对陌生会话首条发图检测较严，建议仅发简短文字破冰，待 HR 回复或索要简历后再通过平台原生附件发简历。"
                 />
               )}
 
@@ -2096,9 +2340,15 @@ export function ConfigPage(props: ConfigPageProps) {
                 </div>
               )}
 
-              <ReplyPollingSection
-                config={getReplyPollingConfig(props.config)}
-                onChange={props.updatePolling}
+              <Alert
+                type="info"
+                showIcon
+                message="自动回复的轮询间隔、活跃时段与实时推送提醒已归口至「系统能力 · 运行与防封」"
+                action={
+                  <Button size="small" type="link" onClick={() => setActiveGroup("runtime")}>
+                    前往调整
+                  </Button>
+                }
               />
             </div>
 
@@ -2240,7 +2490,11 @@ export function ConfigPage(props: ConfigPageProps) {
                                     className="grid grid-cols-1 md:grid-cols-[120px_1fr_40px] gap-3 items-start"
                                   >
                                     <Select
-                                      value={resource.resource_type}
+                                      value={
+                                        resource.resource_type === "LLM"
+                                          ? "Text"
+                                          : resource.resource_type
+                                      }
                                       onChange={(value) =>
                                         props.updateReplyResource(
                                           index,
@@ -2251,7 +2505,7 @@ export function ConfigPage(props: ConfigPageProps) {
                                           },
                                         )
                                       }
-                                      options={resourceTypeOptions()}
+                                      options={replyTemplateResourceTypeOptions()}
                                     />
                                     {renderResourceContent(
                                       resource,
@@ -2534,7 +2788,7 @@ export function ConfigPage(props: ConfigPageProps) {
             >
               <Input
                 allowClear
-                placeholder="例如：吴振华测试开发工程师简历"
+                placeholder="例如：张三_测试开发工程师简历"
                 onChange={(event) =>
                   props.updateResume({
                     liepin_attachment_resume_name: event.target.value || null,
@@ -2549,7 +2803,7 @@ export function ConfigPage(props: ConfigPageProps) {
             >
               <Input
                 allowClear
-                placeholder="例如：吴振华简历_AI工程师_2026-09-11.pdf"
+                placeholder="例如：张三简历_后端工程师_2026.pdf"
                 onChange={(event) =>
                   props.updateResume({
                     boss_attachment_resume_name: event.target.value || null,

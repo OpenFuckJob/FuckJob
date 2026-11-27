@@ -41,3 +41,23 @@ it("ignores a late initial response after a newer successful refresh", async () 
   expect(screen.queryByText("stale initial error")).toBeNull();
   expect(screen.getByText("数据统计基于所选时间范围内的活动记录，趋势图固定展示最近 0 天走势。")).toBeTruthy();
 });
+
+it("renders profile and platform conversion attribution when provided", async () => {
+  vi.mocked(invoke).mockResolvedValueOnce({
+    success: true,
+    data: {
+      ...overview(5).data,
+      profile_attribution: [
+        { label: "Rust 后端方案", total_jobs: 5, communicated_jobs: 4, replied_jobs: 2, reply_rate: 50, resume_sent_jobs: 1 },
+      ],
+      platform_attribution: [
+        { label: "BOSS 直聘", total_jobs: 5, communicated_jobs: 4, replied_jobs: 2, reply_rate: 50, resume_sent_jobs: 1 },
+      ],
+    },
+  });
+  render(<JobOverviewPage />);
+  await waitFor(() => expect(screen.getByText("求职方案转化对比")).toBeTruthy());
+  expect(screen.getByText("Rust 后端方案")).toBeTruthy();
+  expect(screen.getByText("平台转化对比")).toBeTruthy();
+  expect(screen.getByText("BOSS 直聘")).toBeTruthy();
+});

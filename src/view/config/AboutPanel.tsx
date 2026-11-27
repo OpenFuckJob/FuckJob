@@ -8,7 +8,7 @@ import { useUpdater } from "@/lib/updater";
 const { Title, Text, Paragraph } = Typography;
 
 export function AboutPanel() {
-  const [version, setVersion] = useState("0.1.14");
+  const [version, setVersion] = useState("");
   const { checking, checkForUpdates } = useUpdater();
 
   useEffect(() => {
@@ -44,7 +44,7 @@ export function AboutPanel() {
                 <Text className="text-lg font-bold text-slate-900">OfferFlow</Text>
                 <Text className="text-xs text-slate-500 font-medium">智聘助手</Text>
                 <span className="rounded-md bg-sky-100 px-2 py-0.5 text-xs font-semibold text-sky-700">
-                  v{version}
+                  {version ? `v${version}` : "本地开发版"}
                 </span>
               </div>
               <Paragraph className="m-0! mt-1 text-xs text-slate-500">

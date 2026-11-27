@@ -9,6 +9,7 @@ pub mod error;
 pub mod job_description;
 pub mod llm;
 pub mod logger;
+pub mod notification;
 pub mod rpa;
 pub mod storage;
 pub mod task;
@@ -43,14 +44,9 @@ pub fn run() {
             command::config::export_app_config,
             command::config::parse_resume_pdf,
             command::config::check_browser_env,
-            command::user_resumes::load_user_resumes,
-            command::user_resumes::save_user_resumes,
-            command::resume_templates::get_resume_templates,
             command::rpa::run_flow::check_env,
             command::rpa::run_flow::get_readiness_report,
             command::rpa::run_flow::preflight_job_task,
-            command::rpa::run_flow::boss_flow,
-            command::rpa::run_flow::rpa_flow,
             command::rpa::run_flow::start_job_task,
             command::rpa::run_flow::get_job_task_status,
             command::rpa::run_flow::stop_job_task,
@@ -59,16 +55,18 @@ pub fn run() {
             command::job::job_open_source,
             command::job::job_list_with_status,
             command::job::job_search_overview,
+            command::job::job_today_greet_counts,
             command::job::job_get,
             command::job::job_create,
             command::job::job_update,
             command::job::job_delete,
+            command::job::job_batch_delete,
+            command::job::job_export,
             command::job::job_query,
             command::job::job_analyze,
             command::job::job_analyze_batch,
             command::job::job_description_view,
             command::job::chat_messages_by_job,
-            command::communicated_jobs::job_collect_communicated,
             command::manual_review::manual_review_list,
             command::manual_review::manual_review_count,
             command::manual_review::manual_review_resolve,
@@ -80,8 +78,7 @@ pub fn run() {
             command::analysis::analysis_delete,
             command::llm::generate_job_filter_rules,
             command::llm::parse_job_keyword_filters,
-            command::llm::predict_resume_questions,
-            command::llm::optimize_resume_with_answer,
+            command::notification::test_notification_webhook,
             command::llm_provider::get_llm_credential_status,
             command::llm_provider::set_llm_api_key,
             command::llm_provider::clear_llm_api_key,

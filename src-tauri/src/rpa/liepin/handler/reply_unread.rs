@@ -207,9 +207,26 @@ async fn handle_conversation(
     } else {
         Vec::new()
     };
+    let history_mids: HashSet<i64> = history.iter().map(|message| message.mid).collect();
+    let newest_received_text = fresh_messages
+        .iter()
+        .filter(|message| message.received && (!from_api || !history_mids.contains(&message.mid)))
+        .max_by_key(|message| (message.time, message.mid))
+        .map(|message| message.text.clone());
     let messages = conversation::merge_messages(history, fresh_messages.to_vec());
 
     let owned_job = resolve_owned_job(contact, &messages);
+    if let Some(reply_text) = newest_received_text {
+        let title = match owned_job.as_ref() {
+            Some(job) => format!("猎聘 · {}（{}）", job.title, job.company_name),
+            None => format!("猎聘 · {name}"),
+        };
+        crate::notification::notify_current(
+            crate::notification::NotificationEvent::HrReply,
+            title,
+            reply_text,
+        );
+    }
     if from_api {
         let key = chat_message_dao::ConversationKey {
             platform: PLATFORM,
@@ -1034,6 +1051,9 @@ mod tests {
             location: None,
             is_reply: false,
             is_send_resume: false,
+            pipeline_stage: None,
+            notes: None,
+            interview_at: None,
             created_at: String::new(),
             resume_sent_at: None,
             updated_at: String::new(),

@@ -168,7 +168,9 @@ pub(super) fn live_job_context(job_id: &str, body: &str) -> Option<JobDetail> {
         title: snapshot.title?, detail: snapshot.detail?,
         company_name: snapshot.company_name.unwrap_or_default(),
         salary: snapshot.salary.unwrap_or_default(), location: snapshot.location,
-        is_reply: true, is_send_resume: false, created_at: String::new(),
+        is_reply: true, is_send_resume: false,
+        pipeline_stage: None, notes: None, interview_at: None,
+        created_at: String::new(),
         resume_sent_at: None, updated_at: String::new(),
     })
 }
@@ -297,6 +299,9 @@ fn upsert_synced_job(
         location,
         is_reply: has_received,
         is_send_resume: has_resume_file,
+        pipeline_stage: None,
+        notes: None,
+        interview_at: None,
         created_at: now.clone(),
         resume_sent_at: has_resume_file.then(|| now.clone()),
         updated_at: now,

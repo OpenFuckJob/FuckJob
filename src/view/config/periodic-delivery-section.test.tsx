@@ -22,6 +22,7 @@ describe("PeriodicDeliverySection 字段", () => {
   it.each([
     "投递间隔",
     "单轮最多打招呼",
+    "每日安全上限",
     "单轮最长运行",
     "只在指定时段投递",
     "自动结束",

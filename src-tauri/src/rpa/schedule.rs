@@ -63,6 +63,10 @@ pub struct PeriodicPlan {
     /// 单轮最长跑多少分钟，0 表示不限
     #[serde(default)]
     pub max_round_minutes: u64,
+
+    /// 单日该平台最多打招呼多少条，0 表示不限
+    #[serde(default)]
+    pub max_greets_per_day: u32,
 }
 
 impl PeriodicPlan {
@@ -74,6 +78,7 @@ impl PeriodicPlan {
             run_until: None,
             max_greets_per_round: 0,
             max_round_minutes: 0,
+            max_greets_per_day: 0,
         }
     }
 }
@@ -363,6 +368,37 @@ impl RoundBudget {
             max_minutes: plan.max_round_minutes,
             max_consecutive_greet_failures: DEFAULT_MAX_CONSECUTIVE_GREET_FAILURES,
         }
+    }
+
+    /// 根据今日已投递数量将预算收紧到每日安全上限之内。
+    /// 返回 `None` 表示今日配额已用完，本轮应直接跳过。
+    pub fn clamp_to_daily_limit(self, daily_limit: u32, today_count: u32) -> Option<Self> {
+        if daily_limit == 0 {
+            return Some(self);
+        }
+        let remaining = daily_limit.saturating_sub(today_count);
+        if remaining == 0 {
+            return None;
+        }
+        let capped_greets = if self.max_greets == 0 {
+            remaining
+        } else {
+            self.max_greets.min(remaining)
+        };
+        Some(Self {
+            max_greets: capped_greets,
+            ..self
+        })
+    }
+
+    /// 单轮求职的安全默认预算：带连续失败熔断，并遵循配置的每日安全上限。
+    pub fn for_single_round(daily_limit: u32, today_count: u32) -> Option<Self> {
+        Self {
+            max_greets: 0,
+            max_minutes: 0,
+            max_consecutive_greet_failures: DEFAULT_MAX_CONSECUTIVE_GREET_FAILURES,
+        }
+        .clamp_to_daily_limit(daily_limit, today_count)
     }
 
     /// 本轮是否还能继续。

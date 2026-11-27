@@ -135,4 +135,39 @@ describe("JobBrief", () => {
     );
     expect(screen.getByText("AI 应用架构师")).toBeInTheDocument();
   });
+
+  it("保存面试时间与笔记时通过 job_update 持久化", async () => {
+    const onJobUpdated = vi.fn();
+    vi.mocked(invoke).mockImplementation(async (command) =>
+      command === "job_update"
+        ? { success: true, data: null, error: null }
+        : { success: true, data: described(), error: null },
+    );
+
+    render(<JobBrief job={baseJob} onJobUpdated={onJobUpdated} />);
+
+    fireEvent.change(
+      screen.getByPlaceholderText("例如：本周四 14:30 一面（腾讯会议）"),
+      { target: { value: "周五 15:00 一面" } },
+    );
+    fireEvent.change(
+      screen.getByPlaceholderText("记录一面/二面复盘、面试官关注点、薪资期望或薪资包对比..."),
+      { target: { value: "重点准备高并发与 Rust 异步" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: /保存进度/ }));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "job_update",
+        expect.objectContaining({
+          id: baseJob.id,
+          job: expect.objectContaining({
+            interview_at: "周五 15:00 一面",
+            notes: "重点准备高并发与 Rust 异步",
+          }),
+        }),
+      ),
+    );
+    expect(onJobUpdated).toHaveBeenCalled();
+  });
 });

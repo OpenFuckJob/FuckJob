@@ -539,7 +539,19 @@ pub async fn execute_rpa_flow(
 
     match mode {
         FlowMode::JobHunting => {
-            execute_job_hunting(platform, config, RoundBudget::unlimited()).await
+            let daily_limit = config.periodic_delivery_config.max_greets_per_day;
+            let today_count = crate::dao::job_detail_dao::count_today_for_platform(platform.as_str())
+                .unwrap_or(0);
+            let Some(budget) = RoundBudget::for_single_round(daily_limit, today_count) else {
+                logger::info(format!(
+                    "今日 {} 已建联 {} 条，已达每日安全上限 {} 条，本次单轮投递跳过（可在「运行与防封」调整每日上限）",
+                    platform.as_str(),
+                    today_count,
+                    daily_limit
+                ))?;
+                return Ok(());
+            };
+            execute_job_hunting(platform, config, budget).await
         }
         FlowMode::ReplyUnread => {
             execute_reply_unread(platform, config).await?;
@@ -572,12 +584,24 @@ pub async fn execute_rpa_flow_with_browser(
 ) -> Result<(), anyhow::Error> {
     match mode {
         FlowMode::JobHunting => {
+            let daily_limit = config.periodic_delivery_config.max_greets_per_day;
+            let today_count = crate::dao::job_detail_dao::count_today_for_platform(platform.as_str())
+                .unwrap_or(0);
+            let Some(budget) = RoundBudget::for_single_round(daily_limit, today_count) else {
+                logger::info(format!(
+                    "今日 {} 已建联 {} 条，已达每日安全上限 {} 条，本次单轮投递跳过（可在「运行与防封」调整每日上限）",
+                    platform.as_str(),
+                    today_count,
+                    daily_limit
+                ))?;
+                return Ok(());
+            };
             execute_job_hunting_on_page(
                 connection,
                 main_tab,
                 platform,
                 config,
-                RoundBudget::unlimited(),
+                budget,
             )
             .await
         }
@@ -603,14 +627,6 @@ pub async fn execute_rpa_flow_with_browser(
             polling_reply(&ReplyTarget::NewTab(platform), config).await
         }
     }
-}
-
-pub async fn execute_boss_flow(
-    mode: FlowMode,
-    plan: Option<PeriodicPlan>,
-    config: &AppRuntimeConfig,
-) -> Result<(), anyhow::Error> {
-    execute_rpa_flow(PlatformKind::Boss, mode, plan, config).await
 }
 
 async fn execute_job_hunting(
@@ -746,6 +762,11 @@ enum PeriodicTarget {
 }
 
 impl PeriodicTarget {
+    fn platform(&self) -> PlatformKind {
+        match self {
+            Self::NewTab(platform) => *platform,
+        }
+    }
     fn supports_chat(&self) -> bool { !matches!(self, Self::NewTab(PlatformKind::Job51)) }
     fn reply_target(&self) -> ReplyTarget {
         match self {
@@ -820,13 +841,41 @@ async fn periodic_job_hunting(
             }
             PeriodicState::Deliver => {
                 pause_announced = false;
+                let daily_limit = if plan.max_greets_per_day > 0 {
+                    plan.max_greets_per_day
+                } else {
+                    config.periodic_delivery_config.max_greets_per_day
+                };
+                let today_count = crate::dao::job_detail_dao::count_today_for_platform(
+                    target.platform().as_str(),
+                )
+                .unwrap_or(0);
+
                 // 每轮重新掷一次：用户设的 30 条是量级不是配额，每轮都精确停在
                 // 第 30 条、每次都隔整 30 分钟，这个「精确」本身就是机器特征。
                 // 抖动只作用于本轮，计划快照始终保持用户提交时的样子
                 let persona = humanize::Persona::today(&config.humanize_config, base_budget.max_greets);
-                let budget = match persona.as_ref() {
+                let shaped_budget = match persona.as_ref() {
                     Some(persona) => persona.shape_budget(base_budget, humanize::roll()),
                     None => base_budget,
+                };
+                let Some(budget) = shaped_budget.clamp_to_daily_limit(daily_limit, today_count) else {
+                    logger::info(format!(
+                        "今日已建联 {} 条，已达每日安全上限 {} 条，本轮暂停投递，等待期间继续处理未读消息",
+                        today_count, daily_limit
+                    ))?;
+                    let interval = match persona.as_ref() {
+                        Some(persona) => {
+                            persona.shape_interval_minutes(plan.interval_minutes, humanize::roll())
+                        }
+                        None => plan.interval_minutes,
+                    };
+                    let next_at = schedule::next_delivery_at_after(plan, Local::now(), interval);
+                    if !idle_until(target, config, next_at).await? {
+                        logger::info("周期性投递任务已结束")?;
+                        return Ok(());
+                    }
+                    continue;
                 };
                 logger::info("开始执行本轮周期性投递")?;
                 let started = Instant::now();

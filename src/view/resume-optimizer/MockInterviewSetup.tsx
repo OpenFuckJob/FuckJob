@@ -37,11 +37,11 @@ const PLACEHOLDER_COMPANY_NAMES = new Set(["BOSS 会话"]);
 const FOCUS_OPTIONS = [
   "项目深挖",
   "个人贡献",
-  "Agent工作流",
-  "RAG与知识库",
   "系统设计",
+  "技术选型",
   "工程稳定性",
   "性能与成本",
+  "排障与复盘",
   "协作沟通",
 ];
 
@@ -327,7 +327,7 @@ export function MockInterviewSetup({ value, onChange, disabled }: MockInterviewS
           prefix={<FileTextOutlined />}
           value={value.customFocus}
           maxLength={120}
-          placeholder="自定义侧重点，例如：重点考察Agent线上稳定性"
+          placeholder="自定义侧重点，例如：重点考察高并发系统设计与线上排障经历"
           onChange={(event) => patch({ customFocus: event.target.value })}
         />
       </section>

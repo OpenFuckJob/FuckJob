@@ -26,44 +26,11 @@ import {
 } from "./interview-types";
 import "./style.css";
 
-export interface ResumeMarkdownSection {
-  title: string;
-  start: number;
-  end: number;
-}
-
-export function extractSections(content: string): ResumeMarkdownSection[] {
-  const lines = content.split("\n");
-  const sections: ResumeMarkdownSection[] = [];
-  const firstHeaderIdx = lines.findIndex((line) => line.match(/^##\s+/));
-  if (firstHeaderIdx > 0) sections.push({ title: "个人信息", start: 0, end: firstHeaderIdx });
-  else if (firstHeaderIdx === -1 && lines.some((line) => line.trim())) sections.push({ title: "个人信息", start: 0, end: lines.length });
-  let currentSection: { title: string; start: number } | null = null;
-  for (let index = 0; index < lines.length; index += 1) {
-    const match = lines[index].match(/^##\s+(.+)/);
-    if (!match) continue;
-    if (currentSection) sections.push({ ...currentSection, end: index });
-    currentSection = { title: match[1].trim(), start: index };
-  }
-  if (currentSection) sections.push({ ...currentSection, end: lines.length });
-  return sections;
-}
-
-export function replaceSectionContent(content: string, section: ResumeMarkdownSection, nextSectionContent: string): string {
-  const lines = content.split("\n");
-  return [lines.slice(0, section.start).join("\n"), nextSectionContent, lines.slice(section.end).join("\n")].filter(Boolean).join("\n");
-}
-
-export function findSectionIndexByRenderedTitle(sections: ResumeMarkdownSection[], renderedTitle: string): number {
-  const normalizedTitle = renderedTitle.replace(/^#+\s*/, "").trim();
-  return sections.findIndex((section) => section.title.trim() === normalizedTitle);
-}
-
 export interface ResumeOptimizerPageProps {
   config: AppRuntimeConfig;
   llmConfigured: boolean;
   onOpenLlmConfig: () => void;
-  onUpdateResume: (content: string) => void;
+  onOpenResumeConfig?: () => void;
   /** 从岗位管理跳过来时要直接预填的岗位 */
   pendingInterviewJob?: JobDetail;
   onPendingInterviewHandled?: () => void;
@@ -75,7 +42,7 @@ type PageState =
   | { name: "session"; sessionId: string }
   | { name: "report"; sessionId: string; initialTab?: "summary" | "abilities" | "questions" | "transcript" };
 
-function ResumeOptimizerPage({ config, llmConfigured, onOpenLlmConfig, pendingInterviewJob, onPendingInterviewHandled }: ResumeOptimizerPageProps) {
+function ResumeOptimizerPage({ config, llmConfigured, onOpenLlmConfig, onOpenResumeConfig, pendingInterviewJob, onPendingInterviewHandled }: ResumeOptimizerPageProps) {
   const [page, setPage] = useState<PageState>({ name: "home" });
   const [sessions, setSessions] = useState<InterviewSession[]>(listInterviewSessions);
   const [settings, setSettings] = useState<MockInterviewSettings>({ ...DEFAULT_INTERVIEW_SETTINGS });
@@ -140,6 +107,11 @@ function ResumeOptimizerPage({ config, llmConfigured, onOpenLlmConfig, pendingIn
         <MockInterviewHome
           sessions={sessions}
           canStart={canStart}
+          aiReady={aiReady}
+          llmConfigured={llmConfigured}
+          resumeReady={!!resumeContent}
+          onConfigureAi={onOpenLlmConfig}
+          onConfigureResume={onOpenResumeConfig}
           onCreate={() => {
             if (!canStart) {
               messageApi.warning("请先完成AI模型配置和简历配置");

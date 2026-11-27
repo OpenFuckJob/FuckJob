@@ -270,6 +270,12 @@ async fn handle_conversation(
     };
     // 历史必须在写库之前读，否则读回来的就是刚写进去的那一页
     let history = chat_message_dao::find_by_conversation(PLATFORM, job_id).unwrap_or_default();
+    let history_mids: HashSet<i64> = history.iter().map(|message| message.mid).collect();
+    let newest_received_text = fresh
+        .iter()
+        .filter(|message| message.received && !history_mids.contains(&message.mid))
+        .max_by_key(|message| (message.time, message.mid))
+        .map(|message| message.text.clone());
     if let Err(error) = chat_message_dao::upsert_incremental(key, &fresh) {
         logger::warning(format!("保存聊天记录失败: {error}"))?;
     }
@@ -279,6 +285,17 @@ async fn handle_conversation(
         .ok()
         .flatten()
         .or_else(|| boss_data.and_then(|body| super::sync_chat_history::live_job_context(job_id, body)));
+    if let Some(reply_text) = newest_received_text {
+        let title = match job.as_ref() {
+            Some(job) => format!("BOSS · {}（{}）", job.title, job.company_name),
+            None => format!("BOSS · 会话 {job_id}"),
+        };
+        crate::notification::notify_current(
+            crate::notification::NotificationEvent::HrReply,
+            title,
+            reply_text,
+        );
+    }
     let (conversation_config, source) =
         profile_snapshot_dao::resolve_for_job(app_runtime_config, job.as_ref())
             .map_err(anyhow::Error::msg)?;

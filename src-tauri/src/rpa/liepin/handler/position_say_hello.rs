@@ -58,6 +58,7 @@ pub async fn position_say_hello_on_page(
         .unwrap_or_default()
         .into_iter()
         .map(|j| j.id)
+        .chain(crate::dao::processed_job_dao::ids().unwrap_or_default())
         .collect();
     logger::info(format!(
         "猎聘本地已存储 {} 条岗位记录",
@@ -142,7 +143,24 @@ pub async fn position_say_hello_on_page(
             let filter_decision = verify::filter_decision(&job, &config);
             if !filter_decision.matched {
                 stats.skipped_rule += 1;
+                processed_job_ids.insert(db_id.clone());
+                let _ = crate::dao::processed_job_dao::record(&db_id);
                 continue;
+            }
+            if config.job_filter_config.max_greets_per_company > 0 {
+                let existing_company_greets =
+                    job_detail_dao::count_by_company_normalized(&job.company_name).unwrap_or(0);
+                if let Some(reason) = verify::company_greet_limit_reason(
+                    &job.company_name,
+                    existing_company_greets,
+                    config.job_filter_config.max_greets_per_company,
+                ) {
+                    stats.skipped_rule += 1;
+                    logger::info(format!("猎聘跳过 {}：{}", job.title, reason))?;
+                    processed_job_ids.insert(db_id.clone());
+                    let _ = crate::dao::processed_job_dao::record(&db_id);
+                    continue;
+                }
             }
             // 「每个符合条件的岗位都投」是人做不到的事。放在语义复核之前，
             // 跳过的岗位不烧模型额度
@@ -175,6 +193,8 @@ pub async fn position_say_hello_on_page(
                 Ok(GreetOutcome::SemanticRejected) => {
                     stats.skipped_ai += 1;
                     consecutive_greet_failures = 0;
+                    processed_job_ids.insert(db_id.clone());
+                    let _ = crate::dao::processed_job_dao::record(&db_id);
                     false
                 }
                 Ok(GreetOutcome::Greeted) => {
@@ -1258,6 +1278,9 @@ fn build_job_detail(job: &RpaJob, config: &AppRuntimeConfig, resume_sent: bool) 
         created_at: now.clone(),
         resume_sent_at: resume_sent.then(|| now.clone()),
         updated_at: now,
+        pipeline_stage: None,
+        notes: None,
+        interview_at: None,
     }
 }
 

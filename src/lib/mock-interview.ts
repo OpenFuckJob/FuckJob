@@ -3,30 +3,9 @@ import type {
   MockInterviewQuestionRequest,
   MockInterviewReport,
   MockInterviewSummaryRequest,
-  OptimizeWithAnswerRequest,
-  PredictedQuestion,
-  ResumeLlmResult,
 } from "@/types/analysis";
 import type { CommandResult } from "@/types/command";
 import { unwrap } from "@/types/command";
-
-export function predictResumeQuestions(
-  resumeContent: string,
-): Promise<PredictedQuestion[]> {
-  return invoke<CommandResult<PredictedQuestion[]>>(
-    "predict_resume_questions",
-    { resumeContent },
-  ).then(unwrap);
-}
-
-export function optimizeResumeWithAnswer(
-  request: OptimizeWithAnswerRequest,
-): Promise<ResumeLlmResult> {
-  return invoke<CommandResult<ResumeLlmResult>>(
-    "optimize_resume_with_answer",
-    { request },
-  ).then(unwrap);
-}
 
 export function streamMockInterviewQuestion(
   request: MockInterviewQuestionRequest,

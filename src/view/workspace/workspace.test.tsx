@@ -7,6 +7,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { invoke } from "@tauri-apps/api/core";
 import {
   describePendingReview,
+  describeReplyActiveHours,
   filterTaskLogContent,
   filterTasksByPlatform,
   getTaskProfileLabel,
@@ -132,5 +133,19 @@ describe("pending review tile", () => {
   it("tells the user what to do next in each state", () => {
     expect(describePendingReview(0).subtitle).not.toBe(describePendingReview(1).subtitle);
     expect(describePendingReview(1).subtitle).toContain("点击");
+  });
+});
+
+describe("reply active hours copy", () => {
+  it("renders 全天回复 when disabled or when start equals end (0:00 - 0:00)", () => {
+    expect(
+      describeReplyActiveHours({ active_hours_enabled: false, active_start_hour: 9, active_end_hour: 22 }),
+    ).toBe("全天回复");
+    expect(
+      describeReplyActiveHours({ active_hours_enabled: true, active_start_hour: 0, active_end_hour: 0 }),
+    ).toBe("全天回复");
+    expect(
+      describeReplyActiveHours({ active_hours_enabled: true, active_start_hour: 9, active_end_hour: 22 }),
+    ).toBe("只在 9:00 - 22:00 之间回复");
   });
 });

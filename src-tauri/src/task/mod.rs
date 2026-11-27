@@ -419,6 +419,8 @@ fn spawn_worker(inner: Arc<TaskManagerInner>, worker: WorkerInput) {
                 worker.task_id.clone(),
                 Arc::clone(&worker.cancelled),
             );
+            let _notify_guard =
+                crate::notification::scoped_notification(worker.config.notification_config.clone());
             let result = if worker.cancelled.load(Ordering::SeqCst) {
                 Ok(())
             } else {
@@ -442,6 +444,16 @@ fn spawn_worker(inner: Arc<TaskManagerInner>, worker: WorkerInput) {
             if let Err(error) = &result {
                 if !worker.cancelled.load(Ordering::SeqCst) {
                     let _ = crate::logger::error(format!("任务执行失败：{error:#}"));
+                    crate::notification::notify_async(
+                        &worker.config.notification_config,
+                        crate::notification::NotificationEvent::RiskAlert,
+                        format!(
+                            "{} {} 任务异常中断",
+                            worker.platform.as_str(),
+                            worker.mode.display_name()
+                        ),
+                        format!("{error:#}"),
+                    );
                 }
             }
 
