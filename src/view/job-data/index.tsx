@@ -49,6 +49,7 @@ import AnalysisReport from "./AnalysisReport";
 import ChatThreadModal from "./ChatThread";
 import JobBrief from "./JobBrief";
 import { useJobDataRefresh } from "../../hooks/useJobDataRefresh";
+import { PlatformBadgeIcon } from "../../components/icons";
 import "./style.css";
 
 /** 与 Rust 侧 BatchAnalysisResult 对应 */
@@ -284,18 +285,7 @@ function JobKanbanCard({
       </div>
 
       <div className="job-card-company">
-        <span
-          className="platform-dot"
-          style={{
-            background:
-              platform === "51job"
-                ? "#ff6000"
-                : platform === "liepin"
-                  ? "#722ed1"
-                  : "#52c41a",
-          }}
-          title={platform === "51job" ? "前程无忧" : platform === "liepin" ? "猎聘" : "BOSS 直聘"}
-        />
+        <PlatformBadgeIcon platform={platform} size={15} />
         <span>{job.company_name}</span>
       </div>
 

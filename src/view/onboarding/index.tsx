@@ -18,9 +18,8 @@ import {
   CheckCircleOutlined,
   FilePdfOutlined,
   LoadingOutlined,
-  SafetyOutlined,
-  StopOutlined,
 } from "@ant-design/icons";
+import { IconFilterSlash, IconShieldCheck, OfferFlowLogo } from "@/components/icons";
 import {
   getDefaultJobProfile,
   getJobProfiles,
@@ -255,13 +254,16 @@ export function Onboarding({
     <main className="app-loading">
       <Card style={{ width: 760, maxWidth: "94vw" }}>
         <Space direction="vertical" size={18} style={{ width: "100%" }}>
-          <div>
-            <Typography.Title level={3} style={{ margin: 0 }}>
-              欢迎使用 OfferFlow · 3 步开启自动投递
-            </Typography.Title>
-            <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-              本地运行的自动投递与 HR 沟通管家：所有数据仅存于本机，不上传任何第三方服务器。
-            </Typography.Text>
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <OfferFlowLogo size={44} className="app-brand-logo" />
+            <div>
+              <Typography.Title level={3} style={{ margin: 0, letterSpacing: "-0.02em" }}>
+                欢迎使用 OfferFlow · 3 步开启自动投递
+              </Typography.Title>
+              <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+                本地运行的自动投递与 HR 沟通管家：所有数据仅存于本机，不上传任何第三方服务器。
+              </Typography.Text>
+            </div>
           </div>
 
           <Steps
@@ -363,9 +365,9 @@ export function Onboarding({
               {resumeError && <Alert type="warning" showIcon message={resumeError} />}
 
               <div>
-                <Typography.Text strong style={{ display: "block", marginBottom: 6 }}>
-                  <StopOutlined style={{ color: "#f43f5e", marginRight: 6 }} />
-                  自动屏蔽水岗（默认推荐勾前两项）
+                <Typography.Text strong style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                  <IconFilterSlash size={15} style={{ color: "#f43f5e" }} />
+                  <span>自动屏蔽水岗（默认推荐勾前两项）</span>
                 </Typography.Text>
                 <Space wrap size={8}>
                   {BLACKLIST_PRESETS.map((preset) => {
@@ -472,9 +474,9 @@ export function Onboarding({
           {step === 2 && (
             <Space direction="vertical" size={14} style={{ width: "100%" }}>
               <div>
-                <Typography.Text strong style={{ display: "block", marginBottom: 8 }}>
-                  <SafetyOutlined style={{ color: "#1677ff", marginRight: 6 }} />
-                  选择防封安全档位（后续随时可改）
+                <Typography.Text strong style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+                  <IconShieldCheck size={15} style={{ color: "var(--of-accent)" }} />
+                  <span>选择防封安全档位（后续随时可改）</span>
                 </Typography.Text>
                 <div className="of-preset-grid">
                   {SAFETY_PRESETS.map((preset) => {

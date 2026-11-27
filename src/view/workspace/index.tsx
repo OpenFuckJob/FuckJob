@@ -17,27 +17,31 @@ import {
   message,
 } from "antd";
 import {
-  CalendarOutlined,
-  CheckCircleFilled,
-  CheckCircleOutlined,
-  ClockCircleOutlined,
   CopyOutlined,
-  ExclamationCircleOutlined,
   EyeInvisibleOutlined,
   EyeOutlined,
   FilterOutlined,
   LoadingOutlined,
-  MessageOutlined,
-  PlayCircleOutlined,
-  RocketOutlined,
-  SafetyOutlined,
   SearchOutlined,
   SettingOutlined,
-  SlidersOutlined,
   UndoOutlined,
-  WarningFilled,
   WarningOutlined,
 } from "@ant-design/icons";
+import {
+  IconBellAlert,
+  IconBrowserCheck,
+  IconCalendarSpark,
+  IconClockRepeat,
+  IconPlaySolid,
+  IconReplyPulse,
+  IconResumeDoc,
+  IconShieldCheck,
+  IconSliders,
+  IconTarget,
+  IconTerminal,
+  OfferFlowLogo,
+  PlatformBadgeIcon,
+} from "../../components/icons";
 import { invoke } from "@tauri-apps/api/core";
 import type { CommandResult } from "../../types/command";
 import { commandErrorMessage } from "../../types/command";
@@ -144,19 +148,19 @@ const PLATFORM_META: Record<PlatformKind, PlatformMeta> = {
   boss: {
     label: "BOSS 直聘",
     shortLabel: "BOSS",
-    accent: "#1677ff",
+    accent: "#00a6a6",
     supportsChat: true,
   },
   liepin: {
     label: "猎聘",
     shortLabel: "猎聘",
-    accent: "#722ed1",
+    accent: "#7c3aed",
     supportsChat: true,
   },
   "51job": {
     label: "前程无忧",
     shortLabel: "51job",
-    accent: "#ff6000",
+    accent: "#f97316",
     supportsChat: false,
   },
 };
@@ -802,7 +806,7 @@ const WorkspacePage = ({
                   </Typography.Text>
                   <Button
                     size="small"
-                    icon={<SlidersOutlined />}
+                    icon={<IconSliders size={13} />}
                     onClick={() => setParamsDrawerOpen(true)}
                   >
                     微调本次参数
@@ -856,7 +860,7 @@ const WorkspacePage = ({
             className="ws-strip-icon"
             style={{ background: "rgba(16,185,129,0.12)", color: quotaColor }}
           >
-            <SafetyOutlined />
+            <IconShieldCheck size={19} />
           </span>
           <span className="ws-strip-meta">
             <span className="ws-strip-label">{currentPlatformMeta.shortLabel} 今日安全额度</span>
@@ -868,7 +872,7 @@ const WorkspacePage = ({
               <span className="ws-quota-bar" aria-hidden="true">
                 <span
                   className="ws-quota-fill"
-                  style={{ width: `${quotaPct}%`, background: quotaColor, display: "block" }}
+                  style={{ width: `${quotaPct}%`, background: quotaColor }}
                 />
               </span>
             ) : (
@@ -884,9 +888,9 @@ const WorkspacePage = ({
         >
           <span
             className="ws-strip-icon"
-            style={{ background: "rgba(22,119,255,0.12)", color: "#1677ff" }}
+            style={{ background: "var(--of-accent-soft)", color: "var(--of-accent)" }}
           >
-            <MessageOutlined />
+            <IconReplyPulse size={19} />
           </span>
           <span className="ws-strip-meta">
             <span className="ws-strip-label">HR 已回复 / 已建联</span>
@@ -906,7 +910,7 @@ const WorkspacePage = ({
             className="ws-strip-icon"
             style={{ background: "rgba(139,92,246,0.12)", color: "#8b5cf6" }}
           >
-            <CalendarOutlined />
+            <IconCalendarSpark size={19} />
           </span>
           <span className="ws-strip-meta">
             <span className="ws-strip-label">约面与 Offer</span>
@@ -929,7 +933,7 @@ const WorkspacePage = ({
             className="ws-strip-icon"
             style={{ background: pendingReviewUi.bg, color: pendingReviewUi.color }}
           >
-            <ExclamationCircleOutlined />
+            <IconBellAlert size={19} />
           </span>
           <span className="ws-strip-meta">
             <span className="ws-strip-label">待你接手</span>
@@ -948,19 +952,34 @@ const WorkspacePage = ({
       <section className="ws-main-grid">
         <Card
           styles={{ body: { padding: 20, height: "100%", display: "flex", flexDirection: "column" } }}
-          style={{ borderTop: `4px solid ${currentPlatformMeta.accent}` }}
+          style={
+            {
+              "--platform-accent": currentPlatformMeta.accent,
+            } as React.CSSProperties
+          }
         >
           <Space direction="vertical" size={16} style={{ width: "100%", flex: 1 }}>
-            <Segmented<PlatformKind>
-              block
-              size="middle"
-              value={platform}
-              options={PLATFORM_ORDER.map((value) => ({
-                value,
-                label: PLATFORM_META[value].label,
-              }))}
-              onChange={setPlatform}
-            />
+            {/* Bespoke platform selector with custom SVG badges */}
+            <div className="ws-platform-tabs" role="tablist" aria-label="选择招聘平台">
+              {PLATFORM_ORDER.map((value) => {
+                const meta = PLATFORM_META[value];
+                const active = platform === value;
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    className={`ws-platform-btn${active ? " is-active" : ""}`}
+                    style={{ "--platform-accent": meta.accent } as React.CSSProperties}
+                    onClick={() => setPlatform(value)}
+                  >
+                    <PlatformBadgeIcon platform={value} size={19} />
+                    <span>{meta.label}</span>
+                  </button>
+                );
+              })}
+            </div>
 
             {/* Goal summary card */}
             <div className="ws-goal-card">
@@ -969,7 +988,7 @@ const WorkspacePage = ({
                   <div className="ws-goal-title">
                     {queryText ? `目标岗位：${queryText}` : "尚未填写目标岗位关键词"}
                   </div>
-                  <div className="ws-goal-tags" style={{ marginTop: 6 }}>
+                  <div className="ws-goal-tags" style={{ marginTop: 7 }}>
                     <span className="ws-goal-chip">{getCityLabel(filter.city)}</span>
                     <span className="ws-goal-chip">
                       {filter.min_salary_k ? `月薪 ≥ ${filter.min_salary_k}K` : "薪资不限"}
@@ -1014,12 +1033,11 @@ const WorkspacePage = ({
                 onClick={() => onOpenConfig?.("job", "basic")}
               >
                 <span className="ws-lamp-head">
-                  {hasIntent ? (
-                    <CheckCircleFilled style={{ color: "#10b981" }} />
-                  ) : (
-                    <WarningFilled style={{ color: "#f59e0b" }} />
-                  )}
-                  <span>1. 求职意向</span>
+                  <span className="ws-lamp-title">
+                    <IconTarget size={15} style={{ color: hasIntent ? "#10b981" : "#f59e0b" }} />
+                    <span>1. 求职意向</span>
+                  </span>
+                  <span className={`ws-lamp-dot ${hasIntent ? "is-ready" : "is-warn"}`} />
                 </span>
                 <span className="ws-lamp-sub">
                   {hasIntent ? `${queryText} · ${getCityLabel(filter.city)}` : "点击填写岗位与城市"}
@@ -1032,12 +1050,16 @@ const WorkspacePage = ({
                 onClick={() => onOpenConfig?.("resume", "basic")}
               >
                 <span className="ws-lamp-head">
-                  {hasResume && greetReady ? (
-                    <CheckCircleFilled style={{ color: "#10b981" }} />
-                  ) : (
-                    <WarningFilled style={{ color: "#f59e0b" }} />
-                  )}
-                  <span>2. 简历与话术</span>
+                  <span className="ws-lamp-title">
+                    <IconResumeDoc
+                      size={15}
+                      style={{ color: hasResume && greetReady ? "#10b981" : "#f59e0b" }}
+                    />
+                    <span>2. 简历与话术</span>
+                  </span>
+                  <span
+                    className={`ws-lamp-dot ${hasResume && greetReady ? "is-ready" : "is-warn"}`}
+                  />
                 </span>
                 <span className="ws-lamp-sub">
                   {hasResume
@@ -1059,16 +1081,28 @@ const WorkspacePage = ({
                 onClick={() => void handleCheckEnv(platform)}
               >
                 <span className="ws-lamp-head">
-                  {currentEnvironment.phase === "checking" ? (
-                    <LoadingOutlined style={{ color: "#1677ff" }} />
-                  ) : envReady ? (
-                    <CheckCircleFilled style={{ color: "#10b981" }} />
-                  ) : envNeedsLogin ? (
-                    <WarningFilled style={{ color: "#f59e0b" }} />
-                  ) : (
-                    <CheckCircleOutlined style={{ color: "#64748b" }} />
-                  )}
-                  <span>3. {currentPlatformMeta.shortLabel} 登录</span>
+                  <span className="ws-lamp-title">
+                    {currentEnvironment.phase === "checking" ? (
+                      <LoadingOutlined style={{ color: "var(--of-accent)" }} />
+                    ) : (
+                      <IconBrowserCheck
+                        size={15}
+                        style={{
+                          color: envReady
+                            ? "#10b981"
+                            : envNeedsLogin
+                              ? "#f59e0b"
+                              : "var(--of-text-muted)",
+                        }}
+                      />
+                    )}
+                    <span>3. {currentPlatformMeta.shortLabel} 登录</span>
+                  </span>
+                  <span
+                    className={`ws-lamp-dot ${
+                      envReady ? "is-ready" : envNeedsLogin ? "is-warn" : "is-idle"
+                    }`}
+                  />
                 </span>
                 <span className="ws-lamp-sub">
                   {currentEnvironment.phase === "checking"
@@ -1151,13 +1185,11 @@ const WorkspacePage = ({
                 block
                 type="primary"
                 size="large"
-                icon={<PlayCircleOutlined />}
+                className="ws-hero-cta"
+                icon={<IconPlaySolid size={15} />}
                 loading={currentStartPending}
                 disabled={currentStartPending}
                 style={{
-                  height: 46,
-                  fontSize: 15,
-                  fontWeight: 600,
                   backgroundColor: currentPlatformMeta.accent,
                   borderColor: currentPlatformMeta.accent,
                 }}
@@ -1171,7 +1203,7 @@ const WorkspacePage = ({
               <div className="ws-secondary-actions">
                 {currentPlatformMeta.supportsChat ? (
                   <Button
-                    icon={<MessageOutlined />}
+                    icon={<IconReplyPulse size={15} />}
                     disabled={currentStartPending}
                     onClick={() => openStartModal(platform, "reply_unread")}
                   >
@@ -1179,7 +1211,7 @@ const WorkspacePage = ({
                   </Button>
                 ) : (
                   <Button
-                    icon={<ClockCircleOutlined />}
+                    icon={<IconClockRepeat size={15} />}
                     disabled={currentStartPending}
                     onClick={() => openStartModal(platform, "periodic_job_hunting")}
                   >
@@ -1187,7 +1219,7 @@ const WorkspacePage = ({
                   </Button>
                 )}
                 <Button
-                  icon={<SlidersOutlined />}
+                  icon={<IconSliders size={15} />}
                   disabled={currentStartPending}
                   onClick={() => openStartModal(platform, "periodic_job_hunting")}
                 >
@@ -1215,7 +1247,7 @@ const WorkspacePage = ({
             }}
           >
             <div>
-              <Typography.Title level={5} style={{ margin: 0 }}>
+              <Typography.Title level={5} style={{ margin: 0, letterSpacing: "-0.015em" }}>
                 运行进度
               </Typography.Title>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -1241,11 +1273,11 @@ const WorkspacePage = ({
 
           {visibleQueueTasks.length === 0 ? (
             <div className="ws-queue-empty">
-              <RocketOutlined style={{ fontSize: 26, opacity: 0.45 }} />
+              <OfferFlowLogo size={42} />
               <Typography.Text strong style={{ fontSize: 13.5 }}>
                 {queueTasks.length === 0 ? "当前没有运行中的任务" : "该平台暂无任务记录"}
               </Typography.Text>
-              <Typography.Text type="secondary" style={{ fontSize: 12, maxWidth: 280 }}>
+              <Typography.Text type="secondary" style={{ fontSize: 12, maxWidth: 270 }}>
                 确认左侧 3 盏准备灯后，点击「开始自动投递」即可按安全节奏试跑一轮。
               </Typography.Text>
             </div>
@@ -1290,19 +1322,8 @@ const WorkspacePage = ({
                     }}
                   >
                     <div style={{ minWidth: 0 }}>
-                      <Space size={6}>
-                        <Tag
-                          color={
-                            task.platform === "51job"
-                              ? "orange"
-                              : task.platform === "boss"
-                                ? "blue"
-                                : "purple"
-                          }
-                          style={{ margin: 0 }}
-                        >
-                          {PLATFORM_META[task.platform].shortLabel}
-                        </Tag>
+                      <Space size={7}>
+                        <PlatformBadgeIcon platform={task.platform} size={17} />
                         <Typography.Text strong>{getFlowModeLabel(task.mode)}</Typography.Text>
                       </Space>
                       <Typography.Text
@@ -1363,6 +1384,7 @@ const WorkspacePage = ({
           }}
         >
           <Space size={8}>
+            <IconTerminal size={15} style={{ color: "var(--of-text-muted)" }} />
             <Typography.Text strong style={{ fontSize: 13 }}>
               运行日志
             </Typography.Text>

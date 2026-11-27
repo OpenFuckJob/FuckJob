@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" fill="none">
+  <defs>
+    <linearGradient id="of-bg" x1="36" y1="20" x2="476" y2="492" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1A1D3A" />
+      <stop offset="52%" stop-color="#1E1B4B" />
+      <stop offset="100%" stop-color="#0B0F1E" />
+    </linearGradient>
+    <radialGradient id="of-glow-tl" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(148 112) rotate(45) scale(370)">
+      <stop offset="0%" stop-color="#818CF8" stop-opacity="0.46" />
+      <stop offset="52%" stop-color="#4F46E5" stop-opacity="0.16" />
+      <stop offset="100%" stop-color="#4F46E5" stop-opacity="0" />
+    </radialGradient>
+    <radialGradient id="of-glow-br" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(388 396) rotate(-135) scale(240)">
+      <stop offset="0%" stop-color="#10B981" stop-opacity="0.24" />
+      <stop offset="100%" stop-color="#10B981" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="of-ring" x1="128" y1="384" x2="368" y2="144" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#6366F1" />
+      <stop offset="55%" stop-color="#A5B4FC" />
+      <stop offset="100%" stop-color="#EEF2FF" />
+    </linearGradient>
+    <linearGradient id="of-arrow" x1="202" y1="310" x2="366" y2="146" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#34D399" />
+      <stop offset="46%" stop-color="#C7D2FE" />
+      <stop offset="100%" stop-color="#FFFFFF" />
+    </linearGradient>
+    <clipPath id="of-squircle">
+      <rect x="24" y="24" width="464" height="464" rx="112" />
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#of-squircle)">
+    <!-- Deep obsidian-indigo base with dual directional sheen -->
+    <rect x="24" y="24" width="464" height="464" fill="url(#of-bg)" />
+    <rect x="24" y="24" width="464" height="464" fill="url(#of-glow-tl)" />
+    <rect x="24" y="24" width="464" height="464" fill="url(#of-glow-br)" />
+
+    <!-- Subtle inner precision guide ring -->
+    <circle cx="256" cy="256" r="184" stroke="#FFFFFF" stroke-opacity="0.055" stroke-width="2" />
+
+    <!-- Geometric 'O' arc (wide clean top-right aperture for optical breathing room) -->
+    <path
+      d="M 368 290 A 116 116 0 1 1 222 144"
+      stroke="url(#of-ring)"
+      stroke-width="40"
+      stroke-linecap="round"
+    />
+
+    <!-- Ascending 45 deg Flow Arrow breaking cleanly through the upper-right opening -->
+    <path
+      d="M 222 290 L 354 158"
+      stroke="url(#of-arrow)"
+      stroke-width="40"
+      stroke-linecap="round"
+    />
+    <path
+      d="M 284 158 H 354 V 228"
+      stroke="#FFFFFF"
+      stroke-width="40"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+
+    <!-- macOS continuous glass edge rim -->
+    <rect x="27" y="27" width="458" height="458" rx="109" stroke="#FFFFFF" stroke-opacity="0.14" stroke-width="6" />
+  </g>
+</svg>

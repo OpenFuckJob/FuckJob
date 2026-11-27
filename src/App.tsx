@@ -1,8 +1,17 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, Badge, Button, ConfigProvider, Spin, Tabs, Tooltip, Typography, theme as antdTheme } from "antd";
-import { BellOutlined, DesktopOutlined, MoonOutlined, RocketOutlined, SunOutlined } from "@ant-design/icons";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Alert, Badge, Button, ConfigProvider, Spin, Tooltip, Typography, theme as antdTheme } from "antd";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
+import {
+  IconBellAlert,
+  IconKanbanFlow,
+  IconMoon,
+  IconSendFlow,
+  IconSliders,
+  IconSun,
+  IconSystemTheme,
+  OfferFlowLogo,
+} from "@/components/icons";
 import { useAppConfig } from "@/hooks/useAppConfig";
 import { mergeUniqueKeywords } from "@/lib/blacklist-presets";
 import { THEME_MODE_LABELS, useThemeMode, type ThemeMode } from "@/lib/theme";
@@ -50,10 +59,10 @@ import { AutoUpdaterModal, UpdaterProvider } from "@/lib/updater";
 
 type AppTabKey = "workspace" | "job-data" | "config";
 
-const tabs: Array<{ key: AppTabKey; label: string }> = [
-  { key: "workspace", label: "自动投递" },
-  { key: "job-data", label: "沟通与进度" },
-  { key: "config", label: "求职设置" },
+const tabs: Array<{ key: AppTabKey; label: string; shortcut: string; icon: ReactNode }> = [
+  { key: "workspace", label: "自动投递", shortcut: "⌘1", icon: <IconSendFlow size={15} /> },
+  { key: "job-data", label: "沟通与进度", shortcut: "⌘2", icon: <IconKanbanFlow size={15} /> },
+  { key: "config", label: "求职设置", shortcut: "⌘3", icon: <IconSliders size={15} /> },
 ];
 
 const updateAt = <T,>(items: T[], index: number, next: Partial<T>) =>
@@ -475,20 +484,18 @@ function MainShell({
 
   const themeIcon =
     themeMode === "dark" ? (
-      <MoonOutlined />
+      <IconMoon size={15} />
     ) : themeMode === "light" ? (
-      <SunOutlined />
+      <IconSun size={15} />
     ) : (
-      <DesktopOutlined />
+      <IconSystemTheme size={15} />
     );
 
   return (
     <main className="app-shell">
       <header className="app-header">
         <div className="app-brand">
-          <div className="app-logo-badge">
-            <RocketOutlined />
-          </div>
+          <OfferFlowLogo size={32} className="app-brand-logo" />
           <div className="app-brand-info">
             <Typography.Title level={5} className="app-title">
               OfferFlow
@@ -496,12 +503,24 @@ function MainShell({
             <span className="app-brand-subtitle">自动投递管家</span>
           </div>
         </div>
-        <Tabs
-          activeKey={activeTab}
-          className="app-tabs"
-          items={tabs}
-          onChange={(k) => void navigate(k as AppTabKey)}
-        />
+        <nav className="of-nav-pill" aria-label="主导航">
+          {tabs.map((item) => {
+            const active = activeTab === item.key;
+            return (
+              <button
+                key={item.key}
+                type="button"
+                aria-current={active ? "page" : undefined}
+                title={`${item.label} (${item.shortcut})`}
+                className={`of-nav-btn${active ? " is-active" : ""}`}
+                onClick={() => void navigate(item.key)}
+              >
+                {item.icon}
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
+        </nav>
         <div className="app-header-actions">
           {headerTaskCounts.active > 0 && (
             <Tooltip title="点击返回「自动投递」查看实时进度">
@@ -531,19 +550,20 @@ function MainShell({
               onClick={() => setReviewDrawerOpen(true)}
             >
               <Badge count={manualReview.records.length} size="small" offset={[2, -2]}>
-                <BellOutlined style={{ fontSize: 14, color: "inherit" }} />
+                <IconBellAlert size={14} />
               </Badge>
               <span>待接手</span>
             </button>
           </Tooltip>
           <Tooltip title={`外观：${THEME_MODE_LABELS[themeMode]}（点击切换）`}>
-            <Button
-              type="text"
-              size="small"
-              icon={themeIcon}
+            <button
+              type="button"
+              className="header-icon-btn"
               aria-label={`切换主题，当前为${THEME_MODE_LABELS[themeMode]}`}
               onClick={onCycleTheme}
-            />
+            >
+              {themeIcon}
+            </button>
           </Tooltip>
         </div>
       </header>
@@ -596,22 +616,22 @@ export default function App() {
         theme={{
           algorithm: isDark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
           token: {
-            colorPrimary: "#1677ff",
+            colorPrimary: isDark ? "#6366f1" : "#4f46e5",
             borderRadius: 10,
             fontFamily:
-              "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif",
+              "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', 'Inter', 'PingFang SC', 'Segoe UI', Roboto, sans-serif",
             ...(isDark
               ? {
-                  colorBgContainer: "#162033",
-                  colorBgElevated: "#1b2740",
-                  colorTextBase: "#f1f5f9",
-                  colorTextSecondary: "#94a3b8",
-                  colorBorder: "#263244",
+                  colorBgContainer: "#11141d",
+                  colorBgElevated: "#181d2b",
+                  colorTextBase: "#f3f5fa",
+                  colorTextSecondary: "#98a4bc",
+                  colorBorder: "rgba(255, 255, 255, 0.09)",
                 }
               : {
                   colorBgContainer: "#ffffff",
-                  colorTextBase: "#0f172a",
-                  colorTextSecondary: "#64748b",
+                  colorTextBase: "#0c111d",
+                  colorTextSecondary: "#5b677f",
                 }),
           },
           components: {
@@ -619,11 +639,11 @@ export default function App() {
               paddingLG: 20,
             },
             Button: {
-              borderRadius: 8,
+              borderRadius: 9,
               fontWeight: 500,
             },
             Tabs: {
-              cardBg: isDark ? "#0f172a" : "#f8fafc",
+              cardBg: isDark ? "#0d1018" : "#f7f8fb",
             },
             Slider: {
               railSize: 6,
@@ -631,10 +651,10 @@ export default function App() {
               handleSizeHover: 14,
               handleLineWidth: 3,
               handleLineWidthHover: 4,
-              railBg: isDark ? "#334155" : "#e2e8f0",
-              railHoverBg: isDark ? "#475569" : "#cbd5e1",
-              trackBg: "#1677ff",
-              trackHoverBg: "#0958d9",
+              railBg: isDark ? "#283044" : "#e2e6f0",
+              railHoverBg: isDark ? "#3b4661" : "#cbd3e3",
+              trackBg: isDark ? "#6366f1" : "#4f46e5",
+              trackHoverBg: isDark ? "#818cf8" : "#4338ca",
             },
           },
         }}
