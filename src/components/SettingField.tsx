@@ -22,21 +22,21 @@ function FieldHeader({ icon, title, description, hint }: FieldHeaderProps) {
   return (
     <div className="flex min-w-0 items-start gap-3">
       {icon && (
-        <span className="mt-px flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-sky-50 text-sky-500 transition-colors group-hover:bg-sky-100">
+        <span className="mt-px flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--of-accent-soft)] text-[var(--of-accent)] transition-colors">
           {icon}
         </span>
       )}
       <div className="min-w-0">
-        <div className="text-sm font-semibold leading-6 text-slate-900">
+        <div className="text-sm font-semibold leading-6 text-[var(--of-text)]">
           {title}
         </div>
         {description && (
-          <div className="mt-0.5 text-xs leading-relaxed text-slate-500">
+          <div className="mt-0.5 text-xs leading-relaxed text-[var(--of-text-secondary)]">
             {description}
           </div>
         )}
         {hint && (
-          <div className="mt-1 text-xs leading-relaxed text-amber-600">
+          <div className="mt-1 text-xs leading-relaxed text-amber-500">
             {hint}
           </div>
         )}
@@ -55,7 +55,7 @@ export function SettingGroup({
 }) {
   return (
     <div
-      className={`divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-200/80 bg-white ${className}`}
+      className={`divide-y divide-[var(--of-border)] overflow-hidden rounded-xl border border-[var(--of-border)] bg-[var(--of-surface)] ${className}`}
     >
       {children}
     </div>
@@ -101,7 +101,7 @@ export function SettingToggle({
   children,
 }: SettingToggleProps) {
   return (
-    <div className="group px-4 py-3.5 transition-colors hover:bg-slate-50/60">
+    <div className="group px-4 py-3.5 transition-colors hover:bg-[var(--of-surface-hover)]">
       <div className="flex items-center justify-between gap-6">
         <FieldHeader
           icon={icon}
@@ -177,7 +177,7 @@ export function SettingSlider({
 
   return (
     // 按行自身的宽度决定横排还是堆叠：设置面板嵌在侧边栏右侧，视口断点量不准它
-    <div className="group @container px-4 py-3.5 transition-colors hover:bg-slate-50/60">
+    <div className="group @container px-4 py-3.5 transition-colors hover:bg-[var(--of-surface-hover)]">
       <div className="flex flex-col gap-3 @2xl:flex-row @2xl:items-center @2xl:gap-6">
         <div
           className={`@2xl:w-[46%] @2xl:max-w-lg @2xl:shrink-0 ${inset ? "sm:pl-11" : ""}`}
@@ -228,7 +228,7 @@ export function SettingSlider({
               }}
             />
             <span
-              className={`truncate text-xs ${label ? "font-medium text-sky-600" : "text-slate-400"}`}
+              className={`truncate text-xs ${label ? "font-medium text-[var(--of-accent)]" : "text-[var(--of-text-subtle)]"}`}
             >
               {label ?? unit}
             </span>

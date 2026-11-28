@@ -100,6 +100,26 @@ describe("PeriodicDeliverySection 字段", () => {
       ],
     });
   });
+
+  it("选满 24 小时时关闭时段限制并保留全天窗口，避免清空网格", () => {
+    const onChange = vi.fn();
+    render(
+      <PeriodicDeliverySection
+        config={config({
+          window_enabled: true,
+          windows: [{ start_minute: 0, end_minute: 23 * 60 }],
+        })}
+        onChange={onChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText("投递时段 23:00 至 24:00"));
+
+    expect(onChange).toHaveBeenCalledWith({
+      window_enabled: false,
+      windows: [{ start_minute: 0, end_minute: 1440 }],
+    });
+  });
 });
 
 describe("PeriodicDeliverySection 形态", () => {

@@ -76,10 +76,10 @@ export default function NotificationSection({ config, onChange }: Props) {
   };
 
   return (
-    <div className="space-y-4 rounded-2xl border border-slate-200/80 bg-white/85 p-6">
+    <div className="space-y-4 rounded-2xl border border-[var(--of-border)] bg-[var(--of-surface)] p-6">
       <div>
-        <Text className="block font-bold text-slate-900">实时消息提醒（可选 Webhook）</Text>
-        <Text className="text-xs text-slate-500">
+        <Text className="block font-bold text-[var(--of-text)]">实时消息提醒（可选 Webhook）</Text>
+        <Text className="text-xs text-[var(--of-text-secondary)]">
           挂机投递时不必守在电脑前：遇到待人工接手、风控滑块中断或 HR 回复，直接推送到飞书 / 企业微信 / 钉钉 / Bark。默认完全关闭。
         </Text>
       </div>
@@ -96,21 +96,27 @@ export default function NotificationSection({ config, onChange }: Props) {
             <div className="space-y-4 pt-1">
               <div className="grid grid-cols-1 gap-3 md:grid-cols-[220px_minmax(0,1fr)]">
                 <div>
-                  <Text className="mb-1 block text-xs font-medium text-slate-600">推送渠道</Text>
+                  <Text className="mb-1 block text-xs font-medium text-[var(--of-text-secondary)]">推送渠道</Text>
                   <Select<NotificationProvider>
                     className="w-full"
                     value={config.provider}
                     options={PROVIDER_OPTIONS.map(({ value, label }) => ({ value, label }))}
-                    onChange={(provider) => onChange({ provider })}
+                    onChange={(provider) => {
+                      setTestResult(null);
+                      onChange({ provider });
+                    }}
                   />
                 </div>
                 <div>
-                  <Text className="mb-1 block text-xs font-medium text-slate-600">Webhook 地址</Text>
+                  <Text className="mb-1 block text-xs font-medium text-[var(--of-text-secondary)]">Webhook 地址</Text>
                   <Space.Compact className="w-full">
                     <Input
                       value={config.webhook_url}
                       placeholder={currentProvider.placeholder}
-                      onChange={(event) => onChange({ webhook_url: event.target.value })}
+                      onChange={(event) => {
+                        setTestResult(null);
+                        onChange({ webhook_url: event.target.value });
+                      }}
                     />
                     <Button
                       icon={<SendOutlined />}
@@ -124,8 +130,15 @@ export default function NotificationSection({ config, onChange }: Props) {
                 </div>
               </div>
 
+              {config.provider === "dingtalk" && (
+                <Text type="secondary" className="block text-xs">
+                  提示：钉钉机器人若开启「自定义关键词」安全设置，请添加关键词{" "}
+                  <Text code>OfferFlow</Text>（推送消息默认包含该词）。
+                </Text>
+              )}
+
               <div>
-                <Text className="mb-2 block text-xs font-medium text-slate-600">触发事件</Text>
+                <Text className="mb-2 block text-xs font-medium text-[var(--of-text-secondary)]">触发事件</Text>
                 <Space wrap size={16}>
                   <Checkbox
                     checked={config.notify_manual_review}

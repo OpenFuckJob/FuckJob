@@ -65,7 +65,7 @@ export default function HourGrid({ value, onChange, disabled, label = "投递时
               aria-pressed={on}
               aria-label={`${label} ${String(hour).padStart(2, "0")}:00 至 ${String(hour + 1).padStart(2, "0")}:00`}
               className={`h-7 rounded-[3px] transition-colors ${
-                on ? "bg-sky-500 hover:bg-sky-600" : "bg-slate-200 hover:bg-slate-300"
+                on ? "bg-sky-500 hover:bg-sky-600" : "of-hour-cell-off bg-slate-200 hover:bg-slate-300"
               } ${disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer"}`}
               onMouseDown={() => {
                 if (disabled) return;

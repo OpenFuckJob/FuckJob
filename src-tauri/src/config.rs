@@ -158,31 +158,51 @@ fn is_invalid_user_data_dir(value: &str) -> bool {
     trimmed.is_empty() || trimmed == "null" || trimmed == "None"
 }
 
-fn ensure_browser_user_data_dir(
+fn is_foreign_os_path(value: &str) -> bool {
+    let trimmed = value.trim();
+    if cfg!(target_os = "windows") {
+        trimmed.starts_with('/')
+    } else {
+        let bytes = trimmed.as_bytes();
+        (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+            || trimmed.starts_with("\\\\")
+    }
+}
+
+pub(crate) fn ensure_browser_user_data_dir(
     app_handle: &tauri::AppHandle,
     config: &mut AppRuntimeConfig,
 ) -> Result<(), AppError> {
-    if is_invalid_user_data_dir(&config.browser_config.user_data_dir) {
+    let dir = config.browser_config.user_data_dir.trim();
+    let unusable = is_invalid_user_data_dir(dir)
+        || is_foreign_os_path(dir)
+        || (!Path::new(dir).exists() && fs::create_dir_all(dir).is_err());
+    if unusable {
         config.browser_config.user_data_dir = default_browser_user_data_dir(app_handle)?;
     }
     Ok(())
 }
 
-fn ensure_browser_exe_path(config: &mut AppRuntimeConfig) {
-    let has_explicit_path = config
+pub(crate) fn ensure_browser_exe_path(config: &mut AppRuntimeConfig) {
+    let explicit_path = config
         .browser_config
         .chrome_exe_path
-        .as_ref()
-        .is_some_and(|p| !p.trim().is_empty() && p.trim() != "null" && p.trim() != "None");
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && *p != "null" && *p != "None");
 
-    if !has_explicit_path {
-        if let Some((_name, path)) = crate::browser::detect_browser_path() {
-            config.browser_config.chrome_exe_path = Some(path.to_string_lossy().to_string());
-        }
+    let needs_repair = match explicit_path {
+        None => true,
+        Some(path) => is_foreign_os_path(path) || !Path::new(path).exists(),
+    };
+
+    if needs_repair {
+        config.browser_config.chrome_exe_path = crate::browser::detect_browser_path()
+            .map(|(_name, path)| path.to_string_lossy().to_string());
     }
 }
 
-fn load_default_config_from_yaml() -> AppRuntimeConfig {
+pub(crate) fn load_default_config_from_yaml() -> AppRuntimeConfig {
     parse_config_content(DEFAULT_CONFIG_YAML).unwrap_or_else(|_| default_app_config())
 }
 
@@ -597,6 +617,7 @@ pub fn import_app_config_inner(
 ) -> Result<AppRuntimeConfig, AppError> {
     let mut config = read_config_file(Path::new(path))?;
     ensure_browser_user_data_dir(&app_handle, &mut config)?;
+    ensure_browser_exe_path(&mut config);
     save_app_config_inner(app_handle, config)
 }
 
@@ -1634,7 +1655,7 @@ impl PeriodicDeliveryConfig {
         }
         self.window_start_minute = None;
         self.window_end_minute = None;
-        if self.windows.is_empty() {
+        if self.window_enabled && self.windows.is_empty() {
             self.windows = default_delivery_windows();
         }
     }
@@ -2438,6 +2459,7 @@ browser_config:
     #[test]
     fn an_empty_window_list_falls_back_to_the_default_window() {
         let mut config = default_app_config();
+        config.periodic_delivery_config.window_enabled = true;
         config.periodic_delivery_config.windows = Vec::new();
 
         validate_and_normalize(&mut config).unwrap();
@@ -2446,6 +2468,18 @@ browser_config:
             config.periodic_delivery_config.windows,
             default_delivery_windows()
         );
+    }
+
+    /// 关闭时段限制（全天可投）时保留空列表，避免保存时被悄悄填回 9-18
+    #[test]
+    fn empty_window_list_is_preserved_when_window_disabled() {
+        let mut config = default_app_config();
+        config.periodic_delivery_config.window_enabled = false;
+        config.periodic_delivery_config.windows = Vec::new();
+
+        validate_and_normalize(&mut config).unwrap();
+
+        assert!(config.periodic_delivery_config.windows.is_empty());
     }
 
     /// 单轮上限的默认值不是随便填的：它是「一直在投递、回复轮不上」的正解。

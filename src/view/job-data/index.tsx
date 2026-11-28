@@ -113,18 +113,22 @@ const formatLatestMessageTime = (time: number): string =>
   });
 
 const renderLatestMessage = (job: JobListItem) => {
-  if (!job.latest_message?.trim() || !job.latest_message_at) {
+  if (!job.latest_message?.trim()) {
     return "-";
   }
 
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-      <Tag color={job.latest_message_received ? "green" : "blue"} style={{ margin: 0 }}>
-        {job.latest_message_received ? "招聘方" : "我"}
-      </Tag>
-      <Typography.Text type="secondary" style={{ flex: "0 0 auto", fontSize: 12 }}>
-        {formatLatestMessageTime(job.latest_message_at)}
-      </Typography.Text>
+      {typeof job.latest_message_received === "boolean" && (
+        <Tag color={job.latest_message_received ? "green" : "blue"} style={{ margin: 0 }}>
+          {job.latest_message_received ? "招聘方" : "我"}
+        </Tag>
+      )}
+      {job.latest_message_at != null && (
+        <Typography.Text type="secondary" style={{ flex: "0 0 auto", fontSize: 12 }}>
+          {formatLatestMessageTime(job.latest_message_at)}
+        </Typography.Text>
+      )}
       <Typography.Text ellipsis title={job.latest_message} style={{ minWidth: 0, flex: 1 }}>
         {job.latest_message}
       </Typography.Text>
@@ -325,10 +329,14 @@ function JobKanbanCard({
 
       {job.latest_message?.trim() && (
         <div
-          className={`job-card-preview${job.latest_message_received ? " is-received" : ""}`}
+          className={`job-card-preview${job.latest_message_received === true ? " is-received" : ""}`}
           title={job.latest_message}
         >
-          {job.latest_message_received ? "HR：" : "我："}
+          {typeof job.latest_message_received === "boolean"
+            ? job.latest_message_received
+              ? "HR："
+              : "我："
+            : ""}
           {job.latest_message}
         </div>
       )}
@@ -534,7 +542,9 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
   /** 高匹配的判定分数线，与求职方案的岗位分析配置一致 */
   highMatchScore?: number;
   /** 一键将公司名追加到当前求职方案的排除公司列表 */
-  onBlacklistCompany?: (companyName: string) => void;
+  onBlacklistCompany?: (
+    companyName: string,
+  ) => void | boolean | { ok: boolean; warning?: string };
 }) => {
   const [jobs, setJobs] = useState<JobListItem[]>([]);
   // 初始即为加载中，避免首次挂载时把待跳转的岗位当成「不存在」
@@ -623,6 +633,11 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
         b.created_at.localeCompare(a.created_at),
       );
       setJobs(sorted);
+      const validIds = new Set(sorted.map((job) => job.id));
+      setSelectedJobIds((prev) => {
+        const next = prev.filter((key) => validIds.has(String(key)));
+        return next.length === prev.length ? prev : next;
+      });
       setCurrentJob(current => current ? sorted.find(job => job.id === current.id) ?? current : null);
     } catch (error: unknown) {
       if (request !== jobsRequest.current) return;
@@ -680,6 +695,7 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
           return;
         }
         messageApi.success("删除成功");
+        setSelectedJobIds((prev) => prev.filter((key) => String(key) !== id));
         void loadJobs();
       } catch (error: unknown) {
         messageApi.error(
@@ -744,12 +760,78 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
     [messageApi],
   );
 
+  const normalizedKeyword = keyword.trim().toLowerCase();
+  const actionableCount = useMemo(
+    () => jobs.filter((job) => ACTIONABLE_STAGES.has(resolveEffectiveStage(job))).length,
+    [jobs],
+  );
+  const waitingCount = useMemo(
+    () =>
+      jobs.filter((job) => {
+        const s = resolveEffectiveStage(job);
+        return s === "pending" || s === "applied";
+      }).length,
+    [jobs],
+  );
+
+  const filteredJobs = useMemo(
+    () =>
+      jobs.filter((job) => {
+        const effectiveStage = resolveEffectiveStage(job);
+        if (focusFilter === "actionable" && !ACTIONABLE_STAGES.has(effectiveStage)) {
+          return false;
+        }
+        if (focusFilter === "waiting" && effectiveStage !== "pending" && effectiveStage !== "applied") {
+          return false;
+        }
+        const analysis = analyses[job.id];
+        const matchesAnalysis =
+          analysisFilter === "analyzed"
+            ? !!analysis
+            : analysisFilter === "not_analyzed"
+              ? !analysis
+              : analysisFilter === "high_match"
+                ? !!analysis && !analysis.parse_error && analysis.match_score >= highMatchScore
+                : true;
+        return (
+          (!normalizedKeyword ||
+            job.title.toLowerCase().includes(normalizedKeyword) ||
+            job.company_name.toLowerCase().includes(normalizedKeyword) ||
+            (job.notes ?? "").toLowerCase().includes(normalizedKeyword)) &&
+          (platformFilter === "all" || getJobPlatform(job) === platformFilter) &&
+          (stageFilter === "all" || effectiveStage === stageFilter) &&
+          (communicationStatusFilter === "all" ||
+            job.communication_status === communicationStatusFilter) &&
+          matchesAnalysis
+        );
+      }),
+    [
+      analyses,
+      analysisFilter,
+      communicationStatusFilter,
+      focusFilter,
+      highMatchScore,
+      jobs,
+      normalizedKeyword,
+      platformFilter,
+      stageFilter,
+    ],
+  );
+
   const handleExport = useCallback(
-    async (format: "csv" | "markdown", scope: "selected" | "filtered") => {
-      const targetIds =
-        scope === "selected" && selectedJobIds.length > 0
-          ? selectedJobIds.map(String)
-          : undefined;
+    async (format: "csv" | "markdown", scope: "selected" | "filtered" | "all") => {
+      let targetIds: string[] | undefined;
+      if (scope === "selected" && selectedJobIds.length > 0) {
+        targetIds = selectedJobIds.map(String);
+      } else if (scope === "filtered") {
+        if (filteredJobs.length === 0) {
+          messageApi.warning("当前筛选条件下没有可导出的岗位");
+          return;
+        }
+        if (filteredJobs.length < jobs.length) {
+          targetIds = filteredJobs.map((job) => job.id);
+        }
+      }
       const now = new Date();
       const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
       const ext = format === "csv" ? "csv" : "md";
@@ -781,7 +863,7 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
         setExporting(false);
       }
     },
-    [messageApi, selectedJobIds],
+    [filteredJobs, jobs.length, messageApi, selectedJobIds],
   );
 
 
@@ -824,55 +906,9 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
     }
   }, [aiConfigured, loadAnalyses, loadJobs, messageApi, onConfigureAi, selectedJobIds]);
 
-  const normalizedKeyword = keyword.trim().toLowerCase();
-  const matchesAnalysisFilter = (job: JobListItem) => {
-    const analysis = analyses[job.id];
-    switch (analysisFilter) {
-      case "analyzed":
-        return !!analysis;
-      case "not_analyzed":
-        return !analysis;
-      case "high_match":
-        return !!analysis && !analysis.parse_error && analysis.match_score >= highMatchScore;
-      default:
-        return true;
-    }
-  };
-  const actionableCount = useMemo(
-    () => jobs.filter((job) => ACTIONABLE_STAGES.has(resolveEffectiveStage(job))).length,
-    [jobs],
-  );
-  const waitingCount = useMemo(
-    () =>
-      jobs.filter((job) => {
-        const s = resolveEffectiveStage(job);
-        return s === "pending" || s === "applied";
-      }).length,
-    [jobs],
-  );
-
-  const filteredJobs = jobs.filter(
-    (job) => {
-      const effectiveStage = resolveEffectiveStage(job);
-      if (focusFilter === "actionable" && !ACTIONABLE_STAGES.has(effectiveStage)) {
-        return false;
-      }
-      if (focusFilter === "waiting" && effectiveStage !== "pending" && effectiveStage !== "applied") {
-        return false;
-      }
-      return (
-        (!normalizedKeyword ||
-          job.title.toLowerCase().includes(normalizedKeyword) ||
-          job.company_name.toLowerCase().includes(normalizedKeyword) ||
-          (job.notes ?? "").toLowerCase().includes(normalizedKeyword)) &&
-        (platformFilter === "all" || getJobPlatform(job) === platformFilter) &&
-        (stageFilter === "all" || effectiveStage === stageFilter) &&
-        (communicationStatusFilter === "all" ||
-          job.communication_status === communicationStatusFilter) &&
-        matchesAnalysisFilter(job)
-      );
-    },
-  );
+  const defaultSyncPlatform: "boss" | "liepin" =
+    platformFilter === "liepin" ? "liepin" : "boss";
+  const isFilteredNarrowed = filteredJobs.length < jobs.length;
 
   /* ── table columns ── */
   const columns: ColumnsType<JobListItem> = [
@@ -1016,8 +1052,16 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
                         icon: <StopOutlined />,
                         label: `拉黑「${record.company_name}」`,
                         onClick: () => {
-                          onBlacklistCompany(record.company_name);
-                          messageApi.success(`已将「${record.company_name}」加入公司黑名单`);
+                          const result = onBlacklistCompany(record.company_name);
+                          if (result === false) {
+                            messageApi.warning(
+                              "当前配置存在错误，暂无法自动保存公司黑名单，请先前往「求职设置」修正",
+                            );
+                          } else if (result && typeof result === "object" && !result.ok) {
+                            if (result.warning) messageApi.warning(result.warning);
+                          } else {
+                            messageApi.success(`已将「${record.company_name}」加入公司黑名单`);
+                          }
                         },
                       },
                     ]
@@ -1168,7 +1212,7 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
             type="primary"
             loading={syncing}
             icon={<DownOutlined />}
-            onClick={() => void handleSyncStatus("boss")}
+            onClick={() => void handleSyncStatus(defaultSyncPlatform)}
             menu={{
               items: [
                 {
@@ -1191,7 +1235,13 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
           >
             <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
               <IconRefreshSync size={13} spinning={syncing} />
-              <span>{syncing ? "同步中…" : "同步状态"}</span>
+              <span>
+                {syncing
+                  ? "同步中…"
+                  : defaultSyncPlatform === "liepin"
+                    ? "同步猎聘状态"
+                    : "同步状态"}
+              </span>
             </span>
           </Dropdown.Button>
           {(() => {
@@ -1209,29 +1259,67 @@ const JobDataPage = ({ aiConfigured, llmConfigured, onConfigureAi, focusJobId, o
           <Dropdown
             trigger={["click"]}
             menu={{
-              items: [
-                {
-                  key: "csv-all",
-                  label:
-                    selectedJobIds.length > 0
-                      ? `导出已选 ${selectedJobIds.length} 条为 CSV (Excel)`
-                      : "导出全部为 CSV (Excel 兼容)",
-                  onClick: () =>
-                    void handleExport("csv", selectedJobIds.length > 0 ? "selected" : "filtered"),
-                },
-                {
-                  key: "md-all",
-                  label:
-                    selectedJobIds.length > 0
-                      ? `导出已选 ${selectedJobIds.length} 条为 Markdown (Obsidian/Notion)`
-                      : "导出全部为 Markdown (Obsidian/Notion)",
-                  onClick: () =>
-                    void handleExport(
-                      "markdown",
-                      selectedJobIds.length > 0 ? "selected" : "filtered",
-                    ),
-                },
-              ],
+              items:
+                selectedJobIds.length > 0
+                  ? [
+                      {
+                        key: "csv-selected",
+                        label: `导出已选 ${selectedJobIds.length} 条为 CSV (Excel)`,
+                        onClick: () => void handleExport("csv", "selected"),
+                      },
+                      {
+                        key: "md-selected",
+                        label: `导出已选 ${selectedJobIds.length} 条为 Markdown (Obsidian/Notion)`,
+                        onClick: () => void handleExport("markdown", "selected"),
+                      },
+                      { type: "divider" as const },
+                      {
+                        key: "csv-all",
+                        label: "导出全部为 CSV (Excel 兼容)",
+                        onClick: () => void handleExport("csv", "all"),
+                      },
+                      {
+                        key: "md-all",
+                        label: "导出全部为 Markdown (Obsidian/Notion)",
+                        onClick: () => void handleExport("markdown", "all"),
+                      },
+                    ]
+                  : isFilteredNarrowed
+                    ? [
+                        {
+                          key: "csv-filtered",
+                          label: `导出当前筛选 ${filteredJobs.length} 条为 CSV (Excel)`,
+                          onClick: () => void handleExport("csv", "filtered"),
+                        },
+                        {
+                          key: "md-filtered",
+                          label: `导出当前筛选 ${filteredJobs.length} 条为 Markdown (Obsidian/Notion)`,
+                          onClick: () => void handleExport("markdown", "filtered"),
+                        },
+                        { type: "divider" as const },
+                        {
+                          key: "csv-all",
+                          label: "导出全部为 CSV (Excel 兼容)",
+                          onClick: () => void handleExport("csv", "all"),
+                        },
+                        {
+                          key: "md-all",
+                          label: "导出全部为 Markdown (Obsidian/Notion)",
+                          onClick: () => void handleExport("markdown", "all"),
+                        },
+                      ]
+                    : [
+                        {
+                          key: "csv-all",
+                          label: "导出全部为 CSV (Excel 兼容)",
+                          onClick: () => void handleExport("csv", "filtered"),
+                        },
+                        {
+                          key: "md-all",
+                          label: "导出全部为 Markdown (Obsidian/Notion)",
+                          onClick: () => void handleExport("markdown", "filtered"),
+                        },
+                      ],
             }}
           >
             <Button size="small" icon={<DownloadOutlined />} loading={exporting}>

@@ -69,7 +69,10 @@ export interface BasicSettingsViewProps {
   updateResume: (next: Partial<ResumeConfig>) => void;
   updateGreet: (next: Partial<GreetConfig>) => void;
   updateGreetDefaultResource: (index: number, next: Partial<GreetResource>) => void;
-  addGreetDefaultResource: (resourceType?: GreetResource["resource_type"]) => void;
+  addGreetDefaultResource: (
+    resourceType?: GreetResource["resource_type"],
+    content?: string,
+  ) => void;
   updateReplay: (next: Partial<ReplayConfig>) => void;
   updatePeriodicDelivery: (next: Partial<PeriodicDeliveryConfig>) => void;
   updateHumanize: (next: Partial<HumanizeConfig>) => void;
@@ -119,8 +122,39 @@ export function BasicSettingsView({
     if (firstTextIndex >= 0) {
       updateGreetDefaultResource(firstTextIndex, { content: text, enabled: true });
     } else {
-      addGreetDefaultResource("Text");
+      addGreetDefaultResource("Text", text);
     }
+  };
+
+  const handleGreetModeChange = (mode: "static" | "llm") => {
+    if (mode === "llm") {
+      const hasLlm = greet.default_template.some((item) => item.resource_type === "LLM");
+      const nextTemplate: GreetResource[] = greet.default_template.map((item) => {
+        if (item.resource_type === "LLM") return { ...item, enabled: true };
+        if (item.resource_type === "Text") return { ...item, enabled: false };
+        return item;
+      });
+      if (!hasLlm) {
+        nextTemplate.push({ resource_type: "LLM", content: "", enabled: true });
+      }
+      updateGreet({ enable_llm: true, default_template: nextTemplate });
+      return;
+    }
+
+    const hasText = greet.default_template.some((item) => item.resource_type === "Text");
+    let enabledFirstText = false;
+    const nextTemplate: GreetResource[] = greet.default_template.map((item) => {
+      if (item.resource_type === "LLM") return { ...item, enabled: false };
+      if (item.resource_type === "Text" && !enabledFirstText) {
+        enabledFirstText = true;
+        return { ...item, enabled: true };
+      }
+      return item;
+    });
+    if (!hasText) {
+      nextTemplate.push({ resource_type: "Text", content: "", enabled: true });
+    }
+    updateGreet({ enable_llm: false, default_template: nextTemplate });
   };
 
   const handleApplySafetyPreset = (presetId: SafetyPresetId) => {
@@ -252,10 +286,24 @@ export function BasicSettingsView({
               onChange={(exclude_keywords) => updateJobFilter({ exclude_keywords })}
             />
           </Col>
+          <Col xs={24}>
+            <Text strong className="mb-1.5 block text-xs">
+              屏蔽公司关键词（命中即跳过）
+            </Text>
+            <Select
+              mode="tags"
+              style={{ width: "100%" }}
+              placeholder="输入公司名后回车，例如：软通动力、中软国际"
+              value={filter.company_exclude_keywords}
+              onChange={(company_exclude_keywords) =>
+                updateJobFilter({ company_exclude_keywords })
+              }
+            />
+          </Col>
         </Row>
 
-        <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-slate-200/80 bg-slate-50/70 px-3.5 py-2.5">
-          <span className="flex items-center gap-1.5 text-xs font-semibold text-slate-600">
+        <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-[var(--of-border)] bg-[var(--of-surface-subtle)] px-3.5 py-2.5">
+          <span className="flex items-center gap-1.5 text-xs font-semibold text-[var(--of-text-secondary)]">
             <IconFilterSlash size={14} className="text-rose-500" />
             一键屏蔽水岗：
           </span>
@@ -304,7 +352,7 @@ export function BasicSettingsView({
         </div>
 
         <Space direction="vertical" size={16} style={{ width: "100%" }}>
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200/80 bg-slate-50/70 px-4 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--of-border)] bg-[var(--of-surface-subtle)] px-4 py-3">
             <div className="flex items-center gap-3">
               <FilePdfOutlined className="text-xl text-rose-500" />
               <div>
@@ -356,7 +404,7 @@ export function BasicSettingsView({
                   { value: "static", label: "固定开场白（免 AI）" },
                   { value: "llm", label: "AI 结合简历定制" },
                 ]}
-                onChange={(mode) => updateGreet({ enable_llm: mode === "llm" })}
+                onChange={handleGreetModeChange}
               />
               {greet.enable_llm ? (
                 <Text type="secondary" className="mt-2 block text-xs">
@@ -391,7 +439,7 @@ export function BasicSettingsView({
                   { value: "off", label: "关闭自动回复（仅同步消息）" },
                 ]}
               />
-              <div className="mt-3 flex items-center justify-between rounded-lg border border-slate-200/80 px-3 py-2">
+              <div className="mt-3 flex items-center justify-between rounded-lg border border-[var(--of-border)] px-3 py-2">
                 <div>
                   <Text className="block text-xs font-medium">HR 要简历时自动发送附件</Text>
                   <Text type="secondary" className="text-[11px]">
@@ -520,7 +568,7 @@ export function BasicSettingsView({
       </Card>
 
       {/* Subtle footer shortcut into Advanced Settings */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dashed border-slate-300/80 px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dashed border-[var(--of-border-strong)] px-4 py-3">
         <Text type="secondary" className="text-xs">
           需要多求职方案、正则表达式、自定义 Prompt、浏览器路径、Webhook 通知或数据备份？
         </Text>

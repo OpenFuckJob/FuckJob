@@ -56,9 +56,50 @@ pub fn find_by_platform_job_id(platform: &str, id: &str) -> Result<Option<JobDet
 
 pub fn create(mut job: JobDetail) -> Result<()> {
     fill_source_url(&mut job);
-    store().insert(job)?;
-    super::notify_job_data_changed();
+    let inserted = store().transaction(|jobs| {
+        let added = insert_if_absent(jobs, job);
+        Ok((added, added))
+    })?;
+    if inserted {
+        super::notify_job_data_changed();
+    }
     Ok(())
+}
+
+fn insert_if_absent(jobs: &mut Vec<JobDetail>, job: JobDetail) -> bool {
+    if jobs.iter().any(|existing| existing.id == job.id) {
+        return false;
+    }
+    jobs.push(job);
+    true
+}
+
+pub fn patch_by_id<F>(id: &str, mut patch: F) -> Result<Option<JobDetail>>
+where
+    F: FnMut(&mut JobDetail) -> bool,
+{
+    let (patched, changed) = store().transaction(|jobs| {
+        let (result, modified) = patch_in_slice(jobs, id, &mut patch);
+        Ok(((result, modified), modified))
+    })?;
+    if changed {
+        super::notify_job_data_changed();
+    }
+    Ok(patched)
+}
+
+fn patch_in_slice<F>(jobs: &mut [JobDetail], id: &str, patch: &mut F) -> (Option<JobDetail>, bool)
+where
+    F: FnMut(&mut JobDetail) -> bool,
+{
+    let Some(job) = jobs.iter_mut().find(|job| job.id == id) else {
+        return (None, false);
+    };
+    let modified = patch(job);
+    if modified {
+        fill_source_url(job);
+    }
+    (Some(job.clone()), modified)
 }
 
 pub fn update(id: &str, mut job: JobDetail) -> Result<bool> {
@@ -230,5 +271,41 @@ mod tests {
         let mut manual=job("manual-unknown-position", "boss");
         fill_source_url(&mut manual);
         assert!(manual.source_url.is_none());
+    }
+
+    #[test]
+    fn insert_if_absent_prevents_duplicate_job_ids() {
+        let mut jobs = vec![job("boss-1", "boss")];
+        assert!(!insert_if_absent(&mut jobs, job("boss-1", "boss")));
+        assert_eq!(jobs.len(), 1);
+        assert!(insert_if_absent(&mut jobs, job("boss-2", "boss")));
+        assert_eq!(jobs.len(), 2);
+    }
+
+    #[test]
+    fn patch_in_slice_updates_only_targeted_fields_and_preserves_user_crm_edits() {
+        let mut item = job("boss-1", "boss");
+        item.pipeline_stage = Some(crate::dao::model::JobPipelineStage::InterviewScheduled);
+        item.notes = Some("二面准备系统设计".into());
+        item.interview_at = Some("2026-12-01 14:00".into());
+        let mut jobs = vec![item];
+
+        let (patched, changed) = patch_in_slice(&mut jobs, "boss-1", &mut |job| {
+            job.is_reply = true;
+            true
+        });
+        assert!(changed);
+        let patched = patched.unwrap();
+        assert!(patched.is_reply);
+        assert_eq!(
+            patched.pipeline_stage,
+            Some(crate::dao::model::JobPipelineStage::InterviewScheduled)
+        );
+        assert_eq!(patched.notes.as_deref(), Some("二面准备系统设计"));
+        assert_eq!(patched.interview_at.as_deref(), Some("2026-12-01 14:00"));
+
+        let (missing, missing_changed) = patch_in_slice(&mut jobs, "nope", &mut |_| true);
+        assert!(missing.is_none());
+        assert!(!missing_changed);
     }
 }

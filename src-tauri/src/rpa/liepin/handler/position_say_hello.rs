@@ -74,8 +74,7 @@ pub async fn position_say_hello_on_page(
     page.get(&search_url)?;
     sleep_random_ms(1200, 2000);
     if liepin_security_challenge_present(page)? {
-        logger::warning("猎聘出现安全验证，已停止本轮并保留验证页面；完成验证后请手动恢复任务")?;
-        return Ok(());
+        return Err(report_liepin_security_challenge());
     }
     apply_liepin_filters(page, &config)?;
     sleep_random_ms(1200, 1800);
@@ -85,18 +84,24 @@ pub async fn position_say_hello_on_page(
             logger::info("猎聘求职任务已结束")?;
             return Ok(());
         }
-        if let Some(reason) = budget_stop_reason(
+        if let Some((verdict, reason)) = budget_stop_reason(
             &budget,
             round_greeted,
             round_started,
             consecutive_greet_failures,
         ) {
             logger::info(reason)?;
+            if verdict == BudgetVerdict::FailureLimit {
+                crate::notification::notify_current(
+                    crate::notification::NotificationEvent::RiskAlert,
+                    "猎聘求职任务连续打招呼失败熔断",
+                    reason,
+                );
+            }
             return Ok(());
         }
         if liepin_security_challenge_present(page)? {
-            logger::warning("猎聘出现安全验证，已停止本轮并保留验证页面；完成验证后请手动恢复任务")?;
-            return Ok(());
+            return Err(report_liepin_security_challenge());
         }
 
         let jobs = collect_jobs(page)?;
@@ -113,7 +118,7 @@ pub async fn position_say_hello_on_page(
                 logger::info("猎聘求职任务已结束")?;
                 return Ok(());
             }
-            if let Some(reason) = budget_stop_reason(
+            if let Some((verdict, reason)) = budget_stop_reason(
                 &budget,
                 round_greeted,
                 round_started,
@@ -121,6 +126,13 @@ pub async fn position_say_hello_on_page(
             ) {
                 logger::info(stats.summary())?;
                 logger::info(reason)?;
+                if verdict == BudgetVerdict::FailureLimit {
+                    crate::notification::notify_current(
+                        crate::notification::NotificationEvent::RiskAlert,
+                        "猎聘求职任务连续打招呼失败熔断",
+                        reason,
+                    );
+                }
                 return Ok(());
             }
 
@@ -140,8 +152,13 @@ pub async fn position_say_hello_on_page(
             seen_job_ids.insert(job.platform_job_id.clone());
             found_new_job = true;
 
-            let filter_decision = verify::filter_decision(&job, &config);
-            if !filter_decision.matched {
+            let pre_decision = verify::pre_filter_decision(
+                &job.title,
+                &job.company_name,
+                &job.salary,
+                &config.job_filter_config,
+            );
+            if !pre_decision.matched {
                 stats.skipped_rule += 1;
                 processed_job_ids.insert(db_id.clone());
                 let _ = crate::dao::processed_job_dao::record(&db_id);
@@ -190,6 +207,14 @@ pub async fn position_say_hello_on_page(
                     }
                     false
                 }
+                Ok(GreetOutcome::RuleRejected) => {
+                    stats.skipped_rule += 1;
+                    consecutive_greet_failures = 0;
+                    consecutive_detail_failures = 0;
+                    processed_job_ids.insert(db_id.clone());
+                    let _ = crate::dao::processed_job_dao::record(&db_id);
+                    false
+                }
                 Ok(GreetOutcome::SemanticRejected) => {
                     stats.skipped_ai += 1;
                     consecutive_greet_failures = 0;
@@ -211,13 +236,12 @@ pub async fn position_say_hello_on_page(
                         return Err(error.context("猎聘浏览器连接已断开，当前消息发送状态未确认；下一次操作重新连接"));
                     }
                     if error.to_string().contains("猎聘安全验证") {
-                        logger::warning("猎聘出现安全验证，已停止本轮并保留验证页面；完成验证后请手动恢复任务")?;
-                        return Ok(());
+                        return Err(report_liepin_security_challenge());
                     }
                     stats.greet_failed += 1;
                     consecutive_greet_failures += 1;
                     logger::warning(greet_failure_message(&job.title, &job.company_name, &error))?;
-                    continue;
+                    false
                 }
             };
             // 停顿、以及连投若干条之后的休息都在这里面。收到停止请求时立即收尾，
@@ -251,6 +275,18 @@ pub async fn position_say_hello_on_page(
     }
 }
 
+fn report_liepin_security_challenge() -> anyhow::Error {
+    const MESSAGE: &str =
+        "猎聘出现安全验证，已停止本轮并保留验证页面；完成验证后请手动恢复任务";
+    let _ = logger::warning(MESSAGE);
+    crate::notification::notify_current(
+        crate::notification::NotificationEvent::RiskAlert,
+        "猎聘触发安全验证",
+        MESSAGE,
+    );
+    anyhow::anyhow!(MESSAGE)
+}
+
 /// 把预算判定翻译成本轮的结束语。预算还够时返回 None。
 ///
 /// 提前结束不是故障，文案必须说清楚「下一轮还会继续」，否则用户会以为投递挂了
@@ -259,22 +295,26 @@ fn budget_stop_reason(
     round_greeted: u32,
     round_started: Instant,
     consecutive_greet_failures: u32,
-) -> Option<&'static str> {
-    match budget.check(
+) -> Option<(BudgetVerdict, &'static str)> {
+    let verdict = budget.check(
         round_greeted,
         round_started.elapsed(),
         consecutive_greet_failures,
-    ) {
+    );
+    match verdict {
         BudgetVerdict::Continue => None,
-        BudgetVerdict::GreetLimit => {
-            Some("猎聘本轮打招呼条数已达设定上限，提前结束本轮；周期投递会在下一轮继续")
-        }
-        BudgetVerdict::TimeLimit => {
-            Some("猎聘本轮运行时长已达设定上限，提前结束本轮；周期投递会在下一轮继续")
-        }
-        BudgetVerdict::FailureLimit => {
-            Some("猎聘连续多次打招呼失败，可能已达平台每日沟通上限或触发了安全验证，本轮提前结束")
-        }
+        BudgetVerdict::GreetLimit => Some((
+            verdict,
+            "猎聘本轮打招呼条数已达设定上限，提前结束本轮；周期投递会在下一轮继续",
+        )),
+        BudgetVerdict::TimeLimit => Some((
+            verdict,
+            "猎聘本轮运行时长已达设定上限，提前结束本轮；周期投递会在下一轮继续",
+        )),
+        BudgetVerdict::FailureLimit => Some((
+            verdict,
+            "猎聘连续多次打招呼失败，可能已达平台每日沟通上限或触发了安全验证，本轮提前结束",
+        )),
     }
 }
 
@@ -659,12 +699,54 @@ fn parse_location_from_link_text(link_text: &str) -> Option<String> {
     non_empty(link_text[start..end].trim().to_string())
 }
 
+fn looks_like_salary_token(token: &str) -> bool {
+    let decoded = decode_salary(token);
+    let trimmed = decoded.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.contains("面议") {
+        return true;
+    }
+    let chars: Vec<char> = trimmed.chars().collect();
+    if !chars[0].is_ascii_digit() {
+        return false;
+    }
+    for (idx, ch) in chars.iter().enumerate() {
+        if idx == 0 {
+            continue;
+        }
+        let is_unit = matches!(ch, 'k' | 'K' | '千' | '万' | 'w' | 'W' | '元');
+        if !is_unit || !chars[idx - 1].is_ascii_digit() {
+            continue;
+        }
+        let next = chars.get(idx + 1).copied();
+        let valid_after = match ch {
+            'k' | 'K' | 'w' | 'W' => next.is_none_or(|c| {
+                matches!(c, '-' | '~' | '～' | '—' | '–' | '·' | '•' | '/' | '薪')
+                    || !c.is_ascii_alphanumeric()
+            }),
+            _ => true,
+        };
+        if valid_after {
+            return true;
+        }
+    }
+    false
+}
+
 fn parse_salary_from_link_text(link_text: &str) -> String {
-    link_text
+    let after_location = link_text
+        .split_once('】')
+        .map(|(_, rest)| rest)
+        .unwrap_or(link_text);
+    after_location
         .split_whitespace()
-        .find(|token| {
-            let lower = token.to_ascii_lowercase();
-            lower.contains('k') || token.contains('万')
+        .find(|token| looks_like_salary_token(token))
+        .or_else(|| {
+            link_text
+                .split_whitespace()
+                .find(|token| looks_like_salary_token(token))
         })
         .unwrap_or_default()
         .to_string()
@@ -686,10 +768,11 @@ fn parse_company_from_card_text(card_text: &str, link_text: &str) -> Option<Stri
         .map(str::to_string)
 }
 
-/// 区分岗位未读到职责、语义复核拒绝和发送闸门拦截，避免统计为已沟通。
+/// 区分岗位未读到职责、规则过滤拒绝、语义复核拒绝和发送闸门拦截，避免统计为已沟通。
 enum GreetOutcome {
     Held,
     DetailMissing,
+    RuleRejected,
     SemanticRejected,
     Greeted,
 }
@@ -725,6 +808,15 @@ async fn greet_job(
         if job.detail.trim().is_empty() {
             logger::warning(format!("猎聘岗位 {} 未读取到职责，跳过", job.title))?;
             return Ok(GreetOutcome::DetailMissing);
+        }
+
+        let filter_decision = verify::filter_decision(&job, &config);
+        if !filter_decision.matched {
+            logger::info(format!(
+                "猎聘岗位规则筛选未通过，跳过：{}（{}）",
+                job.title, filter_decision.reason
+            ))?;
+            return Ok(GreetOutcome::RuleRejected);
         }
 
         if config.job_filter_config.enable_semantic_filter {
@@ -1857,5 +1949,29 @@ mod tests {
         assert!(message.contains("皓元医药"));
         assert!(message.contains("发送失败"));
         assert!(message.contains("跳过该岗位，继续处理下一个"));
+    }
+
+    #[test]
+    fn parse_salary_from_link_text_ignores_tech_keywords_and_preserves_negotiable_and_daily() {
+        assert_eq!(
+            parse_salary_from_link_text("K8s 运维工程师 【 上海 】 20-35k·14薪 3年以上"),
+            "20-35k·14薪"
+        );
+        assert_eq!(
+            parse_salary_from_link_text("Kafka / Spark / Kotlin / Fullstack 开发 【 北京 】 薪资面议 5年以上"),
+            "薪资面议"
+        );
+        assert_eq!(
+            parse_salary_from_link_text("K8s 实习生 【 深圳 】 200元/天 在校生"),
+            "200元/天"
+        );
+        assert_eq!(
+            parse_salary_from_link_text("K8s Kafka Spark Kotlin Fullstack 工程师 【 杭州 】 3年以上 本科"),
+            ""
+        );
+        assert_eq!(
+            parse_salary_from_link_text("Spark 架构师 【 上海 】 1.5-2.5万/月"),
+            "1.5-2.5万/月"
+        );
     }
 }

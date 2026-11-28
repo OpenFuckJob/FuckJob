@@ -25,7 +25,9 @@ import {
   getJobProfiles,
   isLlmServiceUsable,
   type AppRuntimeConfig,
+  type GreetConfig,
   type JobFilterConfig,
+  type ReplayConfig,
   type ResumeConfig,
 } from "@/types/app-config";
 import type { BrowserEnvStatus, EnvCheckResult } from "@/types/rpa";
@@ -41,6 +43,47 @@ import {
 } from "@/lib/safety-presets";
 import { NumberField } from "@/components/NumberField";
 import { isValidLlmConfig, LlmConfigPanel } from "@/view/config/LlmConfigPanel";
+
+const DEFAULT_NON_AI_GREETING =
+  "您好，看到贵司的岗位与我的背景非常契合，期待有机会进一步沟通！";
+
+function disableLlmOnGreet(greet?: GreetConfig): GreetConfig {
+  const base: GreetConfig = greet ?? {
+    enable_llm: false,
+    reply_prompt: null,
+    default_template: [],
+  };
+  const template = (base.default_template ?? []).map((item) =>
+    item.resource_type === "LLM" ? { ...item, enabled: false } : item,
+  );
+  const hasEnabledText = template.some(
+    (item) =>
+      item.resource_type === "Text" &&
+      item.enabled !== false &&
+      item.content.trim().length > 0,
+  );
+  return {
+    ...base,
+    enable_llm: false,
+    default_template: hasEnabledText
+      ? template
+      : [
+          ...template,
+          {
+            resource_type: "Text",
+            content: DEFAULT_NON_AI_GREETING,
+            enabled: true,
+          },
+        ],
+  };
+}
+
+function disableLlmOnReplay(replay?: ReplayConfig): ReplayConfig {
+  return {
+    ...(replay ?? ({} as ReplayConfig)),
+    enable_llm: false,
+  };
+}
 
 function applyProfilePatch(
   draft: AppRuntimeConfig,
@@ -96,8 +139,8 @@ export function Onboarding({
     return detected === "custom" ? "standard" : detected;
   });
   const [selectedBlacklistIds, setSelectedBlacklistIds] = useState<string[]>([
-    "it_outsourcing",
-    "outsourcing_terms",
+    "outsource_companies",
+    "outsource_titles",
   ]);
   const [browser, setBrowser] = useState<BrowserEnvStatus | null>(null);
   const [browserError, setBrowserError] = useState("");
@@ -226,6 +269,34 @@ export function Onboarding({
             },
           },
         );
+      }
+
+      if (llm === null) {
+        const nextTopGreet = disableLlmOnGreet(finalDraft.greet_config);
+        const nextTopReplay = disableLlmOnReplay(finalDraft.replay_config);
+        if (finalDraft.job_profiles?.length) {
+          const defaultId = getDefaultJobProfile(finalDraft).id;
+          finalDraft = {
+            ...finalDraft,
+            greet_config: nextTopGreet,
+            replay_config: nextTopReplay,
+            job_profiles: getJobProfiles(finalDraft).map((profile) =>
+              profile.id === defaultId
+                ? {
+                    ...profile,
+                    greet_config: disableLlmOnGreet(profile.greet_config),
+                    replay_config: disableLlmOnReplay(profile.replay_config),
+                  }
+                : profile,
+            ),
+          };
+        } else {
+          finalDraft = {
+            ...finalDraft,
+            greet_config: nextTopGreet,
+            replay_config: nextTopReplay,
+          };
+        }
       }
 
       const saved = await onFinish({

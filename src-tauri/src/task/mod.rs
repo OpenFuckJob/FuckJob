@@ -371,6 +371,24 @@ impl TaskManager {
         self.inner.wake_scheduler.notify_one();
         result
     }
+
+    pub fn stop_all(&self) -> Result<usize, String> {
+        let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        let active_ids: Vec<String> = state
+            .tasks
+            .values()
+            .filter(|entry| !entry.info.status.is_terminal())
+            .map(|entry| entry.info.task_id.clone())
+            .collect();
+        let mut stopped = 0usize;
+        for task_id in active_ids {
+            if state.request_stop(&task_id).is_ok() {
+                stopped += 1;
+            }
+        }
+        self.inner.wake_scheduler.notify_one();
+        Ok(stopped)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -403,6 +421,42 @@ fn spawn_scheduler(inner: Arc<TaskManagerInner>) {
         .expect("failed to start job task scheduler");
 }
 
+/// 确保 worker 线程即便发生 panic 也能收尾并唤醒调度器，避免平台队列永久死锁。
+struct WorkerFinishGuard {
+    inner: Arc<TaskManagerInner>,
+    task_id: String,
+    finished: bool,
+}
+
+impl WorkerFinishGuard {
+    fn new(inner: Arc<TaskManagerInner>, task_id: String) -> Self {
+        Self {
+            inner,
+            task_id,
+            finished: false,
+        }
+    }
+
+    fn complete(&mut self, result: Result<(), anyhow::Error>) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.finish(&self.task_id, result);
+        self.inner.wake_scheduler.notify_one();
+    }
+}
+
+impl Drop for WorkerFinishGuard {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = crate::logger::error("任务执行线程发生意外中断（panic），已自动释放平台锁");
+            self.complete(Err(anyhow::anyhow!("任务执行线程异常中断")));
+        }
+    }
+}
+
 fn spawn_worker(inner: Arc<TaskManagerInner>, worker: WorkerInput) {
     let thread_name = format!("job-task-{}", &worker.task_id[..8]);
     thread::Builder::new()
@@ -410,6 +464,8 @@ fn spawn_worker(inner: Arc<TaskManagerInner>, worker: WorkerInput) {
         .spawn(move || {
             let _log_context =
                 crate::logger::scoped_context(Some(worker.task_id.clone()), Some(worker.platform));
+            let mut finish_guard =
+                WorkerFinishGuard::new(Arc::clone(&inner), worker.task_id.clone());
             {
                 let mut state = inner.state.lock().unwrap_or_else(|e| e.into_inner());
                 state.mark_running(&worker.task_id);
@@ -444,22 +500,24 @@ fn spawn_worker(inner: Arc<TaskManagerInner>, worker: WorkerInput) {
             if let Err(error) = &result {
                 if !worker.cancelled.load(Ordering::SeqCst) {
                     let _ = crate::logger::error(format!("任务执行失败：{error:#}"));
-                    crate::notification::notify_async(
-                        &worker.config.notification_config,
-                        crate::notification::NotificationEvent::RiskAlert,
-                        format!(
-                            "{} {} 任务异常中断",
-                            worker.platform.as_str(),
-                            worker.mode.display_name()
-                        ),
-                        format!("{error:#}"),
-                    );
+                    if !crate::notification::risk_alert_sent_recently(
+                        std::time::Duration::from_secs(5),
+                    ) {
+                        crate::notification::notify_async(
+                            &worker.config.notification_config,
+                            crate::notification::NotificationEvent::RiskAlert,
+                            format!(
+                                "{} {} 任务异常中断",
+                                worker.platform.as_str(),
+                                worker.mode.display_name()
+                            ),
+                            format!("{error:#}"),
+                        );
+                    }
                 }
             }
 
-            let mut state = inner.state.lock().unwrap_or_else(|e| e.into_inner());
-            state.finish(&worker.task_id, result);
-            inner.wake_scheduler.notify_one();
+            finish_guard.complete(result);
         })
         .expect("failed to start job task worker");
 }
@@ -725,5 +783,41 @@ mod tests {
         assert_eq!(info.profile_id.as_deref(), Some("rust"));
         assert_eq!(info.profile_name.as_deref(), Some("Rust 后端"));
         assert_eq!(info.profile_snapshot_id.as_deref(), Some("fnv-1"));
+    }
+
+    #[test]
+    fn worker_finish_guard_releases_platform_lock_on_panic() {
+        let inner = Arc::new(TaskManagerInner {
+            state: Mutex::new(SchedulerState::new(2)),
+            wake_scheduler: Condvar::new(),
+        });
+        let (first_id, second_id) = {
+            let mut state = inner.state.lock().unwrap();
+            let first = enqueue(&mut state, PlatformKind::Boss);
+            let second = enqueue(&mut state, PlatformKind::Boss);
+            let taken = state.take_next_runnable().unwrap();
+            assert_eq!(taken.task_id, first.task_id);
+            state.mark_running(&taken.task_id);
+            (first.task_id, second.task_id)
+        };
+
+        let guard_inner = Arc::clone(&inner);
+        let guard_task_id = first_id.clone();
+        let handle = thread::spawn(move || {
+            let _guard = WorkerFinishGuard::new(guard_inner, guard_task_id);
+            panic!("simulated worker panic");
+        });
+        assert!(handle.join().is_err());
+
+        let mut state = inner.state.lock().unwrap();
+        assert_eq!(state.tasks[&first_id].info.status, JobTaskState::Failed);
+        assert!(state.tasks[&first_id]
+            .info
+            .error
+            .as_deref()
+            .is_some_and(|msg| msg.contains("异常中断")));
+        assert_eq!(state.running_count, 0);
+        assert!(!state.running_by_platform.contains_key(&PlatformKind::Boss));
+        assert_eq!(state.take_next_runnable().unwrap().task_id, second_id);
     }
 }

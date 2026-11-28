@@ -3,6 +3,7 @@ import {
   getHumanizeConfig,
   getPeriodicDeliveryConfig,
   type AppRuntimeConfig,
+  type DailyWindow,
   type HumanizeConfig,
   type PeriodicDeliveryConfig,
 } from "@/types/app-config";
@@ -101,6 +102,40 @@ export function buildSafetyPresetPatch(
   };
 }
 
+function normalizeWindows(windows: DailyWindow[]): DailyWindow[] {
+  const sorted = windows
+    .map((w) => ({ start_minute: w.start_minute, end_minute: w.end_minute }))
+    .sort((a, b) => a.start_minute - b.start_minute || a.end_minute - b.end_minute);
+  const merged: DailyWindow[] = [];
+  for (const w of sorted) {
+    const prev = merged[merged.length - 1];
+    if (
+      prev &&
+      w.start_minute <= prev.end_minute &&
+      w.start_minute < w.end_minute &&
+      prev.start_minute < prev.end_minute
+    ) {
+      prev.end_minute = Math.max(prev.end_minute, w.end_minute);
+    } else {
+      merged.push(w);
+    }
+  }
+  return merged;
+}
+
+function sameNormalizedWindows(left: DailyWindow[], right: DailyWindow[]): boolean {
+  const a = normalizeWindows(left);
+  const b = normalizeWindows(right);
+  return (
+    a.length === b.length &&
+    a.every(
+      (window, index) =>
+        window.start_minute === b[index].start_minute &&
+        window.end_minute === b[index].end_minute,
+    )
+  );
+}
+
 export function detectSafetyPreset(
   config: Pick<AppRuntimeConfig, "periodic_delivery_config" | "humanize_config">,
 ): SafetyPresetId | "custom" {
@@ -112,7 +147,9 @@ export function detectSafetyPreset(
     if (
       daily === preset.dailyLimit &&
       periodic.max_greets_per_round === preset.roundLimit &&
+      periodic.interval_minutes === preset.intervalMinutes &&
       periodic.window_enabled === preset.windowEnabled &&
+      (!preset.windowEnabled || sameNormalizedWindows(periodic.windows, preset.windows)) &&
       humanize.enabled &&
       humanize.intensity === preset.humanizeIntensity
     ) {

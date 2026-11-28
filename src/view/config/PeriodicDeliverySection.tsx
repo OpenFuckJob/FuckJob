@@ -11,12 +11,14 @@ import {
 import {
   DEFAULT_MAX_GREETS_PER_DAY,
   DEFAULT_PERIODIC_DELIVERY_CONFIG,
+  HOURS_PER_DAY,
   hoursToWindows,
   isSamePeriodicDelivery,
   MAX_GREETS_PER_DAY,
   MAX_GREETS_PER_ROUND,
   MAX_ROUND_MINUTES,
   MAX_RUN_HOURS,
+  MINUTES_PER_DAY,
   windowsToHours,
   type DailyWindow,
   type PeriodicDeliveryConfig,
@@ -151,7 +153,16 @@ export default function PeriodicDeliverySection({
             <div className="space-y-2">
               <HourGrid
                 value={windowsToHours(config.windows)}
-                onChange={(hours) => onChange({ windows: hoursToWindows(hours) })}
+                onChange={(hours) => {
+                  if (hours.length === HOURS_PER_DAY && hours.every(Boolean)) {
+                    onChange({
+                      window_enabled: false,
+                      windows: [{ start_minute: 0, end_minute: MINUTES_PER_DAY }],
+                    });
+                    return;
+                  }
+                  onChange({ windows: hoursToWindows(hours) });
+                }}
               />
               <div className="flex flex-wrap items-center gap-2 text-xs">
                 <span className="text-slate-400">快捷</span>
@@ -194,11 +205,11 @@ export default function PeriodicDeliverySection({
   }
 
   return (
-    <div className="space-y-4 rounded-2xl border border-slate-200/80 bg-white/85 p-6">
+    <div className="space-y-4 rounded-2xl border border-[var(--of-border)] bg-[var(--of-surface)] p-6">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <Text className="block font-bold text-slate-900">周期投递</Text>
-          <Text className="text-xs text-slate-500">
+          <Text className="block font-bold text-[var(--of-text)]">周期投递</Text>
+          <Text className="text-xs text-[var(--of-text-secondary)]">
             这里改的是启动任务时的初值，每次启动仍可单独调整；已在跑的任务不受影响
           </Text>
         </div>

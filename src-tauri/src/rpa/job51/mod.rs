@@ -13,9 +13,7 @@ use crate::{
     rpa::{
         common::RpaJob,
         human_pace::GreetPacer,
-        run_flow::{
-            current_job_task_id, is_job_task_stop_requested, request_current_job_task_stop,
-        },
+        run_flow::{current_job_task_id, is_job_task_stop_requested},
         schedule::{BudgetVerdict, RoundBudget},
     },
     verify,
@@ -103,13 +101,13 @@ pub async fn prepare_public_jobs(config: &AppRuntimeConfig, limit: usize) -> Res
                         let state=js(&page,&format!("applyState51(document,{})",json!(job.platform_job_id)))?;
                         if matches!(state["kind"].as_str(), Some("blocked" | "blocked_timeout")) {
                             if !resolve_slider(&page).await? {
-                                request_current_job_task_stop();
+                                let _ = browser::retain_task_tab(&page);
                                 bail!("51job公开详情需要完成滑动验证，已保留页面");
                             }
                             continue;
                         }
                         if matches!(state["kind"].as_str(),Some("login" | "limit")) {
-                            request_current_job_task_stop();
+                            let _ = browser::retain_task_tab(&page);
                             bail!("51job公开详情需要处理{}，已保留页面",state["kind"]);
                         }
                         let detail=js(&page,"text51(document.querySelector('.job_msg'))")?;
@@ -119,7 +117,7 @@ pub async fn prepare_public_jobs(config: &AppRuntimeConfig, limit: usize) -> Res
                     }
                     Ok::<_,anyhow::Error>(!job.detail.trim().is_empty() && verify::filter_decision(&job,&config).matched)
                 }.await;
-                if !is_job_task_stop_requested() { let _=page.close(); }
+                if read.is_ok() && !is_job_task_stop_requested() { let _=page.close(); }
                 if read? { result.push(job); }
                 if result.len()>=limit.max(1) { return Ok(result); }
                 if !pacer.after_greet(false).await { return Ok(result); }
@@ -676,9 +674,46 @@ pub async fn deliver_on_page(
                 {
                     continue;
                 }
+                let pre_decision = verify::pre_filter_decision(
+                    &job.title,
+                    &job.company_name,
+                    &job.salary,
+                    &config.job_filter_config,
+                );
+                if !pre_decision.matched {
+                    logger::info(format!(
+                        "51job 列表前置过滤跳过 {} - {}（{}）",
+                        job.title, job.company_name, pre_decision.reason
+                    ))?;
+                    continue;
+                }
+                if config.job_filter_config.max_greets_per_company > 0 {
+                    let existing_company_greets =
+                        job_detail_dao::count_by_company_normalized(&job.company_name)
+                            .unwrap_or(0);
+                    if let Some(reason) = verify::company_greet_limit_reason(
+                        &job.company_name,
+                        existing_company_greets,
+                        config.job_filter_config.max_greets_per_company,
+                    ) {
+                        logger::info(format!(
+                            "51job 列表前置过滤跳过 {} - {}（{}）",
+                            job.title, job.company_name, reason
+                        ))?;
+                        continue;
+                    }
+                }
+                if pacer.should_skim() {
+                    logger::info(format!("51job 拟人化跳过本岗位：{}", job.title))?;
+                    continue;
+                }
                 let result = abort_round_on_browser_disconnect(
                     process_job(connection, page, &mut job, config).await,
                 )?;
+                let result = match result {
+                    Err(error) if is_fatal_access_error(&error) => return Err(error),
+                    other => other,
+                };
                 if preview_full() { return Ok(()); }
                 match result {
                     Ok(true) => {
@@ -788,6 +823,15 @@ async fn wait_list(page: &Page) -> Result<()> {
     bail!("51job 职位列表加载超时")
 }
 
+fn is_fatal_access_error(error: &anyhow::Error) -> bool {
+    let msg = error.to_string();
+    msg.contains("51job详情页要求处理")
+        || msg.contains("51job 页面要求处理")
+        || msg.contains("51job投递中断")
+        || msg.contains("51job 需要完成网页验证")
+        || msg.contains("51job 登录已失效")
+}
+
 async fn check_list_access(page: &Page) -> Result<()> {
     let state=js(page,"applyState51(document,'')")?;
     match state["kind"].as_str() {
@@ -796,12 +840,10 @@ async fn check_list_access(page: &Page) -> Result<()> {
                 return Ok(());
             }
             browser::retain_task_tab(page)?;
-            request_current_job_task_stop();
             bail!("51job 需要完成网页验证");
         }
         Some("login") => {
             browser::retain_task_tab(page)?;
-            request_current_job_task_stop();
             bail!("51job 登录已失效，请重新登录");
         }
         _ => Ok(()),
@@ -827,8 +869,12 @@ async fn process_job(
     let tab = match existing { Some(tab)=>tab, None=>browser::new_stealth_tab(connection)? };
     if reused { logger::info(format!("51job复用已打开的岗位详情：{}",job.title))?; }
     let result = process_detail(&tab, job, config, !reused).await;
+    let retain_on_error = result.as_ref().is_err_and(is_fatal_access_error);
+    if retain_on_error {
+        let _ = browser::retain_task_tab(&tab);
+    }
     let pending=job_detail_dao::get_by_id(&format!("51job:{}",job.platform_job_id))?.is_some_and(|record|record.resume_delivery_pending);
-    if should_close_detail_tab(reused, is_job_task_stop_requested(), pending) {
+    if should_close_detail_tab(reused, is_job_task_stop_requested() || retain_on_error, pending) {
         return preserve_job_result_after_cleanup(
             result,
             browser::close_task_target(&tab),
@@ -896,12 +942,12 @@ async fn process_detail(page: &Page, job: &mut RpaJob, config: &AppRuntimeConfig
                     continue;
                 }
                 logger::warning("51job详情页自动滑动未通过，已停止当前任务并保留页面")?;
-                request_current_job_task_stop();
+                let _ = browser::retain_task_tab(page);
                 bail!("51job详情页要求处理：blocked");
             }
             "login" | "limit" => {
                 logger::warning(format!("51job详情页需要处理{}，已停止当前任务并保留页面", state["kind"]))?;
-                request_current_job_task_stop();
+                let _ = browser::retain_task_tab(page);
                 bail!("51job详情页要求处理：{}", state["kind"]);
             }
             _ => {}
@@ -951,12 +997,12 @@ async fn process_detail(page: &Page, job: &mut RpaJob, config: &AppRuntimeConfig
         "ready" => {}
         "blocked" | "blocked_timeout" => {
             if !resolve_slider(page).await? {
-                request_current_job_task_stop();
+                let _ = browser::retain_task_tab(page);
                 bail!("51job 页面要求处理：blocked");
             }
         }
         "login" | "limit" => {
-            request_current_job_task_stop();
+            let _ = browser::retain_task_tab(page);
             bail!("51job 页面要求处理：{}", state["kind"]);
         }
         _ => return Ok(false),
@@ -1020,12 +1066,12 @@ async fn process_detail(page: &Page, job: &mut RpaJob, config: &AppRuntimeConfig
             }
             "blocked" | "blocked_timeout" => {
                 if !resolve_slider(page).await? {
-                    request_current_job_task_stop();
+                    let _ = browser::retain_task_tab(page);
                     bail!("51job投递中断：blocked");
                 }
             }
             "login" | "limit" => {
-                request_current_job_task_stop();
+                let _ = browser::retain_task_tab(page);
                 bail!("51job投递中断：{}", state["kind"]);
             }
             "failed" | "dialog" => bail!("51job未确认投递成功：{}", state),
@@ -1035,6 +1081,11 @@ async fn process_detail(page: &Page, job: &mut RpaJob, config: &AppRuntimeConfig
             return Ok(false);
         }
     }
+    crate::notification::notify_current(
+        crate::notification::NotificationEvent::ManualReview,
+        format!("51job · {} - {}", job.company_name, job.title),
+        "51job 提交后刷新核验仍未确认结果，已保留待办防止重复投递，请人工核对投递状态",
+    );
     bail!("51job提交后刷新核验仍未确认结果，已保留待办防止重复投递")
 }
 

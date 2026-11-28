@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button, Drawer, Empty, List, Modal, Popconfirm, Space, Tag, Tooltip, Typography, message } from "antd";
 import { ExclamationCircleOutlined } from "@ant-design/icons";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { CommandResult } from "../../types/command";
 import { commandErrorMessage } from "../../types/command";
 import type { ManualReviewRecord } from "../../types/manual-review";
@@ -43,7 +44,11 @@ export function useManualReview(enabled = true) {
     if (!enabled) return;
     void refresh();
     const timer = setInterval(() => void refresh(), REFRESH_INTERVAL_MS);
-    return () => clearInterval(timer);
+    const unsubscribe = listen("job-data-changed", () => void refresh()).catch(() => null);
+    return () => {
+      clearInterval(timer);
+      void unsubscribe.then((unlisten) => unlisten?.());
+    };
   }, [enabled, refresh]);
 
   const resolve = useCallback(async (record: ManualReviewRecord) => {
@@ -63,12 +68,16 @@ export function useManualReview(enabled = true) {
   }, []);
 
   const clear = useCallback(async () => {
-    const result = await invoke<CommandResult<null>>("manual_review_clear");
-    if (!result.success) {
-      message.error(commandErrorMessage(result.error, "清空失败"));
-      return;
+    try {
+      const result = await invoke<CommandResult<null>>("manual_review_clear");
+      if (!result.success) {
+        message.error(commandErrorMessage(result.error, "清空失败"));
+        return;
+      }
+      setRecords([]);
+    } catch (error) {
+      message.error(`清空失败：${error instanceof Error ? error.message : String(error)}`);
     }
-    setRecords([]);
   }, []);
 
   return { records, loading, refresh, resolve, clear };
@@ -81,6 +90,7 @@ interface Props {
   loading: boolean;
   onResolve: (record: ManualReviewRecord) => void;
   onClear: () => void;
+  onRefresh?: () => void;
   /** 跳到该岗位的会话记录。岗位归属缺失的条目跳不了，入口会隐藏 */
   onOpenConversation?: (jobId: string) => void;
 }
@@ -99,8 +109,16 @@ export default function ManualReviewDrawer({
   loading,
   onResolve,
   onClear,
+  onRefresh,
   onOpenConversation,
 }: Props) {
+  const prevOpenRef = useRef(false);
+  useEffect(() => {
+    if (open && !prevOpenRef.current) {
+      onRefresh?.();
+    }
+    prevOpenRef.current = open;
+  }, [open, onRefresh]);
   const resolveDelivery = async (record: ManualReviewRecord, delivered: boolean) => {
     try {
       const result = await invoke<CommandResult<unknown>>("job51_resolve_delivery", { id: record.job_id, delivered });
@@ -171,9 +189,13 @@ export default function ManualReviewDrawer({
                       </Button>,
                     ]
                   : []),
-                ...(record.platform === "51job" ? [] : [<Button key="resolve" size="small" type="link" onClick={() => onResolve(record)}>
-                  已处理
-                </Button>]),
+                ...(record.platform === "51job" && record.job_id
+                  ? []
+                  : [
+                      <Button key="resolve" size="small" type="link" onClick={() => onResolve(record)}>
+                        已处理
+                      </Button>,
+                    ]),
               ]}
             >
               <List.Item.Meta

@@ -119,7 +119,7 @@ pub fn migrate_to_current<B: CredentialBackend + ?Sized>(
                 .with_detail(error)
             })?
         }
-        None => config::default_app_config(),
+        None => config::load_default_config_from_yaml(),
     };
 
     if let Some(secret) = raw_config.as_ref().and_then(legacy_plaintext_key) {
@@ -936,5 +936,14 @@ browser_config:
             config.browser_config.user_data_dir,
             paths.app_data_dir.join("browser-profile").to_string_lossy()
         );
+        // 首次安装应直接使用内置 app_config.yaml 的安全出厂配置
+        assert!(config.humanize_config.enabled);
+        assert_ne!(config.humanize_config.persona_seed, 0);
+        assert_eq!(config.job_filter_config.max_greets_per_company, 1);
+        assert!(config
+            .greet_config
+            .reply_prompt
+            .as_deref()
+            .is_some_and(|prompt| prompt.contains("黄金前 17 字")));
     }
 }

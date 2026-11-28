@@ -288,9 +288,15 @@ const OverviewTab = ({ a }: { a: InterviewJobAnalysis }) => (
     {a.parse_error && (
       <Card size="small" title={<Typography.Text strong type="warning">解析错误：{a.parse_error}</Typography.Text>}>
         <div style={{
-          padding: 12, background: "#fafafa",
-          borderRadius: 8, maxHeight: 300, overflowY: "auto",
-          whiteSpace: "pre-wrap", fontSize: 12,
+          padding: 12,
+          background: "var(--of-surface-subtle)",
+          color: "var(--of-text)",
+          border: "1px solid var(--of-border)",
+          borderRadius: 8,
+          maxHeight: 300,
+          overflowY: "auto",
+          whiteSpace: "pre-wrap",
+          fontSize: 12,
         }}>
           {a.raw_response}
         </div>

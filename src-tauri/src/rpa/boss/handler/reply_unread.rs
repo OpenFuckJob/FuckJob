@@ -443,6 +443,21 @@ async fn handle_conversation(
         decision.reason
     ))?;
 
+    if action == ReplyAction::Escalate {
+        logger::warning(format!(
+            "模型建议转人工，已挂起等待人工处理：{}",
+            decision.reason
+        ))?;
+        hold_for_review(
+            PLATFORM,
+            job_id,
+            conversation::review_draft(context.job.as_ref(), &context.messages),
+            ManualReviewReason::RiskKeyword,
+            decision.reason,
+        );
+        return Ok(());
+    }
+
     if !action.needs_text() {
         return Ok(());
     }

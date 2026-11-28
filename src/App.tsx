@@ -85,6 +85,7 @@ function MainShell({
   dirty,
   importConfig,
   exportConfig,
+  onConfigImported,
   themeMode,
   onCycleTheme,
 }: {
@@ -96,6 +97,7 @@ function MainShell({
   dirty: boolean;
   importConfig: (path: string) => Promise<void>;
   exportConfig: (path: string) => Promise<void>;
+  onConfigImported: () => Promise<void>;
   themeMode: ThemeMode;
   onCycleTheme: () => void;
 }) {
@@ -231,9 +233,10 @@ function MainShell({
     update((c) => ({ ...c, humanize_config: { ...getHumanizeConfig(c), ...next } }));
   const updateNotification = (next: Partial<NotificationConfig>) =>
     update((c) => ({ ...c, notification_config: { ...getNotificationConfig(c), ...next } }));
-  const blacklistCompany = (companyName: string) => {
+  const blacklistCompany = (companyName: string): { ok: boolean; warning?: string } => {
     const trimmed = companyName.trim();
-    if (!trimmed) return;
+    if (!trimmed) return { ok: false };
+    const blocked = status === "error";
     updateActiveProfile((profile) => ({
       ...profile,
       job_filter_config: {
@@ -244,6 +247,15 @@ function MainShell({
         ),
       },
     }));
+    if (blocked) {
+      return {
+        ok: false,
+        warning: message
+          ? `已添加到待保存列表，但配置自动保存受阻（${message}），请前往「求职设置」修正后保存`
+          : "当前配置自动保存受阻，请先前往「求职设置」修正配置",
+      };
+    }
+    return { ok: true };
   };
   const updateProfiles = (nextProfiles: JobProfile[], defaultId = config.default_job_profile_id) =>
     update((c) => ({
@@ -313,14 +325,17 @@ function MainShell({
           },
         }))
       }
-      addGreetDefaultResource={(resourceType: GreetResource["resource_type"] = "Text") =>
+      addGreetDefaultResource={(
+        resourceType: GreetResource["resource_type"] = "Text",
+        content = "",
+      ) =>
         updateActiveProfile((p) => ({
           ...p,
           greet_config: {
             ...p.greet_config,
             default_template: [
               ...p.greet_config.default_template,
-              { resource_type: resourceType, content: "" },
+              { resource_type: resourceType, content, enabled: true },
             ],
           },
         }))
@@ -455,6 +470,7 @@ function MainShell({
       }
       importConfig={importConfig}
       exportConfig={exportConfig}
+      onConfigImported={onConfigImported}
     />
   );
 
@@ -577,6 +593,7 @@ function MainShell({
         loading={manualReview.loading}
         onResolve={(record) => void manualReview.resolve(record)}
         onClear={() => void manualReview.clear()}
+        onRefresh={() => void manualReview.refresh()}
         onOpenConversation={(jobId) => {
           setReviewDrawerOpen(false);
           openConversation(jobId);
@@ -672,6 +689,7 @@ export default function App() {
             dirty={app.dirty}
             importConfig={app.importConfig}
             exportConfig={app.exportConfig}
+            onConfigImported={app.load}
             themeMode={themeMode}
             onCycleTheme={cycleMode}
           />

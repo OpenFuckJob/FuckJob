@@ -29,6 +29,8 @@ const CHAT_ENTRY: &str = ".im-ui-basic-entry";
 const CONTACT_ITEM: &str = ".im-ui-contact-list-item";
 const CONTACT_LIST_API: &str = "com.liepin.im.c.contact.get-contact-list";
 const MAX_SCROLL_PAGES: usize = 6;
+const OPEN_DRAWER_RETRIES: usize = 3;
+const API_WAIT_MS: u32 = 8000;
 
 #[derive(Debug, Default, Clone, Copy, Serialize)]
 pub struct LiepinStatusSyncResult {
@@ -209,18 +211,27 @@ fn collect_liepin_contacts_from_dom(page: &Page) -> Result<Vec<LiepinListEntry>,
         .collect())
 }
 
+fn titles_conflict(a: &str, b: &str) -> bool {
+    let a = a.trim().to_lowercase();
+    let b = b.trim().to_lowercase();
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    !(a == b || a.contains(&b) || b.contains(&a))
+}
+
 fn match_local_liepin_job(entry: &LiepinListEntry, local_jobs: &[JobDetail]) -> Option<JobDetail> {
-    let company = entry.company.trim().to_lowercase();
+    let company = crate::verify::normalize_company_name(&entry.company);
     if company.is_empty() {
         return None;
     }
+    let title_hint = entry.job_title.trim();
     let candidates: Vec<&JobDetail> = local_jobs
         .iter()
         .filter(|job| {
             job.platform.eq_ignore_ascii_case(PLATFORM)
-                && !job.company_name.trim().is_empty()
-                && (job.company_name.to_lowercase().contains(&company)
-                    || company.contains(&job.company_name.to_lowercase()))
+                && crate::verify::normalize_company_name(&job.company_name) == company
+                && !titles_conflict(&job.title, title_hint)
         })
         .collect();
 
@@ -228,40 +239,79 @@ fn match_local_liepin_job(entry: &LiepinListEntry, local_jobs: &[JobDetail]) -> 
         return Some(candidates[0].clone());
     }
 
-    let title_hint = entry.job_title.trim().to_lowercase();
+    let title_lower = title_hint.to_lowercase();
     let msg_hint = entry.last_message.as_deref().unwrap_or("").to_lowercase();
-    candidates
+    let refined: Vec<&JobDetail> = candidates
         .into_iter()
-        .find(|job| {
+        .filter(|job| {
             let t = job.title.trim().to_lowercase();
-            !t.is_empty() && ((!title_hint.is_empty() && (t.contains(&title_hint) || title_hint.contains(&t))) || msg_hint.contains(&t))
+            !t.is_empty()
+                && ((!title_lower.is_empty()
+                    && (t == title_lower || t.contains(&title_lower) || title_lower.contains(&t)))
+                    || (!msg_hint.is_empty() && msg_hint.contains(&t)))
         })
-        .cloned()
+        .collect();
+
+    (refined.len() == 1).then(|| refined[0].clone())
 }
 
-fn read_recorded_contact_body(page: &Page, since: f64) -> Result<Option<String>, anyhow::Error> {
-    let script = format!(
+fn build_read_recorded_contact_body_script(since: f64) -> String {
+    format!(
         r#"
         (async () => {{
-            const deadline = Date.now() + 5000;
-            while (Date.now() < deadline) {{
-                const records = window.__liepinRequests || [];
-                const hit = records
-                    .filter((item) => item.ts > {since} && String(item.url || "").includes({api}))
-                    .pop();
-                if (hit && hit.body) return String(hit.body);
+            const since = {since};
+            const api = {api};
+            const deadline = performance.now() + {API_WAIT_MS};
+            const pick = () => (window.__fjRequestRecords || [])
+                .filter((item) => item.at > since
+                    && item.status >= 200 && item.status < 300
+                    && String(item.url || "").includes(api)
+                    && item.body)
+                .pop();
+
+            let hit = pick();
+            while (!hit && performance.now() < deadline) {{
                 await new Promise((resolve) => setTimeout(resolve, 200));
+                hit = pick();
             }}
-            return "";
+            return hit ? String(hit.body) : "";
         }})()
         "#,
         since = since,
         api = serde_json::to_string(CONTACT_LIST_API).unwrap_or_else(|_| "\"\"".to_string()),
-    );
+    )
+}
+
+fn read_recorded_contact_body(page: &Page, since: f64) -> Result<Option<String>, anyhow::Error> {
+    let script = build_read_recorded_contact_body_script(since);
     let value = page.run_js_await(&script)?;
     let raw = value.get("value").cloned().unwrap_or(value);
     let body = raw.as_str().unwrap_or_default().to_string();
     Ok(if body.is_empty() { None } else { Some(body) })
+}
+
+/// 打开右侧会话抽屉并返回抓包时间基准；与 reply_unread 保持一致的水合等待与重试。
+fn open_chat_drawer(page: &Page) -> Result<f64, anyhow::Error> {
+    for attempt in 1..=OPEN_DRAWER_RETRIES {
+        page.wait(CHAT_ENTRY, Duration::from_secs(15))
+            .context("未找到猎聘沟通入口，请先确认已登录猎聘")?;
+        sleep_random_ms(1200, 1800);
+
+        let since = install_request_recorder(page)?;
+        page.click(CHAT_ENTRY)?;
+
+        if page.wait(CONTACT_ITEM, Duration::from_secs(10)).is_ok() {
+            sleep_random_ms(600, 1000);
+            return Ok(since);
+        }
+
+        logger::warning(format!(
+            "猎聘会话列表没打开（第 {}/{} 次），重试",
+            attempt, OPEN_DRAWER_RETRIES
+        ))?;
+    }
+
+    Err(anyhow::anyhow!("猎聘会话抽屉打不开，已重试多次"))
 }
 
 fn scroll_contact_list(page: &Page) -> Result<bool, anyhow::Error> {
@@ -300,34 +350,38 @@ pub async fn sync_chat_status_on_page(page: &Page) -> Result<LiepinStatusSyncRes
     let watermark_ms = prev_meta.watermark_ms;
 
     page.get(LIEPIN_USER_HOME_URL).context("打开猎聘个人中心失败")?;
-    let entry_btn = page
-        .wait(CHAT_ENTRY, Duration::from_secs(15))
-        .context("未找到猎聘沟通入口，请先确认已登录猎聘")?;
-
-    let mut since = install_request_recorder(page)?;
-    entry_btn.click()?;
-    sleep_random_ms(600, 900);
-    let _ = page.wait(CONTACT_ITEM, Duration::from_secs(8));
+    let mut since = open_chat_drawer(page)?;
 
     let local_jobs = job_detail_dao::list()?;
+    let mut pending_local_unread: HashSet<String> = sync_state_dao::list_signals()
+        .into_values()
+        .filter(|sig| {
+            sig.platform.eq_ignore_ascii_case(PLATFORM)
+                && sig.unread_count > 0
+                && sig.last_message_at.unwrap_or(0) <= watermark_ms
+        })
+        .map(|sig| sig.job_id)
+        .collect();
     let mut result = LiepinStatusSyncResult::default();
     let mut seen_imids: HashSet<String> = HashSet::new();
     let mut signals_to_save: Vec<SyncedJobSignal> = Vec::new();
     let mut max_seen_ts = watermark_ms;
+    let mut scan_completed_cleanly = false;
 
-    for scroll_round in 0..MAX_SCROLL_PAGES {
+    for _scroll_round in 0..MAX_SCROLL_PAGES {
         if is_job_task_stop_requested() {
             break;
         }
         let batch = match read_recorded_contact_body(page, since)? {
-            Some(body) => parse_liepin_contact_list(&body).unwrap_or_default(),
-            None if scroll_round == 0 => collect_liepin_contacts_from_dom(page)?,
-            None => Vec::new(),
+            Some(body) => match parse_liepin_contact_list(&body) {
+                Ok(entries) => entries,
+                Err(_) => collect_liepin_contacts_from_dom(page)?,
+            },
+            None => collect_liepin_contacts_from_dom(page)?,
         };
 
         let mut new_in_batch = 0usize;
-        let mut all_older_than_watermark = true;
-        let mut has_any_timestamp = false;
+        let mut last_timestamp_in_batch: Option<i64> = None;
 
         for entry in batch {
             if !seen_imids.insert(entry.imid.clone()) {
@@ -338,18 +392,16 @@ pub async fn sync_chat_status_on_page(page: &Page) -> Result<LiepinStatusSyncRes
             result.unread_total = result.unread_total.saturating_add(entry.unread_count);
 
             if entry.last_message_at > 0 {
-                has_any_timestamp = true;
+                last_timestamp_in_batch = Some(entry.last_message_at);
                 if entry.last_message_at > max_seen_ts {
                     max_seen_ts = entry.last_message_at;
                 }
-                if entry.last_message_at > watermark_ms {
-                    all_older_than_watermark = false;
-                }
             }
 
-            let Some(mut local_job) = match_local_liepin_job(&entry, &local_jobs) else {
+            let Some(local_job) = match_local_liepin_job(&entry, &local_jobs) else {
                 continue;
             };
+            pending_local_unread.remove(&local_job.id);
             result.matched_jobs += 1;
 
             let preview = entry.last_message.as_deref().unwrap_or("");
@@ -360,23 +412,32 @@ pub async fn sync_chat_status_on_page(page: &Page) -> Result<LiepinStatusSyncRes
                 result.interview_detected += 1;
             }
 
-            let mut job_changed = false;
-            if is_replied && !local_job.is_reply {
-                local_job.is_reply = true;
-                job_changed = true;
-            }
-            if is_resume_preview(preview) && !local_job.is_send_resume {
-                local_job.is_send_resume = true;
-                if local_job.resume_sent_at.is_none() {
-                    local_job.resume_sent_at =
-                        Some(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
+            let resume_sent = is_resume_preview(preview);
+            if is_replied || resume_sent {
+                let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                let mut job_changed = false;
+                let _ = job_detail_dao::patch_by_id(&local_job.id, |job| {
+                    let mut changed = false;
+                    if is_replied && !job.is_reply {
+                        job.is_reply = true;
+                        changed = true;
+                    }
+                    if resume_sent && !job.is_send_resume {
+                        job.is_send_resume = true;
+                        if job.resume_sent_at.is_none() {
+                            job.resume_sent_at = Some(now.clone());
+                        }
+                        changed = true;
+                    }
+                    if changed {
+                        job.updated_at = now.clone();
+                    }
+                    job_changed = changed;
+                    changed
+                });
+                if job_changed {
+                    result.jobs_updated += 1;
                 }
-                job_changed = true;
-            }
-            if job_changed {
-                local_job.updated_at = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                let _ = job_detail_dao::update(&local_job.id.clone(), local_job.clone());
-                result.jobs_updated += 1;
             }
 
             let tag = if rejected {
@@ -403,11 +464,16 @@ pub async fn sync_chat_status_on_page(page: &Page) -> Result<LiepinStatusSyncRes
             });
         }
 
-        if new_in_batch == 0 || (watermark_ms > 0 && has_any_timestamp && all_older_than_watermark) {
+        let crossed_watermark = watermark_ms > 0
+            && last_timestamp_in_batch.is_some_and(|ts| ts < watermark_ms)
+            && pending_local_unread.is_empty();
+        if new_in_batch == 0 || crossed_watermark {
+            scan_completed_cleanly = true;
             break;
         }
         since = install_request_recorder(page)?;
         if !scroll_contact_list(page)? {
+            scan_completed_cleanly = true;
             break;
         }
     }
@@ -415,10 +481,15 @@ pub async fn sync_chat_status_on_page(page: &Page) -> Result<LiepinStatusSyncRes
     let signals_changed = sync_state_dao::upsert_signals(signals_to_save)?;
     result.jobs_updated = result.jobs_updated.max(signals_changed);
 
+    let next_watermark_ms = if scan_completed_cleanly {
+        max_seen_ts
+    } else {
+        watermark_ms
+    };
     sync_state_dao::save_platform_meta(PlatformSyncMeta {
         platform: PLATFORM.to_string(),
         last_synced_at: Some(Local::now().format("%Y-%m-%d %H:%M:%S").to_string()),
-        watermark_ms: max_seen_ts,
+        watermark_ms: next_watermark_ms,
         last_scanned: result.scanned,
         last_updated: result.jobs_updated,
         last_unread_total: result.unread_total,
@@ -435,6 +506,32 @@ pub async fn sync_chat_status_on_page(page: &Page) -> Result<LiepinStatusSyncRes
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn liepin_job(id: &str, company: &str, title: &str) -> JobDetail {
+        JobDetail {
+            resume_delivery_pending: false,
+            source_url: None,
+            id: id.into(),
+            platform: "liepin".into(),
+            source_task_id: None,
+            profile_id: None,
+            profile_name: None,
+            profile_snapshot_id: None,
+            title: title.into(),
+            company_name: company.into(),
+            detail: String::new(),
+            salary: String::new(),
+            location: None,
+            is_reply: false,
+            is_send_resume: false,
+            pipeline_stage: None,
+            notes: None,
+            interview_at: None,
+            created_at: String::new(),
+            resume_sent_at: None,
+            updated_at: String::new(),
+        }
+    }
 
     #[test]
     fn parses_liepin_contact_list_with_unread_and_preview() {
@@ -462,5 +559,52 @@ mod tests {
         assert_eq!(entries[0].last_message_at, 1_732_690_000_000);
         assert_eq!(entries[0].last_message_received, Some(true));
         assert!(is_interview_invite(entries[0].last_message.as_deref().unwrap()));
+    }
+
+    #[test]
+    fn recorded_contact_script_reads_fj_request_records_with_at_and_2xx_filter() {
+        let script = build_read_recorded_contact_body_script(123.5);
+        assert!(script.contains("window.__fjRequestRecords"));
+        assert!(!script.contains("__liepinRequests"));
+        assert!(script.contains("item.at > since"));
+        assert!(script.contains("item.status >= 200 && item.status < 300"));
+    }
+
+    #[test]
+    fn match_local_liepin_job_requires_normalized_company_non_conflicting_title_and_uniqueness() {
+        let jobs = vec![
+            liepin_job("liepin:1", "星辰 科技", "前端专家"),
+            liepin_job("liepin:2", "星辰科技", "后端专家"),
+        ];
+
+        // Ambiguous company with no title hint must return None
+        let ambiguous = LiepinListEntry {
+            imid: "im-1".into(),
+            company: "星辰科技".into(),
+            job_title: String::new(),
+            unread_count: 1,
+            last_message: Some("方便聊聊吗".into()),
+            last_message_at: 1_000,
+            last_message_received: Some(true),
+        };
+        assert!(match_local_liepin_job(&ambiguous, &jobs).is_none());
+
+        // Matching title disambiguates uniquely
+        let matched = LiepinListEntry {
+            job_title: "前端专家".into(),
+            ..ambiguous.clone()
+        };
+        assert_eq!(
+            match_local_liepin_job(&matched, &jobs).map(|j| j.id),
+            Some("liepin:1".into())
+        );
+
+        // Single company job with conflicting non-empty title must be rejected
+        let single_job = vec![liepin_job("liepin:1", "星辰科技", "前端专家")];
+        let conflicting = LiepinListEntry {
+            job_title: "Java 架构师".into(),
+            ..ambiguous
+        };
+        assert!(match_local_liepin_job(&conflicting, &single_job).is_none());
     }
 }

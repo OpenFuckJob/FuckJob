@@ -210,4 +210,65 @@ describe("Onboarding", () => {
     fireEvent.click(screen.getByRole("button", { name: "先跳过，直接进入" }));
     expect(await screen.findByText("配置保存失败，请检查配置后重试")).toBeInTheDocument();
   });
+
+  it("merges default outsourcing blacklist presets on finish", async () => {
+    const onFinish = vi.fn().mockResolvedValue(true);
+    render(<Onboarding config={baseConfig} onFinish={onFinish} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    await waitFor(() => expect(screen.getByText("已检测到 Chrome")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    fireEvent.click(screen.getByRole("button", { name: "完成并开始使用" }));
+
+    await waitFor(() => expect(onFinish).toHaveBeenCalledTimes(1));
+    const submitted = onFinish.mock.calls[0][0] as AppRuntimeConfig;
+    expect(submitted.job_filter_config.company_exclude_keywords).toContain("软通动力");
+    expect(submitted.job_filter_config.company_exclude_keywords).toContain("中软国际");
+    expect(submitted.job_filter_config.exclude_keywords).toContain("外包");
+    expect(submitted.job_filter_config.exclude_keywords).toContain("驻场");
+  });
+
+  it("disables greet/reply LLM and seeds an enabled Text greeting when skipping AI", async () => {
+    const onFinish = vi.fn().mockResolvedValue(true);
+    const llmDefaultConfig = {
+      ...baseConfig,
+      greet_config: {
+        enable_llm: true,
+        reply_prompt: "prompt",
+        default_template: [{ resource_type: "LLM" as const, content: "", enabled: true }],
+      },
+      replay_config: {
+        enable_template_reply: false,
+        templates: [],
+        enable_llm: true,
+        reply_prompt: "reply prompt",
+        background_context: null,
+        enable_auto_send_resume: false,
+        max_auto_replies: 5,
+        max_reply_chars: 200,
+        dry_run: false,
+      },
+    } as unknown as AppRuntimeConfig;
+
+    render(<Onboarding config={llmDefaultConfig} onFinish={onFinish} />);
+    fireEvent.click(screen.getByRole("button", { name: "先跳过，直接进入" }));
+
+    await waitFor(() => expect(onFinish).toHaveBeenCalledTimes(1));
+    const submitted = onFinish.mock.calls[0][0] as AppRuntimeConfig;
+    expect(submitted.llm_config).toBeNull();
+    expect(submitted.greet_config.enable_llm).toBe(false);
+    expect(submitted.replay_config.enable_llm).toBe(false);
+    expect(
+      submitted.greet_config.default_template.find((item) => item.resource_type === "LLM")
+        ?.enabled,
+    ).toBe(false);
+    expect(
+      submitted.greet_config.default_template.some(
+        (item) =>
+          item.resource_type === "Text" &&
+          item.enabled !== false &&
+          item.content.trim().length > 0,
+      ),
+    ).toBe(true);
+  });
 });

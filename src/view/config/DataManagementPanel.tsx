@@ -29,7 +29,11 @@ import type {
 
 const { Title, Text, Paragraph } = Typography;
 
-export function DataManagementPanel() {
+export function DataManagementPanel({
+  onConfigImported,
+}: {
+  onConfigImported?: () => Promise<void>;
+} = {}) {
   const [includeConfig, setIncludeConfig] = useState(false);
   const [exporting, setExporting] = useState(false);
 
@@ -149,6 +153,9 @@ export function DataManagementPanel() {
       }
 
       const stats = res.data;
+      if (stats.config_imported) {
+        await onConfigImported?.();
+      }
       const detailMsg =
         importStrategy === "merge"
           ? `新增岗位 ${stats.job_details_added} 条，更新岗位 ${stats.job_details_updated} 条，新增聊天记录 ${stats.chat_messages_added} 条。`
@@ -278,7 +285,7 @@ export function DataManagementPanel() {
                 <Space direction="vertical" style={{ width: "100%" }}>
                   <Radio value="merge">
                     <Text strong>智能合并 (推荐多设备同步使用)</Text>
-                    <div style={{ color: "#666", paddingLeft: 24 }}>
+                    <div style={{ color: "var(--of-text-secondary)", paddingLeft: 24 }}>
                       按岗位 ID 去重。对于已存在的记录，保留修改时间最新的数据；不存在的记录自动追加。
                     </div>
                   </Radio>
@@ -286,9 +293,9 @@ export function DataManagementPanel() {
                     <Text strong type="danger">
                       完全覆盖恢复（清空本地现有数据）
                     </Text>
-                    <div style={{ color: "#b91c1c", paddingLeft: 24 }}>
+                    <Text type="danger" style={{ display: "block", paddingLeft: 24 }}>
                       注意：会清空本地已有记录并用备份包完全替换；备份包中未包含的本地记录将被删除，建议先导出备份。
-                    </div>
+                    </Text>
                   </Radio>
                 </Space>
               </Radio.Group>

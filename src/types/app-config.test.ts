@@ -7,6 +7,7 @@ import {
   getReplyPollingConfig,
   selectProfileAfterRemoval,
   DEFAULT_AUTO_REPLY_WINDOW_HOURS,
+  DEFAULT_NOTIFICATION_CONFIG,
   DEFAULT_REPLY_POLLING_CONFIG,
   type AppRuntimeConfig,
 } from "./app-config";
@@ -149,5 +150,6 @@ describe("reply polling config", () => {
       humanize_delay_max_seconds: 120,
     });
     expect(DEFAULT_AUTO_REPLY_WINDOW_HOURS).toBe(24);
+    expect(DEFAULT_NOTIFICATION_CONFIG.notify_hr_reply).toBe(true);
   });
 });

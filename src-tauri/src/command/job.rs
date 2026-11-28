@@ -128,6 +128,8 @@ pub(crate) fn is_interview_invite(text: &str) -> bool {
         "zoom会议",
         "发您面试",
         "发你面试",
+        "面试方便吗",
+        "面试可以吗",
     ];
 
     INTERVIEW_PHRASES
@@ -147,15 +149,17 @@ fn stage_progress_rank(stage: JobPipelineStage) -> Option<u8> {
     }
 }
 
-/// 双轨状态机：融合「平台同步事实」与「用户手工覆盖」，只正向推进、绝不覆盖高阶人工决策。
+/// 双轨状态机：融合「平台同步事实」与「用户手工覆盖」，支持手工回拖纠偏且在新信号到达时自动正向推进。
 pub(crate) fn resolve_effective_stage(
     job: &JobDetail,
     communication_status: CommunicationStatus,
     unread_count: u32,
     signal: Option<&SyncedJobSignal>,
+    latest_signal_ts_ms: i64,
 ) -> JobPipelineStage {
     let detected = if communication_status == CommunicationStatus::Rejected
-        || signal.is_some_and(|s| s.rejected_by_platform)
+        || (communication_status != CommunicationStatus::InterviewInvited
+            && signal.is_some_and(|s| s.rejected_by_platform))
     {
         JobPipelineStage::Rejected
     } else if communication_status == CommunicationStatus::InterviewInvited
@@ -177,6 +181,10 @@ pub(crate) fn resolve_effective_stage(
         return detected;
     };
 
+    let manual_updated_ms = parse_local_datetime(&job.updated_at)
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or(0);
+
     match manual {
         // 终态或深度面试阶段一律以用户手工决策为准，绝不被同步覆盖
         JobPipelineStage::Offer
@@ -184,6 +192,14 @@ pub(crate) fn resolve_effective_stage(
         | JobPipelineStage::Archived
         | JobPipelineStage::Rejected => manual,
         _ => {
+            // 用户在最新平台消息/信号之后显式修改过阶段（例如拖回纠正误判），保留用户决策；
+            // 仅当更新的平台信号到达时才自动正向推进。
+            if manual_updated_ms > 0
+                && latest_signal_ts_ms > 0
+                && manual_updated_ms >= latest_signal_ts_ms
+            {
+                return manual;
+            }
             if detected == JobPipelineStage::Rejected {
                 return if stage_progress_rank(manual).unwrap_or(0) >= 3 {
                     manual
@@ -202,6 +218,7 @@ pub(crate) fn resolve_effective_stage(
     }
 }
 
+#[cfg(test)]
 fn build_job_list_items(jobs: Vec<JobDetail>, messages: Vec<ChatMessageRecord>) -> Vec<JobListItem> {
     build_job_list_items_with_signals(jobs, messages, &HashMap::new())
 }
@@ -212,8 +229,9 @@ fn build_job_list_items_with_signals(
     signals: &HashMap<String, SyncedJobSignal>,
 ) -> Vec<JobListItem> {
     let mut replied_job_ids = HashSet::new();
-    let mut rejected_job_ids = HashSet::new();
-    let mut interview_job_ids = HashSet::new();
+    let mut latest_rejected_at: HashMap<String, (i64, i64)> = HashMap::new();
+    let mut latest_interview_at: HashMap<String, (i64, i64)> = HashMap::new();
+    let mut latest_received_ts_by_job_id: HashMap<String, i64> = HashMap::new();
     let mut latest_messages_by_job_id: HashMap<String, ChatMessageRecord> = HashMap::new();
 
     for message in messages
@@ -222,10 +240,33 @@ fn build_job_list_items_with_signals(
     {
         if message.received {
             replied_job_ids.insert(message.job_id.clone());
+            let key = (message.time, message.mid);
+            latest_received_ts_by_job_id
+                .entry(message.job_id.clone())
+                .and_modify(|ts| {
+                    if message.time > *ts {
+                        *ts = message.time;
+                    }
+                })
+                .or_insert(message.time);
             if is_explicit_rejection(&message.text) {
-                rejected_job_ids.insert(message.job_id.clone());
+                latest_rejected_at
+                    .entry(message.job_id.clone())
+                    .and_modify(|cur| {
+                        if key > *cur {
+                            *cur = key;
+                        }
+                    })
+                    .or_insert(key);
             } else if is_interview_invite(&message.text) {
-                interview_job_ids.insert(message.job_id.clone());
+                latest_interview_at
+                    .entry(message.job_id.clone())
+                    .and_modify(|cur| {
+                        if key > *cur {
+                            *cur = key;
+                        }
+                    })
+                    .or_insert(key);
             }
         }
 
@@ -253,23 +294,59 @@ fn build_job_list_items_with_signals(
             let signal_interview = signal.is_some_and(|s| s.interview_invited)
                 || (signal_replied && signal_preview.is_some_and(is_interview_invite));
 
-            let communication_status =
-                if rejected_job_ids.contains(&job.id) || signal_rejected {
-                    CommunicationStatus::Rejected
-                } else if interview_job_ids.contains(&job.id) || signal_interview {
-                    CommunicationStatus::InterviewInvited
-                } else if replied_job_ids.contains(&job.id) || signal_replied {
-                    CommunicationStatus::Replied
-                } else {
-                    CommunicationStatus::NoReply
-                };
-
-            let effective_stage =
-                resolve_effective_stage(&job, communication_status, unread_count, signal);
-
             let msg_latest = latest_messages_by_job_id.get(&job.id);
             let msg_ts = msg_latest.map(|m| m.time).unwrap_or(0);
             let sig_ts = signal.and_then(|s| s.last_message_at).unwrap_or(0);
+            let latest_received_msg_ts = latest_received_ts_by_job_id
+                .get(&job.id)
+                .copied()
+                .unwrap_or(0);
+            let latest_signal_ts_ms = sig_ts.max(latest_received_msg_ts);
+
+            let reject_key = match (latest_rejected_at.get(&job.id).copied(), signal_rejected) {
+                (Some(m), true) => Some(m.max((sig_ts, 0))),
+                (Some(m), false) => Some(m),
+                (None, true) => Some((sig_ts, 0)),
+                (None, false) => None,
+            };
+            let interview_key =
+                match (latest_interview_at.get(&job.id).copied(), signal_interview) {
+                    (Some(m), true) => Some(m.max((sig_ts, 0))),
+                    (Some(m), false) => Some(m),
+                    (None, true) => Some((sig_ts, 0)),
+                    (None, false) => None,
+                };
+
+            let communication_status = match (reject_key, interview_key) {
+                (Some(r), Some(i)) => {
+                    if i > r {
+                        CommunicationStatus::InterviewInvited
+                    } else if r > i {
+                        CommunicationStatus::Rejected
+                    } else if signal_replied && signal_preview.is_some_and(is_interview_invite) {
+                        CommunicationStatus::InterviewInvited
+                    } else {
+                        CommunicationStatus::Rejected
+                    }
+                }
+                (Some(_), None) => CommunicationStatus::Rejected,
+                (None, Some(_)) => CommunicationStatus::InterviewInvited,
+                (None, None) => {
+                    if replied_job_ids.contains(&job.id) || signal_replied {
+                        CommunicationStatus::Replied
+                    } else {
+                        CommunicationStatus::NoReply
+                    }
+                }
+            };
+
+            let effective_stage = resolve_effective_stage(
+                &job,
+                communication_status,
+                unread_count,
+                signal,
+                latest_signal_ts_ms,
+            );
 
             let (latest_message, latest_message_at, latest_message_received) =
                 if signal_preview.is_some() && (msg_latest.is_none() || sig_ts >= msg_ts) {
@@ -412,6 +489,9 @@ mod communication_status_tests {
 
     #[test]
     fn dual_track_state_machine_advances_forward_and_preserves_manual_high_stages() {
+        let later_ms = super::parse_local_datetime("2026-08-19 10:00:00")
+            .unwrap()
+            .timestamp_millis();
         let mut applied_job = job("j-advance");
         applied_job.pipeline_stage = Some(super::JobPipelineStage::Applied);
         let invite_signal = super::SyncedJobSignal {
@@ -419,7 +499,7 @@ mod communication_status_tests {
             platform: "boss".into(),
             unread_count: 1,
             last_message_preview: Some("您好，邀请您参加明天下午面试".into()),
-            last_message_at: Some(5000),
+            last_message_at: Some(later_ms),
             last_message_received: Some(true),
             platform_status_tag: Some("约面试".into()),
             interview_invited: true,
@@ -438,7 +518,7 @@ mod communication_status_tests {
                 platform: "boss".into(),
                 unread_count: 1,
                 last_message_preview: Some("好的收到".into()),
-                last_message_at: Some(6000),
+                last_message_at: Some(later_ms + 1_000),
                 last_message_received: Some(true),
                 ..Default::default()
             },
@@ -461,6 +541,81 @@ mod communication_status_tests {
         );
         // Offer 阶段不会被同步覆盖回 Replied
         assert_eq!(kept_offer.effective_stage, super::JobPipelineStage::Offer);
+    }
+
+    #[test]
+    fn manual_drag_back_sticks_until_newer_signal_arrives() {
+        let signal_ms = super::parse_local_datetime("2026-08-19 10:00:00")
+            .unwrap()
+            .timestamp_millis();
+        let mut dragged = job("j-drag-back");
+        dragged.pipeline_stage = Some(super::JobPipelineStage::Replied);
+        // 用户在 10:05 手工拖回纠正误判
+        dragged.updated_at = "2026-08-19 10:05:00".into();
+
+        let mut signals = std::collections::HashMap::new();
+        signals.insert(
+            "j-drag-back".into(),
+            super::SyncedJobSignal {
+                job_id: "j-drag-back".into(),
+                platform: "boss".into(),
+                unread_count: 0,
+                last_message_preview: Some("邀请您参加面试".into()),
+                last_message_at: Some(signal_ms),
+                last_message_received: Some(true),
+                interview_invited: true,
+                ..Default::default()
+            },
+        );
+
+        let items =
+            super::build_job_list_items_with_signals(vec![dragged.clone()], vec![], &signals);
+        assert_eq!(items[0].effective_stage, super::JobPipelineStage::Replied);
+
+        // 10:30 收到更新的真实邀约消息，应自动推进回 InterviewScheduled
+        let newer_ms = super::parse_local_datetime("2026-08-19 10:30:00")
+            .unwrap()
+            .timestamp_millis();
+        signals.get_mut("j-drag-back").unwrap().last_message_at = Some(newer_ms);
+        let items_after =
+            super::build_job_list_items_with_signals(vec![dragged], vec![], &signals);
+        assert_eq!(
+            items_after[0].effective_stage,
+            super::JobPipelineStage::InterviewScheduled
+        );
+    }
+
+    #[test]
+    fn newer_interview_invite_overrides_older_rejection_chronologically() {
+        let items = build_job_list_items(
+            vec![job("j-revived"), job("j-later-rejected")],
+            vec![
+                message("j-revived", 1, true, "这个岗位暂时不合适", 1000),
+                message("j-revived", 2, true, "另一个组想邀请您参加面试", 2000),
+                message("j-later-rejected", 3, true, "邀请您参加面试", 1000),
+                message("j-later-rejected", 4, true, "不好意思岗位已招满，暂不考虑", 2000),
+            ],
+        );
+        let revived = items.iter().find(|i| i.job.id == "j-revived").unwrap();
+        let later_rejected = items.iter().find(|i| i.job.id == "j-later-rejected").unwrap();
+        assert_eq!(revived.communication_status, CommunicationStatus::InterviewInvited);
+        assert_eq!(revived.effective_stage, super::JobPipelineStage::InterviewScheduled);
+        assert_eq!(later_rejected.communication_status, CommunicationStatus::Rejected);
+        assert_eq!(later_rejected.effective_stage, super::JobPipelineStage::Rejected);
+    }
+
+    #[test]
+    fn csv_escape_guards_formula_injection_safely() {
+        assert_eq!(super::csv_escape("=CMD|' /C calc'!A0"), "'=CMD|' /C calc'!A0");
+        assert_eq!(super::csv_escape(" =1+1"), "' =1+1");
+        assert_eq!(super::csv_escape("+SUM(A1:A2)"), "'+SUM(A1:A2)");
+        assert_eq!(super::csv_escape("@SUM(1,2)"), "\"'@SUM(1,2)\"");
+        assert_eq!(super::csv_escape("\t=1+1"), "'\t=1+1");
+        assert_eq!(super::csv_escape("-2+3"), "'-2+3");
+        // 普通短横线占位符和纯负数不应被误加引号
+        assert_eq!(super::csv_escape("-"), "-");
+        assert_eq!(super::csv_escape("-42.5"), "-42.5");
+        assert_eq!(super::csv_escape("25-40K"), "25-40K");
     }
 
     #[test]
@@ -1076,7 +1231,8 @@ pub fn job_create(job: JobDetail) -> CommandResult<()> {
 }
 
 #[tauri::command]
-pub fn job_update(id: String, job: JobDetail) -> CommandResult<()> {
+pub fn job_update(id: String, mut job: JobDetail) -> CommandResult<()> {
+    job.updated_at = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     match job_detail_dao::update(&id, job) {
         Ok(true) => CommandResult::ok(()),
         Ok(false) => CommandResult::err(format!("岗位不存在: {}", id)),
@@ -1087,7 +1243,10 @@ pub fn job_update(id: String, job: JobDetail) -> CommandResult<()> {
 #[tauri::command]
 pub fn job_delete(id: String) -> CommandResult<()> {
     match job_detail_dao::delete(&id) {
-        Ok(true) => CommandResult::ok(()),
+        Ok(true) => {
+            let _ = sync_state_dao::remove_signals(&[id]);
+            CommandResult::ok(())
+        }
         Ok(false) => CommandResult::err(format!("岗位不存在: {}", id)),
         Err(e) => CommandResult::err(e.to_string()),
     }
@@ -1096,7 +1255,10 @@ pub fn job_delete(id: String) -> CommandResult<()> {
 #[tauri::command]
 pub fn job_batch_delete(ids: Vec<String>) -> CommandResult<usize> {
     match job_detail_dao::delete_many(&ids) {
-        Ok(removed) => CommandResult::ok(removed),
+        Ok(removed) => {
+            let _ = sync_state_dao::remove_signals(&ids);
+            CommandResult::ok(removed)
+        }
         Err(e) => CommandResult::err(e.to_string()),
     }
 }
@@ -1147,12 +1309,34 @@ fn communication_status_label(status: CommunicationStatus) -> &'static str {
     }
 }
 
+fn needs_csv_formula_guard(value: &str) -> bool {
+    let trimmed = value.trim_start_matches(' ');
+    let Some(first) = trimmed.chars().next() else {
+        return false;
+    };
+    match first {
+        '=' | '+' | '@' | '\t' => true,
+        '-' => {
+            let rest = &trimmed[1..];
+            !rest.is_empty()
+                && !(rest.chars().any(|c| c.is_ascii_digit())
+                    && rest.chars().all(|c| c.is_ascii_digit() || c == '.'))
+        }
+        _ => false,
+    }
+}
+
 fn csv_escape(field: &str) -> String {
     let sanitized = field.replace('\r', "");
-    if sanitized.contains([',', '"', '\n']) {
-        format!("\"{}\"", sanitized.replace('"', "\"\""))
+    let guarded = if needs_csv_formula_guard(&sanitized) {
+        format!("'{sanitized}")
     } else {
         sanitized
+    };
+    if guarded.contains([',', '"', '\n']) {
+        format!("\"{}\"", guarded.replace('"', "\"\""))
+    } else {
+        guarded
     }
 }
 
@@ -1286,8 +1470,9 @@ pub fn job_export(
         }
         let jobs = job_detail_dao::list()?;
         let messages = chat_message_dao::list()?;
+        let signals = sync_state_dao::list_signals();
         let analyses = analysis_dao::list()?;
-        let mut items = build_job_list_items(jobs, messages);
+        let mut items = build_job_list_items_with_signals(jobs, messages, &signals);
         if let Some(ids) = job_ids.filter(|list| !list.is_empty()) {
             let allow: HashSet<String> = ids.into_iter().collect();
             items.retain(|item| allow.contains(&item.job.id));

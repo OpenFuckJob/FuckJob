@@ -292,6 +292,39 @@ describe("LlmConfigPanel 降级链界面", () => {
     });
   });
 
+  it("验证连接时若输入框有未保存的 API Key，先落盘凭据再发起测试", async () => {
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "list_llm_credential_status") {
+        return Promise.resolve({ success: true, data: [], error: null });
+      }
+      if (command === "set_llm_api_key") {
+        return Promise.resolve({ success: true, data: { configured: true, source: "keychain" }, error: null });
+      }
+      if (command === "test_llm_connection") {
+        return Promise.resolve({
+          success: true,
+          data: { model: "gpt-test", latency_ms: 42, response: "pong" },
+          error: null,
+        });
+      }
+      return Promise.resolve({ success: true, data: { configured: false, source: "none" }, error: null });
+    });
+
+    render(<Harness />);
+    fireEvent.change(await screen.findByLabelText("primary API Key"), { target: { value: "fresh-key" } });
+    fireEvent.click(screen.getByRole("button", { name: "验证连接" }));
+
+    await waitFor(() =>
+      expect(vi.mocked(invoke)).toHaveBeenCalledWith("test_llm_connection"),
+    );
+    const commands = vi.mocked(invoke).mock.calls.map(([command]) => command);
+    expect(commands.indexOf("set_llm_api_key")).toBeGreaterThanOrEqual(0);
+    expect(commands.indexOf("test_llm_connection")).toBeGreaterThan(
+      commands.indexOf("set_llm_api_key"),
+    );
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("set_llm_api_key", { apiKey: "fresh-key" });
+  });
+
   it("编辑模型名不触发任何模型列表请求", async () => {
     render(<Harness initialConfig={{ ...primaryConfig, model: "" }} />);
 

@@ -46,20 +46,20 @@ export function RadioCardGroup<T extends string>({
             disabled={option.disabled}
             className={`!m-0 !flex !w-full !items-center !gap-2.5 !rounded-lg !border !px-3 !py-2.5 transition-colors ${
               value === option.value
-                ? "!border-sky-400 !bg-sky-50/60"
-                : "!border-slate-200 !bg-white hover:!border-sky-200 hover:!bg-slate-50/60"
-            } ${option.disabled ? "!cursor-not-allowed !bg-slate-50/70" : ""}`}
+                ? "border-[var(--of-accent)]! bg-[var(--of-accent-soft)]!"
+                : "border-[var(--of-border)]! bg-[var(--of-surface)]! hover:border-[var(--of-border-strong)]! hover:bg-[var(--of-surface-hover)]!"
+            } ${option.disabled ? "!cursor-not-allowed bg-[var(--of-surface-subtle)]! opacity-65" : ""}`}
           >
             <span className="flex min-w-0 flex-wrap items-baseline gap-x-2">
-              <span className="text-sm font-semibold leading-5 text-slate-900">
+              <span className="text-sm font-semibold leading-5 text-[var(--of-text)]">
                 {option.label}
               </span>
               {option.recommended && (
-                <span className="rounded bg-sky-100 px-1 text-[10px] font-medium leading-4 text-sky-700">
+                <span className="rounded bg-[var(--of-accent-soft)] px-1 text-[10px] font-medium leading-4 text-[var(--of-accent)]">
                   推荐
                 </span>
               )}
-              <span className="text-xs leading-5 text-slate-500">
+              <span className="text-xs leading-5 text-[var(--of-text-secondary)]">
                 {option.description}
               </span>
             </span>

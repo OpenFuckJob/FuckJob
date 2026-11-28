@@ -524,36 +524,58 @@ input {
   background: transparent !important;
 }
 
+[data-theme="dark"] .bg-white\!,
+[data-theme="dark"] .\!bg-white,
 [data-theme="dark"] .of-config-surface .bg-white,
 [data-theme="dark"] .of-config-surface .bg-white\/85,
 [data-theme="dark"] .of-config-surface .bg-white\/90\!,
 [data-theme="dark"] .of-config-surface .bg-white\/80 {
-  background-color: #11141d !important;
+  background-color: var(--of-surface) !important;
 }
 
 [data-theme="dark"] .of-config-surface .bg-slate-50,
 [data-theme="dark"] .of-config-surface .bg-slate-50\/70,
-[data-theme="dark"] .of-config-surface .bg-slate-50\/80 {
-  background-color: #161b26 !important;
+[data-theme="dark"] .of-config-surface .bg-slate-50\/80,
+[data-theme="dark"] .of-config-surface .bg-slate-100 {
+  background-color: var(--of-surface-subtle) !important;
+}
+
+[data-theme="dark"] .bg-sky-50,
+[data-theme="dark"] .bg-indigo-50 {
+  background-color: var(--of-accent-soft) !important;
+}
+
+[data-theme="dark"] .bg-amber-50 {
+  background-color: rgba(245, 158, 11, 0.14) !important;
+}
+
+[data-theme="dark"] .of-hour-cell-off {
+  background-color: #262e42;
+}
+
+[data-theme="dark"] .of-hour-cell-off:hover {
+  background-color: #333e59;
 }
 
 [data-theme="dark"] .of-config-surface .border-slate-200,
 [data-theme="dark"] .of-config-surface .border-slate-200\/80,
+[data-theme="dark"] .of-config-surface .border-slate-300,
 [data-theme="dark"] .of-config-surface .border-slate-300\/80,
 [data-theme="dark"] .of-config-surface .divide-slate-100 > :not([hidden]) ~ :not([hidden]) {
-  border-color: rgba(255, 255, 255, 0.09) !important;
+  border-color: var(--of-border) !important;
 }
 
 [data-theme="dark"] .of-config-surface .text-slate-900,
 [data-theme="dark"] .of-config-surface .text-slate-900\!,
 [data-theme="dark"] .of-config-surface .text-slate-800,
 [data-theme="dark"] .of-config-surface .text-slate-700 {
-  color: #f3f5fa !important;
+  color: var(--of-text) !important;
 }
 
 [data-theme="dark"] .of-config-surface .text-slate-500,
-[data-theme="dark"] .of-config-surface .text-slate-600 {
-  color: #98a4bc !important;
+[data-theme="dark"] .of-config-surface .text-slate-600,
+[data-theme="dark"] .of-config-surface .text-slate-600\! {
+  color: var(--of-text-secondary) !important;
 }
 
 @media (max-width: 860px) {

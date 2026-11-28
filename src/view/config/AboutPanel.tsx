@@ -42,7 +42,7 @@ export function AboutPanel() {
               <div className="flex items-center gap-2">
                 <Text className="text-lg font-bold tracking-tight text-slate-900">OfferFlow</Text>
                 <Text className="text-xs text-slate-500 font-medium">自动投递管家</Text>
-                <span className="rounded-md bg-indigo-50 px-2 py-0.5 text-xs font-semibold text-indigo-600">
+                <span className="rounded-md bg-[var(--of-accent-soft)] px-2 py-0.5 text-xs font-semibold text-[var(--of-accent)]">
                   {version ? `v${version}` : "本地开发版"}
                 </span>
               </div>
@@ -71,7 +71,7 @@ export function AboutPanel() {
         <Paragraph className="text-slate-600 text-xs leading-relaxed">
           OfferFlow 是一款注重隐私安全与效率提升的本地自动化求职工具，基于 Tauri 与 Rust 构建。所有配置数据、简历正文及沟通记录全量存储在本地。
         </Paragraph>
-        <div className="flex flex-wrap gap-4 text-xs text-slate-500 border-t border-slate-100 pt-3 mt-4">
+        <div className="flex flex-wrap gap-4 text-xs text-slate-500 border-t border-[var(--of-border)] pt-3 mt-4">
           <div>
             开源协议：<Text className="font-semibold text-slate-700">Apache-2.0</Text>
           </div>
