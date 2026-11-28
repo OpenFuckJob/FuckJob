@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::{
     command::base::CommandResult,
     config::{load_app_config, resolve_job_profile},
@@ -9,6 +11,32 @@ use crate::{
     },
     task::{JobTaskInfo, JobTaskOverview, JobTaskProfile, JOB_TASK_MANAGER},
 };
+
+static SYNC_BOSS_RUNNING: AtomicBool = AtomicBool::new(false);
+static SYNC_LIEPIN_RUNNING: AtomicBool = AtomicBool::new(false);
+
+struct SyncPlatformGuard(&'static AtomicBool);
+
+impl Drop for SyncPlatformGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+fn try_acquire_sync_guard(platform: PlatformKind) -> Result<SyncPlatformGuard, String> {
+    let (flag, label) = match platform {
+        PlatformKind::Boss => (&SYNC_BOSS_RUNNING, "BOSS 直聘"),
+        PlatformKind::Liepin => (&SYNC_LIEPIN_RUNNING, "猎聘"),
+        PlatformKind::Job51 => return Err("前程无忧暂不支持聊天状态同步".to_string()),
+    };
+    if flag
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err(format!("{label} 正在同步中，请稍后再试"));
+    }
+    Ok(SyncPlatformGuard(flag))
+}
 
 #[tauri::command]
 pub async fn check_env(
@@ -205,7 +233,11 @@ pub fn get_job_task_status() -> CommandResult<JobTaskOverview> {
 pub fn stop_job_task(task_id: Option<String>) -> CommandResult<()> {
     let result = match task_id {
         Some(task_id) => JOB_TASK_MANAGER.stop(&task_id),
-        None => run_flow::stop_job_task(),
+        None => match JOB_TASK_MANAGER.stop_all() {
+            Ok(count) if count > 0 => Ok(()),
+            Ok(_) => run_flow::stop_job_task(),
+            Err(error) => Err(error),
+        },
     };
     match result {
         Ok(()) => CommandResult::ok(()),
@@ -227,6 +259,7 @@ pub struct SyncStatusSummary {
 /// 一键零点击状态同步（支持单平台或同时同步 BOSS + 猎聘，绝不点击会话卡片、保留未读红点）。
 #[tauri::command]
 pub async fn sync_platform_status(
+    app_handle: tauri::AppHandle,
     platform: Option<PlatformKind>,
 ) -> CommandResult<SyncStatusSummary> {
     let targets = match platform {
@@ -237,8 +270,22 @@ pub async fn sync_platform_status(
         None => vec![PlatformKind::Boss, PlatformKind::Liepin],
     };
 
+    let mut guards = Vec::with_capacity(targets.len());
+    for &target in &targets {
+        match try_acquire_sync_guard(target) {
+            Ok(guard) => guards.push(guard),
+            Err(error) => return CommandResult::err(error),
+        }
+    }
+
+    let notification_config = crate::config::load_app_config_inner(app_handle)
+        .map(|cfg| cfg.notification_config)
+        .unwrap_or_default();
+
     let (tx, rx) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
+        let _guards = guards;
+        let _notify_guard = crate::notification::scoped_notification(notification_config);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build();
@@ -255,41 +302,97 @@ pub async fn sync_platform_status(
                 };
 
                 for target in targets {
-                    let _ = logger::set_platform(Some(target));
+                    let _log_ctx = logger::scoped_context(None, Some(target));
                     match target {
-                        PlatformKind::Boss => match crate::rpa::boss::handler::sync_chat_history().await {
-                            Ok(res) => {
-                                summary.platforms.push("boss".to_string());
-                                summary.scanned += res.scanned;
-                                summary.updated += res.jobs_updated + res.jobs_inserted;
-                                summary.unread_total = summary.unread_total.saturating_add(res.unread_total);
-                                summary.interview_detected += res.interview_detected;
+                        PlatformKind::Boss => {
+                            let prev_meta = crate::dao::sync_state_dao::get_platform_meta("boss");
+                            let sync_result = crate::browser::with_task_browser(|_, main_tab| {
+                                Box::pin(async move {
+                                    crate::rpa::boss::handler::sync_chat_history_on_page(main_tab)
+                                        .await
+                                })
+                            })
+                            .await;
+                            match sync_result {
+                                Ok(res) => {
+                                    let updated_count = res.jobs_updated + res.jobs_inserted;
+                                    summary.platforms.push("boss".to_string());
+                                    summary.scanned += res.scanned;
+                                    summary.updated += updated_count;
+                                    summary.unread_total =
+                                        summary.unread_total.saturating_add(res.unread_total);
+                                    summary.interview_detected += res.interview_detected;
+
+                                    notify_sync_highlights(
+                                        "BOSS 直聘",
+                                        prev_meta.last_unread_total,
+                                        res.unread_total,
+                                        res.interview_detected,
+                                        updated_count,
+                                    );
+                                }
+                                Err(err) => {
+                                    let err_text = err.to_string();
+                                    let mut meta =
+                                        crate::dao::sync_state_dao::get_platform_meta("boss");
+                                    meta.last_error = Some(err_text.clone());
+                                    let _ = crate::dao::sync_state_dao::save_platform_meta(meta);
+                                    if run_flow::is_fatal_risk_or_auth_error(&err_text) {
+                                        crate::notification::notify_current(
+                                            crate::notification::NotificationEvent::RiskAlert,
+                                            "BOSS 状态同步检测到风控/登录异常",
+                                            err_text.clone(),
+                                        );
+                                    }
+                                    summary.warnings.push(format!("BOSS 同步未完成：{err_text}"));
+                                }
                             }
-                            Err(err) => {
-                                let mut meta = crate::dao::sync_state_dao::get_platform_meta("boss");
-                                meta.last_error = Some(err.to_string());
-                                let _ = crate::dao::sync_state_dao::save_platform_meta(meta);
-                                summary.warnings.push(format!("BOSS 同步未完成：{err}"));
+                        }
+                        PlatformKind::Liepin => {
+                            let prev_meta = crate::dao::sync_state_dao::get_platform_meta("liepin");
+                            let sync_result = crate::browser::with_task_browser(|_, main_tab| {
+                                Box::pin(async move {
+                                    crate::rpa::liepin::handler::sync_chat_status_on_page(main_tab)
+                                        .await
+                                })
+                            })
+                            .await;
+                            match sync_result {
+                                Ok(res) => {
+                                    summary.platforms.push("liepin".to_string());
+                                    summary.scanned += res.scanned;
+                                    summary.updated += res.jobs_updated;
+                                    summary.unread_total =
+                                        summary.unread_total.saturating_add(res.unread_total);
+                                    summary.interview_detected += res.interview_detected;
+
+                                    notify_sync_highlights(
+                                        "猎聘",
+                                        prev_meta.last_unread_total,
+                                        res.unread_total,
+                                        res.interview_detected,
+                                        res.jobs_updated,
+                                    );
+                                }
+                                Err(err) => {
+                                    let err_text = err.to_string();
+                                    let mut meta =
+                                        crate::dao::sync_state_dao::get_platform_meta("liepin");
+                                    meta.last_error = Some(err_text.clone());
+                                    let _ = crate::dao::sync_state_dao::save_platform_meta(meta);
+                                    if run_flow::is_fatal_risk_or_auth_error(&err_text) {
+                                        crate::notification::notify_current(
+                                            crate::notification::NotificationEvent::RiskAlert,
+                                            "猎聘状态同步检测到风控/登录异常",
+                                            err_text.clone(),
+                                        );
+                                    }
+                                    summary.warnings.push(format!("猎聘同步未完成：{err_text}"));
+                                }
                             }
-                        },
-                        PlatformKind::Liepin => match crate::rpa::liepin::handler::sync_chat_status().await {
-                            Ok(res) => {
-                                summary.platforms.push("liepin".to_string());
-                                summary.scanned += res.scanned;
-                                summary.updated += res.jobs_updated;
-                                summary.unread_total = summary.unread_total.saturating_add(res.unread_total);
-                                summary.interview_detected += res.interview_detected;
-                            }
-                            Err(err) => {
-                                let mut meta = crate::dao::sync_state_dao::get_platform_meta("liepin");
-                                meta.last_error = Some(err.to_string());
-                                let _ = crate::dao::sync_state_dao::save_platform_meta(meta);
-                                summary.warnings.push(format!("猎聘同步未完成：{err}"));
-                            }
-                        },
+                        }
                         PlatformKind::Job51 => {}
                     }
-                    let _ = logger::set_platform(None);
                 }
 
                 if summary.platforms.is_empty() && !summary.warnings.is_empty() {
@@ -309,10 +412,62 @@ pub async fn sync_platform_status(
     }
 }
 
+fn notify_sync_highlights(
+    platform_label: &str,
+    prev_unread_total: u32,
+    new_unread_total: u32,
+    interview_detected: usize,
+    updated_count: usize,
+) {
+    let has_new_unread = new_unread_total > prev_unread_total;
+    let has_new_interview = interview_detected > 0 && updated_count > 0;
+    if !has_new_unread && !has_new_interview {
+        return;
+    }
+    let mut parts = Vec::new();
+    if has_new_unread {
+        parts.push(format!(
+            "新增 {} 条未读消息（当前共 {} 条未读）",
+            new_unread_total - prev_unread_total,
+            new_unread_total
+        ));
+    }
+    if interview_detected > 0 {
+        parts.push(format!("识别到 {} 条约面信号", interview_detected));
+    }
+    crate::notification::notify_current(
+        crate::notification::NotificationEvent::HrReply,
+        format!("{platform_label} 状态同步发现新动态"),
+        parts.join("，"),
+    );
+}
+
 #[tauri::command]
 pub fn read_log_file(lines: Option<usize>) -> CommandResult<String> {
     match logger::read_tail_lines(lines.unwrap_or(500)) {
         Ok(content) => CommandResult::ok(content),
         Err(error) => CommandResult::err(error.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_guard_enforces_single_flight_and_releases_on_drop() {
+        let boss_guard = try_acquire_sync_guard(PlatformKind::Boss).expect("first boss sync ok");
+        assert!(try_acquire_sync_guard(PlatformKind::Boss).is_err());
+
+        // Different platform can still run concurrently
+        let liepin_guard =
+            try_acquire_sync_guard(PlatformKind::Liepin).expect("liepin sync independent");
+        assert!(try_acquire_sync_guard(PlatformKind::Liepin).is_err());
+
+        drop(boss_guard);
+        assert!(try_acquire_sync_guard(PlatformKind::Boss).is_ok());
+
+        drop(liepin_guard);
+        assert!(try_acquire_sync_guard(PlatformKind::Liepin).is_ok());
     }
 }

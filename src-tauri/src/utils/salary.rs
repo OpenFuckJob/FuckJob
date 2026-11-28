@@ -94,12 +94,19 @@ pub fn parse_salary(raw: &str) -> Option<ParsedSalary> {
     // 剥离 `·14薪` / `14薪` 后再提取数字，防止把月数误当成薪资上限
     let main_part = lower.split(['·', '•']).next().unwrap_or(&lower);
     let main_part = strip_trailing_months(main_part);
-    let (mut min, mut max) = extract_range(main_part)?;
-    if max < min {
-        std::mem::swap(&mut min, &mut max);
+    let bounds = extract_bounds(main_part);
+    if bounds.is_empty() {
+        return None;
     }
 
+    let (first_val, first_unit) = bounds[0];
+    let (second_val, second_unit) = bounds.get(1).copied().unwrap_or(bounds[0]);
+
     if lower.contains("/天") || lower.contains("元/日") || lower.contains("/日") {
+        let (mut min, mut max) = (first_val, second_val);
+        if max < min {
+            std::mem::swap(&mut min, &mut max);
+        }
         return Some(ParsedSalary {
             unit: SalaryUnit::DailyYuan,
             min,
@@ -108,6 +115,10 @@ pub fn parse_salary(raw: &str) -> Option<ParsedSalary> {
         });
     }
     if lower.contains("/时") || lower.contains("小时") {
+        let (mut min, mut max) = (first_val, second_val);
+        if max < min {
+            std::mem::swap(&mut min, &mut max);
+        }
         return Some(ParsedSalary {
             unit: SalaryUnit::HourlyYuan,
             min,
@@ -116,45 +127,133 @@ pub fn parse_salary(raw: &str) -> Option<ParsedSalary> {
         });
     }
 
-    // `万/年` 或大额 `万`（>= 10 万通常为年薪）折算为月薪 K
-    if lower.contains("万/年") || lower.contains("w/年") || (lower.contains('万') && min >= 10.0) {
-        let factor = 10.0 / (months.max(12) as f32);
-        return Some(ParsedSalary {
-            unit: SalaryUnit::MonthlyK,
-            min: min * factor,
-            max: max * factor,
-            months,
-        });
+    let has_explicit_month = lower.contains("/月") || lower.contains("每月");
+    let has_explicit_year =
+        lower.contains("/年") || lower.contains("每年") || lower.contains("年薪");
+
+    // 混合单位（如 `8千-1.2万`、`9千-1.5万/月`、`8k-1.2w`）：先按各自单位换算为 K，再排序
+    if bounds.len() >= 2 {
+        if let (Some(u1), Some(u2)) = (first_unit, second_unit) {
+            if u1 != u2 {
+                let mut min = scale_bound_to_k(first_val, u1);
+                let mut max = scale_bound_to_k(second_val, u2);
+                if max < min {
+                    std::mem::swap(&mut min, &mut max);
+                }
+                if has_explicit_year && !has_explicit_month {
+                    let divisor = months.max(12) as f32;
+                    min /= divisor;
+                    max /= divisor;
+                }
+                return Some(ParsedSalary {
+                    unit: SalaryUnit::MonthlyK,
+                    min,
+                    max,
+                    months,
+                });
+            }
+        }
     }
-    // `1.5-2.5万/月` 或 `< 10 万` 折算为月薪 K
-    if lower.contains('万') || lower.contains("w/月") || lower.ends_with('w') {
-        return Some(ParsedSalary {
-            unit: SalaryUnit::MonthlyK,
-            min: min * 10.0,
-            max: max * 10.0,
-            months,
-        });
+
+    let (mut min, mut max) = (first_val, second_val);
+    if max < min {
+        std::mem::swap(&mut min, &mut max);
     }
-    // `15-25k` / `15-25千`
-    if lower.contains('k') || lower.contains('千') {
-        return Some(ParsedSalary {
-            unit: SalaryUnit::MonthlyK,
-            min,
-            max,
-            months,
-        });
-    }
-    // `8000-12000元/月` 或裸大数字按元/月折算为 K
-    if lower.contains("元/月") || lower.contains('元') || min >= 1000.0 {
-        return Some(ParsedSalary {
+
+    let resolved_unit = first_unit.or(second_unit).or_else(|| {
+        if main_part.contains('万') || main_part.ends_with('w') {
+            Some(BoundUnit::Wan)
+        } else if main_part.contains('k') || main_part.contains('千') {
+            Some(BoundUnit::K)
+        } else if lower.contains("元/月") || lower.contains('元') {
+            Some(BoundUnit::Yuan)
+        } else {
+            None
+        }
+    });
+
+    match resolved_unit {
+        Some(BoundUnit::Wan) => {
+            // 显式 `/月` 必须优先于 `min >= 10` 年薪启发式（避免把 `10-15万/月` 误算为年薪）
+            if has_explicit_month {
+                return Some(ParsedSalary {
+                    unit: SalaryUnit::MonthlyK,
+                    min: min * 10.0,
+                    max: max * 10.0,
+                    months,
+                });
+            }
+            // `万/年` / `w/年` 或无 `/月` 且 `>= 10 万/w` 按年薪折算为月薪 K
+            if has_explicit_year || min >= 10.0 {
+                let factor = 10.0 / (months.max(12) as f32);
+                return Some(ParsedSalary {
+                    unit: SalaryUnit::MonthlyK,
+                    min: min * factor,
+                    max: max * factor,
+                    months,
+                });
+            }
+            // `< 10 万/w`（如 `1.5-2.5万`、`1.5-2.5w·14薪`）按月薪折算为 K
+            Some(ParsedSalary {
+                unit: SalaryUnit::MonthlyK,
+                min: min * 10.0,
+                max: max * 10.0,
+                months,
+            })
+        }
+        Some(BoundUnit::K) => {
+            if has_explicit_year && !has_explicit_month {
+                let divisor = months.max(12) as f32;
+                return Some(ParsedSalary {
+                    unit: SalaryUnit::MonthlyK,
+                    min: min / divisor,
+                    max: max / divisor,
+                    months,
+                });
+            }
+            Some(ParsedSalary {
+                unit: SalaryUnit::MonthlyK,
+                min,
+                max,
+                months,
+            })
+        }
+        Some(BoundUnit::Yuan) => {
+            let divisor = if has_explicit_year && !has_explicit_month {
+                1000.0 * (months.max(12) as f32)
+            } else {
+                1000.0
+            };
+            Some(ParsedSalary {
+                unit: SalaryUnit::MonthlyK,
+                min: min / divisor,
+                max: max / divisor,
+                months,
+            })
+        }
+        None if has_explicit_month || min >= 1000.0 => Some(ParsedSalary {
             unit: SalaryUnit::MonthlyK,
             min: min / 1000.0,
             max: max / 1000.0,
             months,
-        });
+        }),
+        None => None,
     }
+}
 
-    None
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundUnit {
+    K,
+    Wan,
+    Yuan,
+}
+
+fn scale_bound_to_k(value: f32, unit: BoundUnit) -> f32 {
+    match unit {
+        BoundUnit::K => value,
+        BoundUnit::Wan => value * 10.0,
+        BoundUnit::Yuan => value / 1000.0,
+    }
 }
 
 fn extract_months(text: &str) -> Option<u8> {
@@ -183,33 +282,52 @@ fn strip_trailing_months(text: &str) -> &str {
     text
 }
 
-fn extract_range(text: &str) -> Option<(f32, f32)> {
-    let mut numbers: Vec<f32> = Vec::new();
-    let mut current = String::new();
-    for ch in text.chars() {
-        if ch.is_ascii_digit() || (ch == '.' && !current.is_empty() && !current.contains('.')) {
-            current.push(ch);
-        } else if !current.is_empty() {
-            if let Ok(value) = current.parse::<f32>() {
-                numbers.push(value);
-            }
-            current.clear();
-            if numbers.len() >= 2 {
+fn extract_bounds(text: &str) -> Vec<(f32, Option<BoundUnit>)> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut results = Vec::new();
+    let mut i = 0;
+
+    while i < chars.len() && results.len() < 2 {
+        if !chars[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let mut num = String::new();
+        let mut seen_dot = false;
+        while i < chars.len() {
+            let ch = chars[i];
+            if ch.is_ascii_digit() {
+                num.push(ch);
+                i += 1;
+            } else if ch == '.' && !seen_dot {
+                seen_dot = true;
+                num.push(ch);
+                i += 1;
+            } else {
                 break;
             }
         }
-    }
-    if !current.is_empty() && numbers.len() < 2 {
-        if let Ok(value) = current.parse::<f32>() {
-            numbers.push(value);
+        let Ok(value) = num.parse::<f32>() else {
+            continue;
+        };
+
+        let mut look = i;
+        while look < chars.len() && chars[look].is_whitespace() {
+            look += 1;
         }
+        let unit = chars.get(look).and_then(|ch| match ch {
+            'k' | '千' => Some(BoundUnit::K),
+            '万' | 'w' => Some(BoundUnit::Wan),
+            '元' => Some(BoundUnit::Yuan),
+            _ => None,
+        });
+        if unit.is_some() {
+            i = look + 1;
+        }
+        results.push((value, unit));
     }
 
-    match numbers.as_slice() {
-        [single] => Some((*single, *single)),
-        [first, second, ..] => Some((*first, *second)),
-        [] => None,
-    }
+    results
 }
 
 #[cfg(test)]
@@ -251,6 +369,42 @@ mod tests {
         assert_eq!(annual.unit, SalaryUnit::MonthlyK);
         assert!((annual.min - 20.0).abs() < 0.01);
         assert!((annual.max - 30.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn explicit_monthly_wan_beats_annual_heuristic() {
+        let high_monthly = parse_salary("10-15万/月").unwrap();
+        assert_eq!(high_monthly.unit, SalaryUnit::MonthlyK);
+        assert!((high_monthly.min - 100.0).abs() < 0.01);
+        assert!((high_monthly.max - 150.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn parses_mixed_qian_and_wan_units_without_corrupting_range() {
+        let mixed = parse_salary("8千-1.2万").unwrap();
+        assert_eq!(mixed.unit, SalaryUnit::MonthlyK);
+        assert!((mixed.min - 8.0).abs() < 0.01);
+        assert!((mixed.max - 12.0).abs() < 0.01);
+
+        let mixed_monthly = parse_salary("9千-1.5万/月").unwrap();
+        assert_eq!(mixed_monthly.unit, SalaryUnit::MonthlyK);
+        assert!((mixed_monthly.min - 9.0).abs() < 0.01);
+        assert!((mixed_monthly.max - 15.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn parses_w_suffix_inside_main_part_and_annual_w_heuristic() {
+        let w_monthly = parse_salary("1.5-2.5w·14薪").unwrap();
+        assert_eq!(w_monthly.unit, SalaryUnit::MonthlyK);
+        assert!((w_monthly.min - 15.0).abs() < 0.01);
+        assert!((w_monthly.max - 25.0).abs() < 0.01);
+        assert_eq!(w_monthly.months, 14);
+
+        let w_annual = parse_salary("20-35w").unwrap();
+        assert_eq!(w_annual.unit, SalaryUnit::MonthlyK);
+        assert!((w_annual.min - (200.0 / 12.0)).abs() < 0.02);
+        assert!((w_annual.max - (350.0 / 12.0)).abs() < 0.02);
+        assert_eq!(w_annual.months, 12);
     }
 
     #[test]

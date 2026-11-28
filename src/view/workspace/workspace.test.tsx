@@ -12,8 +12,11 @@ import {
   filterTaskLogContent,
   filterTasksByPlatform,
   getTaskProfileLabel,
+  isGreetConfigReady,
   parseLogLineLevel,
   requestStopJobTask,
+  resolveStepStatus,
+  resolveWorkspaceEffectiveStage,
   sortTasksForQueue,
   sortTasksNewestFirst,
 } from ".";
@@ -172,5 +175,85 @@ describe("log line classification and filtering", () => {
     expect(filterLogLines(sample, "t1", "warn_error", "风控")).toEqual([
       "[ERROR] [task=t1] 检测到 BOSS 风控熔断",
     ]);
+  });
+});
+
+describe("workspace readiness and env step status", () => {
+  const activeLlm = {
+    llm_config: {
+      provider: "openai" as const,
+      base_url: "https://api.openai.com/v1",
+      model: "gpt-4o",
+      insecure: false,
+    },
+    llm_enabled: true,
+  };
+  const noLlm = { llm_config: null, llm_enabled: true };
+
+  it("mirrors Rust GreetConfig::has_sendable_resource for LLM and static greetings", () => {
+    expect(
+      isGreetConfigReady(activeLlm, {
+        enable_llm: true,
+        reply_prompt: "写一句打招呼",
+        default_template: [{ resource_type: "LLM", content: "", enabled: true }],
+      }),
+    ).toBe(true);
+
+    expect(
+      isGreetConfigReady(activeLlm, {
+        enable_llm: true,
+        reply_prompt: "   ",
+        default_template: [{ resource_type: "LLM", content: "", enabled: true }],
+      }),
+    ).toBe(false);
+
+    expect(
+      isGreetConfigReady(activeLlm, {
+        enable_llm: true,
+        reply_prompt: "写一句打招呼",
+        default_template: [],
+      }),
+    ).toBe(false);
+
+    expect(
+      isGreetConfigReady(noLlm, {
+        enable_llm: false,
+        reply_prompt: null,
+        default_template: [{ resource_type: "LLM", content: "", enabled: true }],
+      }),
+    ).toBe(false);
+
+    expect(
+      isGreetConfigReady(noLlm, {
+        enable_llm: false,
+        reply_prompt: null,
+        default_template: [{ resource_type: "Text", content: "您好，期待沟通", enabled: true }],
+      }),
+    ).toBe(true);
+  });
+
+  it("marks step 0 as error when check_env fails without result", () => {
+    expect(resolveStepStatus("done", null, 0, 0, true)).toBe("error");
+    expect(resolveStepStatus("done", "completed", 2, 2, false)).toBe("finish");
+    expect(resolveStepStatus("done", "login_required", 1, 1, false)).toBe("error");
+  });
+
+  it("derives effective stage from synced communication signals", () => {
+    expect(
+      resolveWorkspaceEffectiveStage({
+        id: "boss:1",
+        title: "Frontend",
+        company_name: "Acme",
+        detail: "",
+        salary: "30K",
+        location: null,
+        is_reply: false,
+        is_send_resume: false,
+        created_at: "2026-11-28T00:00:00Z",
+        resume_sent_at: null,
+        updated_at: "2026-11-28T00:00:00Z",
+        communication_status: "interview_invited",
+      }),
+    ).toBe("interview_scheduled");
   });
 });

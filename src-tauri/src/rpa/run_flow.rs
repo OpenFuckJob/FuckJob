@@ -703,8 +703,39 @@ async fn execute_reply_unread_on_page(
     Ok(())
 }
 
+/// 判断错误文本是否属于需要立即告警（并在周期投递中立即熔断）的风控、安全验证或登录失效异常。
+pub(crate) fn is_fatal_risk_or_auth_error(error_text: &str) -> bool {
+    let lower = error_text.to_ascii_lowercase();
+    const KEYWORDS: &[&str] = &[
+        "code=37",
+        "风控",
+        "安全验证",
+        "滑块",
+        "滑动验证",
+        "人机验证",
+        "访问验证",
+        "验证码",
+        "登录态已失效",
+        "登录已失效",
+        "需要重新扫码",
+        "未登录",
+        "重新登录",
+        "停留在猎聘登录入口",
+        "captcha",
+    ];
+    KEYWORDS.iter().any(|keyword| lower.contains(keyword))
+}
+
 enum ReplyTarget {
     NewTab(PlatformKind),
+}
+
+impl ReplyTarget {
+    fn platform(&self) -> PlatformKind {
+        match self {
+            Self::NewTab(platform) => *platform,
+        }
+    }
 }
 
 async fn run_reply_round(
@@ -743,7 +774,17 @@ async fn polling_reply(
 
         if polling::is_active_now(&config.reply_polling_config) {
             if let Err(error) = run_reply_round(target, config).await {
-                logger::warning(format!("本轮自动回复失败，等待下一轮重试: {error}"))?;
+                let error_text = format!("{error:#}");
+                logger::warning(format!("本轮自动回复失败，等待下一轮重试: {error_text}"))?;
+                if is_fatal_risk_or_auth_error(&error_text)
+                    && !crate::notification::risk_alert_sent_recently(Duration::from_secs(5))
+                {
+                    crate::notification::notify_current(
+                        crate::notification::NotificationEvent::RiskAlert,
+                        format!("{} 轮询回复检测到风控/登录异常", target.platform().as_str()),
+                        error_text,
+                    );
+                }
             }
         }
 
@@ -809,6 +850,15 @@ impl PeriodicTarget {
                 })
                 .await
             }
+            Self::NewTab(PlatformKind::Liepin) => {
+                crate::browser::with_task_browser(|_, main_tab| {
+                    Box::pin(async move {
+                        liepin::handler::sync_chat_status_on_page(main_tab).await?;
+                        Ok(())
+                    })
+                })
+                .await
+            }
             _ => Ok(()),
         }
     }
@@ -855,11 +905,7 @@ async fn periodic_job_hunting(
             }
             PeriodicState::Deliver => {
                 pause_announced = false;
-                let daily_limit = if plan.max_greets_per_day > 0 {
-                    plan.max_greets_per_day
-                } else {
-                    config.periodic_delivery_config.max_greets_per_day
-                };
+                let daily_limit = plan.max_greets_per_day;
                 let today_count = crate::dao::job_detail_dao::count_today_for_platform(
                     target.platform().as_str(),
                 )
@@ -896,6 +942,26 @@ async fn periodic_job_hunting(
                 match target.deliver(config, budget).await {
                     Ok(()) => consecutive_failures = 0,
                     Err(error) => {
+                        let error_text = format!("{error:#}");
+                        if is_fatal_risk_or_auth_error(&error_text) {
+                            logger::error(format!(
+                                "检测到风控/安全验证或登录失效，周期投递已立即中止：{error_text}"
+                            ))?;
+                            if !crate::notification::risk_alert_sent_recently(Duration::from_secs(
+                                5,
+                            )) {
+                                crate::notification::notify_current(
+                                    crate::notification::NotificationEvent::RiskAlert,
+                                    format!(
+                                        "{} 周期投递触发风控/验证中断",
+                                        target.platform().as_str()
+                                    ),
+                                    error_text,
+                                );
+                            }
+                            return Err(error
+                                .context("检测到风控/安全验证或登录失效，周期投递已立即中止"));
+                        }
                         consecutive_failures += 1;
                         if consecutive_failures >= MAX_CONSECUTIVE_ROUND_FAILURES {
                             return Err(error.context(format!(
@@ -903,8 +969,16 @@ async fn periodic_job_hunting(
                             )));
                         }
                         logger::warning(format!(
-                            "本轮投递失败（连续第 {consecutive_failures} 次），等待下一轮重试：{error}"
+                            "本轮投递失败（连续第 {consecutive_failures} 次），等待下一轮重试：{error_text}"
                         ))?;
+                        crate::notification::notify_current(
+                            crate::notification::NotificationEvent::RiskAlert,
+                            format!(
+                                "{} 周期投递第 {consecutive_failures} 轮失败",
+                                target.platform().as_str()
+                            ),
+                            error_text,
+                        );
                     }
                 }
 
@@ -955,7 +1029,17 @@ async fn idle_until(
     // 同步历史对话放在空闲期之内而不是之外：它一样要占用浏览器，摆在外面等于
     // 每轮都在周期预算之上再加一笔，投递间隔就名不副实了
     if let Err(error) = target.sync_chat_history().await {
-        logger::warning(format!("周期间歇同步历史对话失败，本轮继续：{error}"))?;
+        let error_text = format!("{error:#}");
+        logger::warning(format!("周期间歇同步历史对话失败，本轮继续：{error_text}"))?;
+        if is_fatal_risk_or_auth_error(&error_text)
+            && !crate::notification::risk_alert_sent_recently(Duration::from_secs(5))
+        {
+            crate::notification::notify_current(
+                crate::notification::NotificationEvent::RiskAlert,
+                format!("{} 间歇状态同步检测到风控/登录异常", target.platform().as_str()),
+                error_text,
+            );
+        }
     }
 
     let mut was_active = true;
@@ -973,7 +1057,17 @@ async fn idle_until(
         // 先睡的写法会让这一整段空闲期一次都不回复
         if polling::is_active_now(&config.reply_polling_config) {
             if let Err(error) = run_reply_round(&target.reply_target(), config).await {
-                logger::warning(format!("周期间歇自动回复失败，稍后重试：{error}"))?;
+                let error_text = format!("{error:#}");
+                logger::warning(format!("周期间歇自动回复失败，稍后重试：{error_text}"))?;
+                if is_fatal_risk_or_auth_error(&error_text)
+                    && !crate::notification::risk_alert_sent_recently(Duration::from_secs(5))
+                {
+                    crate::notification::notify_current(
+                        crate::notification::NotificationEvent::RiskAlert,
+                        format!("{} 间歇自动回复检测到风控/登录异常", target.platform().as_str()),
+                        error_text,
+                    );
+                }
             }
             remaining = schedule::seconds_until(deadline, Local::now());
             if remaining == 0 {
@@ -1313,5 +1407,19 @@ mod tests {
         assert!(get_job_task_status().running);
 
         JOB_TASK_RUNNING.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn detects_fatal_risk_and_auth_errors_without_false_positives() {
+        assert!(is_fatal_risk_or_auth_error(
+            "检测到 BOSS 风控熔断（code=37：您的账号存在异常行为）"
+        ));
+        assert!(is_fatal_risk_or_auth_error(
+            "页面出现安全验证，已暂停当前任务并保留验证页面"
+        ));
+        assert!(is_fatal_risk_or_auth_error("猎聘登录态已失效，需要重新扫码"));
+        assert!(is_fatal_risk_or_auth_error("检测到滑块验证码"));
+        assert!(!is_fatal_risk_or_auth_error("打开 BOSS 沟通页面失败：timeout"));
+        assert!(!is_fatal_risk_or_auth_error("等待 historyMsg 响应超时"));
     }
 }

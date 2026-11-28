@@ -309,13 +309,13 @@ function BossActiveThresholdScale({
   );
 
   return (
-    <div className="rounded-lg border border-sky-100 bg-white/80 px-4 py-4">
-      <div className="mb-3 flex items-center justify-between gap-3 text-xs text-slate-500">
+    <div className="rounded-lg border border-[var(--of-border)] bg-[var(--of-surface)] px-4 py-4">
+      <div className="mb-3 flex items-center justify-between gap-3 text-xs text-[var(--of-text-secondary)]">
         <span>回复率更高（更活跃）</span>
         <span>覆盖更多岗位（更宽松）</span>
       </div>
       <div className="relative px-2 pt-1">
-        <div className="absolute left-6 right-6 top-[13px] h-1 rounded-full bg-slate-200" />
+        <div className="absolute left-6 right-6 top-[13px] h-1 rounded-full bg-[var(--of-border-strong)]" />
         <div
           className="absolute left-6 top-[13px] h-1 rounded-full bg-blue-500 transition-all"
           style={{
@@ -340,12 +340,12 @@ function BossActiveThresholdScale({
               >
                 <span
                   className={[
-                    "grid h-6 w-6 place-items-center rounded-full border-2 bg-white transition",
+                    "grid h-6 w-6 place-items-center rounded-full border-2 bg-[var(--of-surface)] transition",
                     selected
                       ? "border-blue-500 shadow-[0_0_0_5px_rgba(59,130,246,0.14)]"
                       : beforeSelected
                         ? "border-blue-400"
-                        : "border-slate-300 group-hover:border-blue-300",
+                        : "border-[var(--of-border-strong)] group-hover:border-blue-300",
                   ].join(" ")}
                 >
                   <span
@@ -393,20 +393,20 @@ interface PromptVariableGuideProps {
 
 function PromptVariableGuide({ items }: PromptVariableGuideProps) {
   return (
-    <div className="mt-3 rounded-2xl border border-sky-200 bg-sky-50 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.7)]">
-      <Text className="mb-3 block text-[10px] font-black uppercase tracking-[0.22em] text-sky-700">
+    <div className="mt-3 rounded-2xl border border-[var(--of-border)] bg-[var(--of-accent-soft)] p-4">
+      <Text className="mb-3 block text-[10px] font-black uppercase tracking-[0.22em] text-[var(--of-accent)]">
         可用变量
       </Text>
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
         {items.map((item) => (
           <div
             key={item.token}
-            className="rounded-xl border border-slate-200/80 bg-white px-3 py-2"
+            className="rounded-xl border border-[var(--of-border)] bg-[var(--of-surface)] px-3 py-2"
           >
-            <code className="font-mono text-[11px] font-bold text-emerald-600">
+            <code className="font-mono text-[11px] font-bold text-emerald-500">
               {item.token}
             </code>
-            <Text className="mt-1 block text-[11px] leading-5 text-slate-500">
+            <Text className="mt-1 block text-[11px] leading-5 text-[var(--of-text-secondary)]">
               {item.description}
             </Text>
           </div>
@@ -442,6 +442,7 @@ export interface ConfigPageProps {
   ) => void;
   addGreetDefaultResource: (
     resourceType?: GreetResource["resource_type"],
+    content?: string,
   ) => void;
   moveGreetDefaultResource: (resourceIndex: number, offset: -1 | 1) => void;
   removeGreetDefaultResource: (resourceIndex: number) => void;
@@ -469,6 +470,7 @@ export interface ConfigPageProps {
   removeRule: (index: number) => void;
   importConfig: (path: string) => Promise<void>;
   exportConfig: (path: string) => Promise<void>;
+  onConfigImported?: () => Promise<void>;
   activeProfileId: string;
   onSelectProfile: (id: string) => void;
   onCreateProfile: (meta: Pick<JobProfile, "name" | "description">) => void;
@@ -1122,7 +1124,7 @@ export function ConfigPage(props: ConfigPageProps) {
           />
         );
       case "data":
-        return <DataManagementPanel />;
+        return <DataManagementPanel onConfigImported={props.onConfigImported} />;
       case "job":
         return (
           <Space direction="vertical" size="large" className="w-full">
@@ -1426,7 +1428,7 @@ export function ConfigPage(props: ConfigPageProps) {
                 </div>
               </div>
 
-            <Card size="small" className="border-emerald-200! bg-emerald-50/40!">
+            <Card size="small" className="border-emerald-500/25! bg-emerald-500/5!">
               <div className="mb-3 flex items-center gap-2">
                 <DollarOutlined className="text-emerald-600" />
                 <div>
@@ -1526,7 +1528,7 @@ export function ConfigPage(props: ConfigPageProps) {
             <Job51FilterSection value={props.config.platform_filter_config.job51}
               onChange={job51 => props.updatePlatformFilter({ job51 })} />
 
-            <Card size="small" className="mt-4 border-sky-200! bg-sky-50/50!">
+            <Card size="small" className="mt-4 border-sky-500/25! bg-sky-500/5!">
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <Text strong>BOSS 活跃度过滤</Text>
@@ -1570,7 +1572,7 @@ export function ConfigPage(props: ConfigPageProps) {
               )}
             </Card>
 
-            <Card size="small" className="mt-4 border-amber-200! bg-amber-50/50!">
+            <Card size="small" className="mt-4 border-amber-500/25! bg-amber-500/5!">
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <Text strong>BOSS 猎头岗位过滤</Text>
@@ -1594,7 +1596,7 @@ export function ConfigPage(props: ConfigPageProps) {
 
             <Card
               size="small"
-              className="mt-4 border-violet-200! bg-violet-50/50!"
+              className="mt-4 border-violet-500/25! bg-violet-500/5!"
             >
               <div className="flex items-start justify-between gap-4">
                 <div>
@@ -1657,7 +1659,7 @@ export function ConfigPage(props: ConfigPageProps) {
                     <div className="space-y-6 pt-4">
                       <Card
                         size="small"
-                        className="border-sky-200! bg-sky-50/60!"
+                        className="border-sky-500/25! bg-sky-500/5!"
                       >
                         <div className="flex flex-col gap-3">
                           <div>
@@ -1710,7 +1712,7 @@ export function ConfigPage(props: ConfigPageProps) {
                             e.stopPropagation();
                             props.addRule();
                           }}
-                          className="rounded-lg! text-sky-600! hover:bg-sky-50! font-bold"
+                          className="rounded-lg! text-sky-500! hover:bg-[var(--of-accent-soft)]! font-bold"
                         >
                           新增规则
                         </Button>
@@ -1722,7 +1724,7 @@ export function ConfigPage(props: ConfigPageProps) {
                             <Card
                               key={index}
                               size="small"
-                              className="bg-white! hover:bg-slate-50! transition-colors border-slate-200/80 relative group/card"
+                              className="bg-[var(--of-surface)]! hover:bg-[var(--of-surface-hover)]! transition-colors border-[var(--of-border)]! relative group/card"
                             >
                               <div className="flex flex-wrap gap-3 items-end pr-10">
                                 <div className="flex-1 min-w-[120px]">
@@ -1880,7 +1882,7 @@ export function ConfigPage(props: ConfigPageProps) {
                     className="!m-0"
                   >
                     <Switch
-                      disabled={!llmActive}
+                      disabled={!llmActive && !props.config.greet_config.enable_llm}
                       onChange={(v) => props.updateGreet({ enable_llm: v })}
                     />
                   </Form.Item>
@@ -1954,7 +1956,7 @@ export function ConfigPage(props: ConfigPageProps) {
                     type="text"
                     icon={<PlusOutlined />}
                     onClick={() => props.addGreetDefaultResource()}
-                    className="text-sky-500! hover:bg-sky-50! rounded-lg! font-bold"
+                    className="text-sky-500! hover:bg-[var(--of-accent-soft)]! rounded-lg! font-bold"
                   >
                     添加内容
                   </Button>
@@ -1965,9 +1967,9 @@ export function ConfigPage(props: ConfigPageProps) {
                     (resource, index) => (
                       <div
                         key={index}
-                        className="grid grid-cols-1 md:grid-cols-[40px_120px_minmax(0,1fr)_auto] gap-3 items-start rounded-2xl border border-slate-200/80 bg-white p-3 shadow-sm transition-shadow hover:shadow-md"
+                        className="grid grid-cols-1 md:grid-cols-[40px_120px_minmax(0,1fr)_auto] gap-3 items-start rounded-2xl border border-[var(--of-border)] bg-[var(--of-surface)] p-3 shadow-sm transition-shadow hover:shadow-md"
                       >
-                        <div className="flex h-8 items-center justify-center rounded-lg bg-sky-50 text-xs font-bold text-sky-600">
+                        <div className="flex h-8 items-center justify-center rounded-lg bg-[var(--of-accent-soft)] text-xs font-bold text-[var(--of-accent)]">
                           {index + 1}
                         </div>
                         <Select
@@ -1998,7 +2000,7 @@ export function ConfigPage(props: ConfigPageProps) {
                               content,
                             }),
                         )}
-                        <div className="flex items-center justify-self-end rounded-xl border border-slate-200 bg-slate-50/80 p-1 shadow-inner">
+                        <div className="flex items-center justify-self-end rounded-xl border border-[var(--of-border)] bg-[var(--of-surface-subtle)] p-1 shadow-inner">
                           <div className="flex items-center gap-0.5 pr-1">
                             <Button
                               type="text"
@@ -2009,7 +2011,7 @@ export function ConfigPage(props: ConfigPageProps) {
                               onClick={() =>
                                 props.moveGreetDefaultResource(index, -1)
                               }
-                              className="h-8! w-8! min-w-8! rounded-lg! p-0! text-slate-600! hover:bg-white! hover:shadow-sm!"
+                              className="h-8! w-8! min-w-8! rounded-lg! p-0! text-[var(--of-text-secondary)]! hover:bg-[var(--of-surface)]! hover:shadow-sm!"
                             />
                             <Button
                               type="text"
@@ -2025,10 +2027,10 @@ export function ConfigPage(props: ConfigPageProps) {
                               onClick={() =>
                                 props.moveGreetDefaultResource(index, 1)
                               }
-                              className="h-8! w-8! min-w-8! rounded-lg! p-0! text-slate-600! hover:bg-white! hover:shadow-sm!"
+                              className="h-8! w-8! min-w-8! rounded-lg! p-0! text-[var(--of-text-secondary)]! hover:bg-[var(--of-surface)]! hover:shadow-sm!"
                             />
                           </div>
-                          <div className="h-5 w-px bg-slate-200" />
+                          <div className="h-5 w-px bg-[var(--of-border)]" />
                           <Button
                             title={
                               resource.enabled === false
@@ -2041,8 +2043,8 @@ export function ConfigPage(props: ConfigPageProps) {
                             type="text"
                             className={
                               resource.enabled === false
-                                ? "mx-1! h-8! w-8! min-w-8! rounded-lg! p-0! text-slate-500! hover:bg-white!"
-                                : "mx-1! h-8! w-8! min-w-8! rounded-lg! bg-emerald-50! p-0! text-emerald-600! hover:bg-emerald-100!"
+                                ? "mx-1! h-8! w-8! min-w-8! rounded-lg! p-0! text-[var(--of-text-secondary)]! hover:bg-[var(--of-surface)]!"
+                                : "mx-1! h-8! w-8! min-w-8! rounded-lg! bg-emerald-500/12! p-0! text-emerald-500! hover:bg-emerald-500/20!"
                             }
                             icon={
                               resource.enabled === false ? (
@@ -2057,7 +2059,7 @@ export function ConfigPage(props: ConfigPageProps) {
                               })
                             }
                           />
-                          <div className="h-5 w-px bg-slate-200" />
+                          <div className="h-5 w-px bg-[var(--of-border)]" />
                           <Button
                             type="text"
                             title="删除"
@@ -2067,7 +2069,7 @@ export function ConfigPage(props: ConfigPageProps) {
                             onClick={() =>
                               props.removeGreetDefaultResource(index)
                             }
-                            className="ml-1! h-8! w-8! min-w-8! rounded-lg! p-0! hover:bg-red-50!"
+                            className="ml-1! h-8! w-8! min-w-8! rounded-lg! p-0! hover:bg-red-500/12!"
                           />
                         </div>
                       </div>
@@ -2269,7 +2271,7 @@ export function ConfigPage(props: ConfigPageProps) {
               )}
 
               {replayStrategy !== "off" && (
-                <div className="flex items-center justify-between gap-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                <div className="flex items-center justify-between gap-6 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3">
                   <div>
                     <Text className="text-slate-900 font-bold block">
                       演练模式
@@ -2440,7 +2442,7 @@ export function ConfigPage(props: ConfigPageProps) {
                         type="text"
                         icon={<PlusOutlined />}
                         onClick={props.addReplyTemplate}
-                        className="text-sky-500! hover:bg-sky-50! rounded-lg! font-bold"
+                        className="text-sky-500! hover:bg-[var(--of-accent-soft)]! rounded-lg! font-bold"
                       >
                         新增模板
                       </Button>
@@ -2451,7 +2453,7 @@ export function ConfigPage(props: ConfigPageProps) {
                         <Card
                           key={index}
                           size="small"
-                          className="bg-white! border-slate-200/80 relative overflow-hidden"
+                          className="bg-[var(--of-surface)]! border-[var(--of-border)]! relative overflow-hidden"
                         >
                           <div className="absolute inset-y-0 left-0 w-1 bg-linear-to-b from-cyan-500 to-emerald-500" />
                           <div className="space-y-4 pl-3">
@@ -2538,7 +2540,7 @@ export function ConfigPage(props: ConfigPageProps) {
                                   size="small"
                                   icon={<PlusOutlined />}
                                   onClick={() => props.addReplyResource(index)}
-                                  className="rounded-lg! text-sky-600! hover:bg-sky-50! font-bold"
+                                  className="rounded-lg! text-sky-500! hover:bg-[var(--of-accent-soft)]! font-bold"
                                 >
                                   添加内容
                                 </Button>
@@ -2654,7 +2656,7 @@ export function ConfigPage(props: ConfigPageProps) {
                       <span>
                         已检测到{" "}
                         <strong>{browserEnvStatus.browser_name}</strong>，路径：
-                        <code className="text-xs bg-slate-100 px-1.5 py-0.5 rounded">
+                        <code className="text-xs bg-[var(--of-surface-subtle)] px-1.5 py-0.5 rounded">
                           {browserEnvStatus.browser_path}
                         </code>
                       </span>
@@ -2672,18 +2674,18 @@ export function ConfigPage(props: ConfigPageProps) {
                           系统中未找到 Google Chrome 或 Microsoft
                           Edge，请手动配置浏览器可执行文件路径。
                         </p>
-                        <div className="rounded-lg bg-amber-50 p-3 border border-amber-200">
-                          <Text className="text-xs font-bold block mb-1.5 text-amber-800">
-                            <InfoCircleOutlined className="mr-1" />
+                        <div className="rounded-lg bg-amber-500/10 p-3 border border-amber-500/30">
+                          <Text className="text-xs font-bold block mb-1.5 text-[var(--of-text)]">
+                            <InfoCircleOutlined className="mr-1 text-amber-500" />
                             如何获取浏览器路径：
                           </Text>
-                          <Text className="text-xs block text-amber-700">
+                          <Text className="text-xs block text-[var(--of-text-secondary)]">
                             在浏览器地址栏输入{" "}
-                            <code className="bg-amber-100 px-1 rounded">
+                            <code className="bg-amber-500/15 px-1 rounded">
                               chrome://version
                             </code>{" "}
                             或{" "}
-                            <code className="bg-amber-100 px-1 rounded">
+                            <code className="bg-amber-500/15 px-1 rounded">
                               edge://version
                             </code>
                             ，找到「个人资料路径」或「可执行文件路径」，复制后粘贴到下方「浏览器可执行文件路径」中。
@@ -2998,7 +3000,7 @@ export function ConfigPage(props: ConfigPageProps) {
                   )
                 }
                 items={menuItems}
-                className="rounded-2xl border border-slate-200/80 bg-white! p-2 shadow-xs"
+                className="rounded-2xl border border-[var(--of-border)] bg-[var(--of-surface)]! p-2 shadow-xs"
               />
               <Dropdown
                 menu={{

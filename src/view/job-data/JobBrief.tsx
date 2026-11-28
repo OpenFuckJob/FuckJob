@@ -68,7 +68,9 @@ const JobBrief = ({
   analysis?: InterviewJobAnalysis;
   onDeliveryResolved?: (updated: JobDetail) => void;
   onJobUpdated?: (updated: JobDetail) => void;
-  onBlacklistCompany?: (companyName: string) => void;
+  onBlacklistCompany?: (
+    companyName: string,
+  ) => void | boolean | { ok: boolean; warning?: string };
 }) => {
   const [showRaw, setShowRaw] = useState(false);
   const [parsed, setParsed] = useState<ParsedJobDescription | null>(null);
@@ -111,7 +113,6 @@ const JobBrief = ({
       }
       message.success("进度与笔记已保存");
       onJobUpdated?.(updated);
-      onDeliveryResolved?.(updated);
     } catch (error) {
       message.error(String(error));
     } finally {
@@ -169,8 +170,16 @@ const JobBrief = ({
                 okText="确认拉黑"
                 cancelText="取消"
                 onConfirm={() => {
-                  onBlacklistCompany(job.company_name);
-                  message.success(`已将「${job.company_name}」加入公司排除词`);
+                  const result = onBlacklistCompany(job.company_name);
+                  if (result === false) {
+                    message.warning(
+                      "当前配置存在错误，暂无法自动保存公司黑名单，请先前往「求职设置」修正",
+                    );
+                  } else if (result && typeof result === "object" && !result.ok) {
+                    if (result.warning) message.warning(result.warning);
+                  } else {
+                    message.success(`已将「${job.company_name}」加入公司排除词`);
+                  }
                 }}
               >
                 <Button size="small" type="text" danger icon={<StopOutlined />}>

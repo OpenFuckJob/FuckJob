@@ -236,6 +236,9 @@ pub async fn position_say_hello_on_page(
                 Ok(false) => {
                     consecutive_greet_failures = 0;
                     processed_job_ids.insert(greet_job.platform_job_id.clone());
+                    if !pacer.after_greet(false).await {
+                        break 'outer StopReason::UserStopped;
+                    }
                     continue;
                 }
                 Err(error) => {
@@ -250,6 +253,9 @@ pub async fn position_say_hello_on_page(
                         &error,
                     ))?;
                     if should_continue_after_greet_failure() {
+                        if !pacer.after_greet(false).await {
+                            break 'outer StopReason::UserStopped;
+                        }
                         continue;
                     }
                     // 目前 should_continue_after_greet_failure 恒为 true，
@@ -347,6 +353,13 @@ pub async fn position_say_hello_on_page(
         stop_reason.describe(),
         stats.total_summary()
     ))?;
+    if stop_reason == StopReason::TooManyGreetFailures {
+        crate::notification::notify_current(
+            crate::notification::NotificationEvent::RiskAlert,
+            "BOSS 求职任务连续打招呼失败熔断",
+            format!("{}。{}", stop_reason.describe(), stats.total_summary()),
+        );
+    }
     if let Some(summary) = pacer.summary() {
         logger::info(summary)?;
     }

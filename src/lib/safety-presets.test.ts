@@ -47,4 +47,60 @@ describe("safety presets", () => {
     expect(detectSafetyPreset(custom)).toBe("custom");
     expect(describeSafetySummary(custom)).toBe("自定义节奏（55/天）");
   });
+
+  it("detects custom mode when interval_minutes or active delivery windows diverge", () => {
+    const standardPatch = buildSafetyPresetPatch("standard", {
+      periodic_delivery_config: undefined,
+      humanize_config: undefined,
+    });
+
+    expect(
+      detectSafetyPreset({
+        periodic_delivery_config: {
+          ...standardPatch.periodic_delivery_config,
+          interval_minutes: 15,
+        },
+        humanize_config: standardPatch.humanize_config,
+      }),
+    ).toBe("custom");
+
+    expect(
+      detectSafetyPreset({
+        periodic_delivery_config: {
+          ...standardPatch.periodic_delivery_config,
+          windows: [{ start_minute: 10 * 60, end_minute: 20 * 60 }],
+        },
+        humanize_config: standardPatch.humanize_config,
+      }),
+    ).toBe("custom");
+
+    // Adjacent split windows covering the same 9:00-18:00 span still match standard
+    expect(
+      detectSafetyPreset({
+        periodic_delivery_config: {
+          ...standardPatch.periodic_delivery_config,
+          windows: [
+            { start_minute: 12 * 60, end_minute: 18 * 60 },
+            { start_minute: 9 * 60, end_minute: 12 * 60 },
+          ],
+        },
+        humanize_config: standardPatch.humanize_config,
+      }),
+    ).toBe("standard");
+
+    // When window_enabled is false (active preset), inactive windows are ignored
+    const activePatch = buildSafetyPresetPatch("active", {
+      periodic_delivery_config: undefined,
+      humanize_config: undefined,
+    });
+    expect(
+      detectSafetyPreset({
+        periodic_delivery_config: {
+          ...activePatch.periodic_delivery_config,
+          windows: [],
+        },
+        humanize_config: activePatch.humanize_config,
+      }),
+    ).toBe("active");
+  });
 });

@@ -64,7 +64,8 @@ import {
   isActiveJobTask,
 } from "../../types/rpa";
 import type { PeriodicPlan } from "../../types/rpa";
-import type { JobDetail } from "../../types/job-detail";
+import type { JobListItem, JobPipelineStage } from "../../types/job-detail";
+import { useJobDataRefresh } from "../../hooks/useJobDataRefresh";
 import ManualReviewDrawer, { useManualReview } from "./manual-review-drawer";
 import {
   DEFAULT_MAX_GREETS_PER_DAY,
@@ -76,6 +77,7 @@ import {
   isLlmActive,
   type AppRuntimeConfig,
   type ConfigGroup,
+  type GreetConfig,
   type PeriodicDeliveryConfig,
   type ReplyPollingConfig,
 } from "../../types/app-config";
@@ -125,11 +127,12 @@ function getStepIndex(current: EnvCheckStep): number {
   return ENV_STEPS.findIndex((s) => s.status === current);
 }
 
-function resolveStepStatus(
+export function resolveStepStatus(
   phase: CheckPhase,
   envStatus: EnvCheckStatus | null,
   stepIndex: number,
   currentStepIndex: number,
+  hasError = false,
 ): "wait" | "process" | "finish" | "error" {
   if (phase === "idle") return "wait";
   if (phase === "checking") {
@@ -139,9 +142,43 @@ function resolveStepStatus(
   }
   if (stepIndex < currentStepIndex) return "finish";
   if (stepIndex === currentStepIndex) {
-    return envStatus === "login_required" ? "error" : "finish";
+    if (envStatus === "login_required" || (!envStatus && hasError)) {
+      return "error";
+    }
+    return "finish";
   }
   return "wait";
+}
+
+export function isGreetConfigReady(
+  config: Pick<AppRuntimeConfig, "llm_config" | "llm_enabled">,
+  greet: GreetConfig,
+): boolean {
+  const llmResourceReady =
+    greet.enable_llm && isLlmActive(config) && Boolean(greet.reply_prompt?.trim());
+  const hasEnabledLlm = greet.default_template.some(
+    (item) => item.enabled !== false && item.resource_type === "LLM",
+  );
+  if (greet.enable_llm && hasEnabledLlm && !llmResourceReady) {
+    return false;
+  }
+  return greet.default_template.some((item) => {
+    if (item.enabled === false) return false;
+    if (item.resource_type === "LLM") return llmResourceReady;
+    return item.content.trim().length > 0;
+  });
+}
+
+export function resolveWorkspaceEffectiveStage(job: JobListItem): JobPipelineStage {
+  if (job.effective_stage) return job.effective_stage;
+  if (job.pipeline_stage) return job.pipeline_stage;
+  if (job.communication_status === "rejected") return "rejected";
+  if (job.communication_status === "interview_invited") return "interview_scheduled";
+  if (job.communication_status === "replied" || job.is_reply || (job.unread_count ?? 0) > 0) {
+    return "replied";
+  }
+  if (job.is_send_resume) return "applied";
+  return "pending";
 }
 
 const PLATFORM_META: Record<PlatformKind, PlatformMeta> = {
@@ -401,7 +438,7 @@ const WorkspacePage = ({
   >({});
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [queueFilter, setQueueFilter] = useState<QueueFilter>("all");
-  const [jobs, setJobs] = useState<JobDetail[]>([]);
+  const [jobs, setJobs] = useState<JobListItem[]>([]);
   const [todayCounts, setTodayCounts] = useState<TodayGreetCounts>({
     boss: 0,
     liepin: 0,
@@ -427,7 +464,7 @@ const WorkspacePage = ({
   const loadJobs = useCallback(async () => {
     try {
       const [jobsResult, countsResult] = await Promise.all([
-        invoke<CommandResult<JobDetail[]>>("job_list"),
+        invoke<CommandResult<JobListItem[]>>("job_list_with_status"),
         invoke<CommandResult<TodayGreetCounts>>("job_today_greet_counts").catch(() => null),
       ]);
       if (jobsResult.success && jobsResult.data) {
@@ -440,6 +477,8 @@ const WorkspacePage = ({
       // ignore
     }
   }, []);
+
+  useJobDataRefresh(loadJobs);
 
   const refreshTaskStatus = useCallback((): Promise<void> => {
     if (taskRefreshPromiseRef.current) return taskRefreshPromiseRef.current;
@@ -703,15 +742,26 @@ const WorkspacePage = ({
 
   /* ── Derived metrics for top status strip ── */
   const totalJobs = jobs.length;
-  const repliedCount = jobs.filter((j) => j.is_reply).length;
+  const repliedCount = jobs.filter((j) => {
+    const stage = resolveWorkspaceEffectiveStage(j);
+    return (
+      j.is_reply ||
+      j.communication_status === "replied" ||
+      j.communication_status === "interview_invited" ||
+      (j.communication_status === "rejected" && j.latest_message_received === true) ||
+      (j.unread_count ?? 0) > 0 ||
+      stage === "replied" ||
+      stage === "interview_scheduled" ||
+      stage === "interviewing" ||
+      stage === "offer"
+    );
+  }).length;
   const replyRate = totalJobs > 0 ? `${((repliedCount / totalJobs) * 100).toFixed(0)}%` : "—";
-  const interviewCount = jobs.filter(
-    (j) =>
-      j.pipeline_stage === "interview_scheduled" ||
-      j.pipeline_stage === "interviewing" ||
-      j.pipeline_stage === "offer",
-  ).length;
-  const offerCount = jobs.filter((j) => j.pipeline_stage === "offer").length;
+  const interviewCount = jobs.filter((j) => {
+    const stage = resolveWorkspaceEffectiveStage(j);
+    return stage === "interview_scheduled" || stage === "interviewing" || stage === "offer";
+  }).length;
+  const offerCount = jobs.filter((j) => resolveWorkspaceEffectiveStage(j) === "offer").length;
   const pendingReviewCount = externalPendingReviewCount ?? manualReview.records.length;
   const pendingReviewUi = describePendingReview(pendingReviewCount);
 
@@ -736,14 +786,7 @@ const WorkspacePage = ({
   const queryText = (filter.query ?? "").trim();
   const hasIntent = Boolean(queryText);
   const hasResume = Boolean((activeProfile.resume_config.resume_content ?? "").trim());
-  const hasGreetText = activeProfile.greet_config.default_template.some(
-    (item) =>
-      item.enabled !== false &&
-      (item.resource_type === "LLM" || item.content.trim().length > 0),
-  );
-  const greetReady = activeProfile.greet_config.enable_llm
-    ? isLlmActive(config)
-    : hasGreetText;
+  const greetReady = isGreetConfigReady(config, activeProfile.greet_config);
   const envReady = currentEnvironment.result?.status === "completed";
   const envNeedsLogin = currentEnvironment.result?.status === "login_required";
   const greetModeLabel = activeProfile.greet_config.enable_llm
@@ -1123,7 +1166,8 @@ const WorkspacePage = ({
                   size="small"
                   responsive={false}
                   current={
-                    currentEnvironment.phase === "checking"
+                    currentEnvironment.phase === "checking" ||
+                    (!currentEnvironment.result && Boolean(currentEnvironment.message))
                       ? currentStepIndex
                       : ENV_STEPS.length - 1
                   }
@@ -1134,13 +1178,15 @@ const WorkspacePage = ({
                       currentEnvironment.result?.status ?? null,
                       index,
                       currentStepIndex,
+                      Boolean(currentEnvironment.message),
                     ),
                     icon:
                       currentEnvironment.phase === "checking" && index === currentStepIndex ? (
                         <LoadingOutlined />
                       ) : currentEnvironment.phase === "done" &&
                         index === currentStepIndex &&
-                        currentEnvironment.result?.status === "login_required" ? (
+                        (currentEnvironment.result?.status === "login_required" ||
+                          (!currentEnvironment.result && Boolean(currentEnvironment.message))) ? (
                         <WarningOutlined />
                       ) : undefined,
                   }))}
@@ -1200,15 +1246,27 @@ const WorkspacePage = ({
                   : `开始 ${currentPlatformMeta.shortLabel} 自动投递`}
               </Button>
 
-              <div className="ws-secondary-actions">
+              <div
+                className="ws-secondary-actions"
+                style={!currentPlatformMeta.supportsChat ? { gridTemplateColumns: "1fr" } : undefined}
+              >
                 {currentPlatformMeta.supportsChat ? (
-                  <Button
-                    icon={<IconReplyPulse size={15} />}
-                    disabled={currentStartPending}
-                    onClick={() => openStartModal(platform, "reply_unread")}
-                  >
-                    处理未读回复
-                  </Button>
+                  <>
+                    <Button
+                      icon={<IconReplyPulse size={15} />}
+                      disabled={currentStartPending}
+                      onClick={() => openStartModal(platform, "reply_unread")}
+                    >
+                      处理未读回复
+                    </Button>
+                    <Button
+                      icon={<IconSliders size={15} />}
+                      disabled={currentStartPending}
+                      onClick={() => openStartModal(platform, "periodic_job_hunting")}
+                    >
+                      周期挂机 / 更多模式
+                    </Button>
+                  </>
                 ) : (
                   <Button
                     icon={<IconClockRepeat size={15} />}
@@ -1218,13 +1276,6 @@ const WorkspacePage = ({
                     周期定时投递
                   </Button>
                 )}
-                <Button
-                  icon={<IconSliders size={15} />}
-                  disabled={currentStartPending}
-                  onClick={() => openStartModal(platform, "periodic_job_hunting")}
-                >
-                  周期挂机 / 更多模式
-                </Button>
               </div>
             </div>
           </Space>
@@ -1563,7 +1614,7 @@ const WorkspacePage = ({
                           type="link"
                           onClick={() => {
                             closeStartModal();
-                            onOpenConfig(item.config_group as ConfigGroup, "basic");
+                            onOpenConfig(item.config_group as ConfigGroup);
                           }}
                         >
                           去设置
@@ -1628,6 +1679,7 @@ const WorkspacePage = ({
           loading={manualReview.loading}
           onResolve={(record) => void manualReview.resolve(record)}
           onClear={() => void manualReview.clear()}
+          onRefresh={() => void manualReview.refresh()}
           onOpenConversation={
             onOpenConversation
               ? (jobId) => {

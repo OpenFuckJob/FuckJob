@@ -438,7 +438,7 @@ export const DEFAULT_NOTIFICATION_CONFIG: NotificationConfig = {
   webhook_url: "",
   notify_manual_review: true,
   notify_risk_alert: true,
-  notify_hr_reply: false,
+  notify_hr_reply: true,
 };
 
 export function getNotificationConfig(

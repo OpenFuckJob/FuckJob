@@ -37,12 +37,16 @@ fn marked_click(page: &Page, platform: &str, action: &str, candidate: Option<&Ca
     Ok(found)
 }
 pub fn cleanup(page: &Page, platform: &str) -> Result<()> {
-    let result = cleanup_inner(page, platform);
-    if result.is_err() { crate::rpa::run_flow::request_current_job_task_stop(); }
-    result
+    cleanup_inner(page, platform)
 }
 fn cleanup_inner(page: &Page, platform: &str) -> Result<()> {
     if ui(page, "resumeSecurityBlocked(document)")?.as_bool()==Some(true) {
+        let _ = crate::browser::retain_task_tab(page);
+        crate::notification::notify_current(
+            crate::notification::NotificationEvent::RiskAlert,
+            format!("{platform} 检测到安全验证"),
+            "页面出现安全验证，已暂停当前任务并保留验证页面，请在浏览器中完成验证",
+        );
         bail!("页面出现安全验证，已暂停当前任务并保留验证页面");
     }
     for action in ["close-preview", "close"] {
@@ -94,9 +98,42 @@ pub async fn deliver(page: &Page, platform: &str, requested: Option<&str>, confi
             hold(context, platform, error.to_string())?; Ok(false) }
     }
 }
-fn hold(context: &ConversationContext, platform: &str, detail: String) -> Result<()> {
+fn hold_with_notify(
+    context: &ConversationContext,
+    platform: &str,
+    detail: String,
+    notify: bool,
+) -> Result<()> {
     let draft = conversation::review_draft(context.job.as_ref(), &context.messages);
-    manual_review_dao::upsert(draft.to_request(platform, &context.conversation_id, ManualReviewReason::ResumeDelivery, detail))
+    let title = if draft.job_name.is_empty() {
+        format!("{platform} · {}", ManualReviewReason::ResumeDelivery.label())
+    } else if draft.company_name.is_empty() {
+        format!("{} · {}", draft.job_name, ManualReviewReason::ResumeDelivery.label())
+    } else {
+        format!("{} - {}", draft.company_name, draft.job_name)
+    };
+    let body = if draft.last_message.is_empty() {
+        detail.clone()
+    } else {
+        format!("{detail}\n对方消息：{}", draft.last_message)
+    };
+    manual_review_dao::upsert(draft.to_request(
+        platform,
+        &context.conversation_id,
+        ManualReviewReason::ResumeDelivery,
+        detail,
+    ))?;
+    if notify {
+        crate::notification::notify_current(
+            crate::notification::NotificationEvent::ManualReview,
+            title,
+            body,
+        );
+    }
+    Ok(())
+}
+fn hold(context: &ConversationContext, platform: &str, detail: String) -> Result<()> {
+    hold_with_notify(context, platform, detail, true)
 }
 
 async fn attempt(page: &Page, platform: &str, requested: Option<&str>, config: &AppRuntimeConfig, context: &ConversationContext) -> Result<bool> {
@@ -145,7 +182,7 @@ async fn attempt(page: &Page, platform: &str, requested: Option<&str>, config: &
         std::thread::sleep(Duration::from_millis(100));
     }
     // Persist before clicking; a missing record must stop the submission.
-    hold(context, platform, format!("附件「{}」正在提交，结果未确认前禁止重投", chosen.name))?;
+    hold_with_notify(context, platform, format!("附件「{}」正在提交，结果未确认前禁止重投", chosen.name), false)?;
     if !marked_click(page, platform, "submit", None)? { bail!("附件提交按钮已变化"); }
     let end = Instant::now() + Duration::from_secs(8);
     loop {

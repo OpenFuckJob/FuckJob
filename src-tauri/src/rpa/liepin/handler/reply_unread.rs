@@ -216,6 +216,9 @@ async fn handle_conversation(
     let messages = conversation::merge_messages(history, fresh_messages.to_vec());
 
     let owned_job = resolve_owned_job(contact, &messages);
+    if let Some(job) = owned_job.as_ref() {
+        crate::dao::sync_state_dao::clear_unread_for_job(&job.id);
+    }
     if let Some(reply_text) = newest_received_text {
         let title = match owned_job.as_ref() {
             Some(job) => format!("猎聘 · {}（{}）", job.title, job.company_name),
@@ -406,6 +409,13 @@ async fn handle_conversation(
         let message = format!("猎聘会话「{}」{}：{}", name, label, decision.reason);
         if action == ReplyAction::Escalate {
             logger::warning(message)?;
+            hold_for_review(
+                PLATFORM,
+                &contact.imid,
+                conversation::review_draft(context.job.as_ref(), &context.messages),
+                ManualReviewReason::RiskKeyword,
+                decision.reason,
+            );
         } else {
             logger::info(message)?;
         }

@@ -382,7 +382,10 @@ export function LlmConfigPanel({
     setTestingId(entryId);
     try {
       if (!isValidLlmConfig(service)) { showFeedback("error", "短连接测试失败", "请检查服务地址和模型名称"); return; }
-      if (LLM_PRESETS[service.provider].requiresKey && !credentials[entryId]?.configured) {
+      const pendingKey = (apiKeys[entryId] ?? "").trim();
+      if (pendingKey) {
+        if (!await storeKey(entryId, false)) return;
+      } else if (LLM_PRESETS[service.provider].requiresKey && !credentials[entryId]?.configured) {
         showFeedback("error", "短连接测试失败", "该服务需要先配置 API Key");
         return;
       }
@@ -628,7 +631,7 @@ export function LlmConfigPanel({
             </Button>
           </div>
         </Form.Item>
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--of-border)] pt-3">
           <Typography.Text type="secondary" className="text-xs">
             <SafetyCertificateOutlined className="mr-1 text-sky-500" />
             凭据状态：{credential?.configured ? `已配置（${credentialSourceText[credential.source]}）` : "未配置"}。应用不会读取或显示明文。
@@ -668,7 +671,7 @@ export function LlmConfigPanel({
     ) : (
       <Form layout="vertical">
         {!config ? (
-          <section className="rounded-lg border border-slate-200/80 bg-white p-4">
+          <section className="rounded-lg border border-[var(--of-border)] bg-[var(--of-surface)] p-4">
             <Typography.Title level={5} className="!mb-4">基础配置</Typography.Title>
             <Form.Item label="服务预设" className="!mb-0">
               <Select
@@ -687,7 +690,7 @@ export function LlmConfigPanel({
           </section>
         ) : (
           <>
-            <section className="rounded-lg border border-slate-200/80 bg-white p-4 md:p-5">
+            <section className="rounded-lg border border-[var(--of-border)] bg-[var(--of-surface)] p-4 md:p-5">
               <div className="mb-4 flex items-start justify-between gap-4">
                 <div>
                   <Typography.Title level={5} className="!mb-1">基础配置</Typography.Title>
@@ -741,16 +744,16 @@ export function LlmConfigPanel({
             </section>
 
             {chainEnabled && (
-              <section className="mt-4 overflow-hidden rounded-lg border border-slate-200/80 bg-white">
-                <div className="border-b border-slate-100 px-4 py-4 md:px-5">
+              <section className="mt-4 overflow-hidden rounded-lg border border-[var(--of-border)] bg-[var(--of-surface)]">
+                <div className="border-b border-[var(--of-border)] px-4 py-4 md:px-5">
                   <Typography.Title level={5} className="!mb-1">可用模型（降级链）</Typography.Title>
                   <Typography.Text type="secondary" className="text-xs">
                     主用服务不可用时，按以下顺序自动切换备用服务，提升可用性与稳定性。
                   </Typography.Text>
                 </div>
 
-                <div className="mx-4 my-4 overflow-hidden rounded-lg border border-slate-200/80 md:mx-5">
-                  <div className="flex min-h-14 items-center gap-3 border-b border-slate-100 px-3 py-2.5 md:px-4">
+                <div className="mx-4 my-4 overflow-hidden rounded-lg border border-[var(--of-border)] md:mx-5">
+                  <div className="flex min-h-14 items-center gap-3 border-b border-[var(--of-border)] px-3 py-2.5 md:px-4">
                     <span className="w-6 shrink-0 text-center text-xs font-semibold text-slate-400">1</span>
                     <Typography.Text strong className="min-w-0 flex-1 truncate">
                       {config.model.trim() || "未选择模型"}
@@ -804,7 +807,7 @@ export function LlmConfigPanel({
                             </Form.Item>
                             {renderServiceFields(entry.id, entry)}
                             {renderCredentialFields(entry.id)}
-                            <div className="flex items-center gap-2 border-t border-slate-100 pt-3">
+                            <div className="flex items-center gap-2 border-t border-[var(--of-border)] pt-3">
                               <Switch
                                 aria-label={`启用备用 ${index + 1}`}
                                 checked={entry.enabled}
@@ -835,8 +838,8 @@ export function LlmConfigPanel({
             )}
 
             {retryConfig && onRetryConfigChange && !compact && (
-              <section className="mt-4 overflow-hidden rounded-lg border border-slate-200/80 bg-white">
-                <div className="border-b border-slate-100 px-4 py-4 md:px-5">
+              <section className="mt-4 overflow-hidden rounded-lg border border-[var(--of-border)] bg-[var(--of-surface)]">
+                <div className="border-b border-[var(--of-border)] px-4 py-4 md:px-5">
                   <Typography.Title level={5} className="!mb-1">重试与超时</Typography.Title>
                   <Typography.Text type="secondary" className="text-xs">
                     控制网络故障时的重试节奏，以及单次模型请求的最长等待时间。

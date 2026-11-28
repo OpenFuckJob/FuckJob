@@ -101,10 +101,10 @@ export default function ReplyPollingSection({ config, onChange }: Props) {
     config.humanize_delay_max_seconds < config.humanize_delay_min_seconds;
 
   return (
-    <div className="rounded-2xl border border-slate-200/80 bg-white/85 p-6 space-y-4">
+    <div className="rounded-2xl border border-[var(--of-border)] bg-[var(--of-surface)] p-6 space-y-4">
       <div>
-        <Text className="text-slate-900 font-bold block">轮询节奏</Text>
-        <Text className="text-slate-500 text-xs">
+        <Text className="text-[var(--of-text)] font-bold block">轮询节奏</Text>
+        <Text className="text-[var(--of-text-secondary)] text-xs">
           「轮询回复」任务和「周期投递」的等待期都按这套节奏检查新消息
         </Text>
       </div>

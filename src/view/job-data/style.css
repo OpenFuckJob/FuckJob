@@ -740,3 +740,27 @@
   background: var(--of-accent, #4f46e5);
   color: #ffffff;
 }
+
+[data-theme="dark"] .match-tag.is-empty {
+  border-color: var(--of-border-strong);
+  background: var(--of-surface-subtle);
+  color: var(--of-text-muted);
+}
+
+[data-theme="dark"] .chat-legend {
+  border-bottom-color: var(--of-border);
+}
+
+[data-theme="dark"] .chat-day {
+  color: var(--of-text-subtle);
+}
+
+[data-theme="dark"] .chat-day::before,
+[data-theme="dark"] .chat-day::after {
+  background: var(--of-border);
+}
+
+[data-theme="dark"] .chat-system {
+  background: var(--of-surface-subtle);
+  color: var(--of-text-secondary);
+}
